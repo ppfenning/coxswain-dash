@@ -1,7 +1,10 @@
 //! Dispatches rendering to the current page's module. No layout logic lives here; each page
 //! module owns its own `render`.
 
+pub mod initiative_drill;
+pub mod machine_drill;
 mod regatta;
+pub mod run_drill;
 mod slipstream;
 
 use chrono::{DateTime, FixedOffset};
