@@ -9,7 +9,7 @@ import re
 import sys
 
 # Product names a seat must never assume, and the shape of a personal name.
-DENY = re.compile(r"\b(asana|jira|confluence|blastpoint|cloudwatch|outline|snowflake|databricks)\b", re.I)
+DENY = re.compile(r"\b(asana|jira|confluence|blastpoint|cloudwatch|outline|snowflake|databricks)\b", re.IGNORECASE)
 SKIP = {".git", ".github", ".venv", "node_modules"}
 
 problems = []
