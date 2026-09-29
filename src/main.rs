@@ -22,6 +22,7 @@ use crossterm::terminal::{
 };
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
+use ratatui::layout::Rect;
 
 use app::{App, AppPage, ThemeId};
 
@@ -34,7 +35,7 @@ fn main() {
 
     let (page, theme_id) =
         config::load_state(&config::state_path()).unwrap_or((AppPage::Regatta, ThemeId::Regatta));
-    let mut app = App::new(page, theme_id);
+    let mut app = App::new(page, theme_id).with_utc_offset(*chrono::Local::now().offset());
 
     let mut child = feed::spawn_feed(Some(2));
     let stdout = child.stdout.take().expect("feed stdout should be piped");
@@ -65,8 +66,8 @@ fn main() {
         }
 
         if event::poll(Duration::from_millis(100)).unwrap_or(false) {
-            if let Ok(Event::Key(key)) = event::read() {
-                if key.kind == KeyEventKind::Press {
+            match event::read() {
+                Ok(Event::Key(key)) if key.kind == KeyEventKind::Press => {
                     let is_quit = key.code == KeyCode::Char('q')
                         || (key.code == KeyCode::Char('c')
                             && key.modifiers.contains(KeyModifiers::CONTROL));
@@ -76,6 +77,14 @@ fn main() {
                     input::handle_key(&mut app, key.code);
                     changed = true;
                 }
+                Ok(Event::Mouse(mouse)) if app.page() == AppPage::Regatta => {
+                    let size = terminal.size().expect("failed to read the terminal size");
+                    let area = Rect::new(0, 0, size.width, size.height);
+                    let rects = ui::regatta_frame_rects(area, &app);
+                    input::handle_mouse(&mut app, mouse, &rects);
+                    changed = true;
+                }
+                _ => {}
             }
         }
 
