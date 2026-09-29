@@ -6,10 +6,15 @@
 // calls them lands with the UI wiring, so clippy would otherwise flag them as dead code.
 #![allow(dead_code)]
 
+use chrono::{DateTime, FixedOffset};
+
 use crate::feed::FeedSnapshot;
 
 /// How many layout presets the regatta page cycles through.
 const REGATTA_LAYOUT_PRESET_COUNT: usize = 3;
+
+/// How long a lanes-in-use sample is kept once a newer one has arrived.
+const LANES_HISTORY_MAX_AGE_HOURS: i64 = 24;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppPage {
@@ -32,6 +37,8 @@ pub struct App {
     theme: ThemeId,
     regatta_frames_visible: [bool; 6],
     regatta_layout_preset: usize,
+    lanes_history: Vec<(String, u32)>,
+    utc_offset: FixedOffset,
 }
 
 impl Default for App {
@@ -42,6 +49,8 @@ impl Default for App {
             theme: ThemeId::Regatta,
             regatta_frames_visible: [true; 6],
             regatta_layout_preset: 0,
+            lanes_history: Vec::new(),
+            utc_offset: FixedOffset::east_opt(0).expect("zero is a valid UTC offset"),
         }
     }
 }
@@ -75,9 +84,43 @@ impl App {
         self.regatta_layout_preset
     }
 
-    /// Replaces the held snapshot with a freshly parsed one. No I/O: the caller already read
-    /// and parsed the feed line.
+    pub fn utc_offset(&self) -> FixedOffset {
+        self.utc_offset
+    }
+
+    /// Builder: sets the offset used to render every timestamp. Only `src/main.rs` should ever
+    /// pass anything but UTC in.
+    pub fn with_utc_offset(self, offset: FixedOffset) -> Self {
+        App {
+            utc_offset: offset,
+            ..self
+        }
+    }
+
+    /// The kept lanes-in-use samples, oldest first, each within 24h of the newest.
+    pub fn lanes_history(&self) -> &[(String, u32)] {
+        &self.lanes_history
+    }
+
+    /// Replaces the held snapshot with a freshly parsed one, and appends its total
+    /// lanes-in-use to the history, dropping samples more than 24h older than the newest.
+    /// No I/O: the caller already read and parsed the feed line.
     pub fn apply_snapshot(&mut self, snap: FeedSnapshot) {
+        let lanes_in_use: u32 = snap.machines.iter().map(|m| m.lanes_in_use).sum();
+        self.lanes_history.push((snap.at.clone(), lanes_in_use));
+        if let Some(newest) = self
+            .lanes_history
+            .iter()
+            .filter_map(|(at, _)| DateTime::parse_from_rfc3339(at).ok())
+            .max()
+        {
+            let cutoff = chrono::Duration::hours(LANES_HISTORY_MAX_AGE_HOURS);
+            self.lanes_history.retain(|(at, _)| {
+                DateTime::parse_from_rfc3339(at)
+                    .map(|at| newest - at <= cutoff)
+                    .unwrap_or(true)
+            });
+        }
         self.snapshot = Some(snap);
     }
 
@@ -116,6 +159,38 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Builds a literal `FeedSnapshot` with the given timestamp and total lanes-in-use,
+    /// via `feed::parse_snapshot` so the test never constructs the wire structs by hand.
+    fn make_snapshot(at: &str, lanes_in_use: u32) -> FeedSnapshot {
+        let json = format!(
+            r#"{{"schema":1,"at":"{at}","chair":{{"holder":"h","host":"h","epoch":1,"liveness":"live","beat_age_s":0}},"spend":{{"five_hour_fraction":0.0,"five_hour_source":"meter","weekly_fraction":0.0,"weekly_source":"meter","hard_stop_fraction":0.0,"five_hour_resets_at":"{at}","weekly_resets_at":"{at}"}},"machines":[{{"name":"m","state":"active","lanes_in_use":{lanes_in_use},"capacity":3,"login_ok":true,"login_checked_at":"{at}","beat_age_s":0,"checkouts":{{}}}}],"runs":[],"queue":[],"inbox":[],"watch":[]}}"#
+        );
+        crate::feed::parse_snapshot(&json).expect("literal snapshot should parse")
+    }
+
+    #[test]
+    fn default_utc_offset_is_utc() {
+        assert_eq!(
+            App::default().utc_offset(),
+            FixedOffset::east_opt(0).unwrap()
+        );
+    }
+
+    #[test]
+    fn apply_snapshot_drops_samples_more_than_24h_older_than_the_newest() {
+        let mut app = App::default();
+        app.apply_snapshot(make_snapshot("2026-09-28T00:00:00Z", 1));
+        app.apply_snapshot(make_snapshot("2026-09-28T12:00:00Z", 2));
+        app.apply_snapshot(make_snapshot("2026-09-29T01:00:00Z", 3));
+        assert_eq!(
+            app.lanes_history(),
+            &[
+                ("2026-09-28T12:00:00Z".to_string(), 2),
+                ("2026-09-29T01:00:00Z".to_string(), 3),
+            ]
+        );
+    }
 
     #[test]
     fn next_page_wraps_from_regatta_to_slipstream() {
