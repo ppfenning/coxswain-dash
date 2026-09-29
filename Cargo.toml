@@ -1,0 +1,13 @@
+[package]
+name = "coxswain-dash"
+version = "0.24.0"
+edition = "2024"
+rust-version = "1.85"
+description = "coxtop: the Coxswain fleet dashboard"
+publish = false
+
+[[bin]]
+name = "coxtop"
+path = "src/main.rs"
+
+[dependencies]
