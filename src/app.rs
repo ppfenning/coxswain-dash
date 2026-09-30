@@ -1,6 +1,7 @@
-//! The application's own state: the latest feed snapshot, the current page and theme, and the
-//! regatta page's frame visibility and layout preset. Every method here mutates only `self` and
-//! does no I/O; loading and saving that state to disk lives in [`crate::config`].
+//! The application's own state: the latest feed snapshot, the current page and theme, the
+//! regatta page's frame visibility and layout preset, the focused list and per-page selection,
+//! and the open detail request. Every method here mutates only `self` and does no I/O; loading
+//! and saving that state to disk lives in [`crate::config`].
 
 // `apply_snapshot` and the `snapshot` accessor aren't exercised yet: the feed-reading loop that
 // calls them lands with the UI wiring, so clippy would otherwise flag them as dead code.
@@ -8,6 +9,7 @@
 
 use chrono::{DateTime, FixedOffset};
 
+use crate::detail::DetailSnapshot;
 use crate::feed::FeedSnapshot;
 
 /// How many layout presets the regatta page cycles through.
@@ -30,6 +32,33 @@ pub enum ThemeId {
     HarborLight,
 }
 
+/// Which of the Regatta page's three row lists Up/Down/Enter act on. The Slipstream page has
+/// only a runs list, so its focus never leaves `Focus::Runs`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Focus {
+    Runs,
+    Queue,
+    Machines,
+}
+
+/// Which kind of entity an open detail request names, matching the id field the detail
+/// snapshot for that kind carries (`run`, `initiative`, or `machine`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DetailKind {
+    Run,
+    Initiative,
+    Machine,
+}
+
+/// The id a [`DetailSnapshot`] identifies itself with, whatever kind it is.
+fn detail_snapshot_id(snap: &DetailSnapshot) -> &str {
+    match snap {
+        DetailSnapshot::Run(r) => &r.run,
+        DetailSnapshot::Initiative(i) => &i.initiative,
+        DetailSnapshot::Machine(m) => &m.machine,
+    }
+}
+
 #[derive(Debug)]
 pub struct App {
     snapshot: Option<FeedSnapshot>,
@@ -39,6 +68,11 @@ pub struct App {
     regatta_layout_preset: usize,
     lanes_history: Vec<(String, u32)>,
     utc_offset: FixedOffset,
+    focus: Focus,
+    /// Selection index per page (`AppPage::Regatta` then `AppPage::Slipstream`) and per focus
+    /// (`Focus::Runs`, `Focus::Queue`, `Focus::Machines` in that order).
+    selected: [[usize; 3]; 2],
+    detail: Option<(DetailKind, String, Option<DetailSnapshot>)>,
 }
 
 impl Default for App {
@@ -51,6 +85,9 @@ impl Default for App {
             regatta_layout_preset: 0,
             lanes_history: Vec::new(),
             utc_offset: FixedOffset::east_opt(0).expect("zero is a valid UTC offset"),
+            focus: Focus::Runs,
+            selected: [[0; 3]; 2],
+            detail: None,
         }
     }
 }
@@ -154,6 +191,146 @@ impl App {
     pub fn cycle_regatta_layout_preset(&mut self) {
         self.regatta_layout_preset = (self.regatta_layout_preset + 1) % REGATTA_LAYOUT_PRESET_COUNT;
     }
+
+    /// The focused list for the current page. The stored field is the Regatta page's focus;
+    /// Slipstream has only a runs list, so it reads as `Focus::Runs` there whatever Regatta
+    /// last focused. Every selection and detail method reads focus through here.
+    pub fn focus(&self) -> Focus {
+        match self.page {
+            AppPage::Regatta => self.focus,
+            AppPage::Slipstream => Focus::Runs,
+        }
+    }
+
+    fn page_index(&self) -> usize {
+        match self.page {
+            AppPage::Regatta => 0,
+            AppPage::Slipstream => 1,
+        }
+    }
+
+    fn focus_index(&self) -> usize {
+        match self.focus() {
+            Focus::Runs => 0,
+            Focus::Queue => 1,
+            Focus::Machines => 2,
+        }
+    }
+
+    /// The current page's, current focus's selection index.
+    pub fn selected(&self) -> usize {
+        self.selected[self.page_index()][self.focus_index()]
+    }
+
+    pub fn detail(&self) -> Option<&(DetailKind, String, Option<DetailSnapshot>)> {
+        self.detail.as_ref()
+    }
+
+    /// Right cycles focus Runs -> Queue -> Machines -> Runs on the Regatta page; a no-op on the
+    /// Slipstream page, which only ever has a runs list to focus.
+    pub fn cycle_focus_next(&mut self) {
+        if self.page == AppPage::Regatta {
+            self.focus = match self.focus {
+                Focus::Runs => Focus::Queue,
+                Focus::Queue => Focus::Machines,
+                Focus::Machines => Focus::Runs,
+            };
+        }
+    }
+
+    /// Left cycles focus the other way around the same three stops; a no-op on Slipstream.
+    pub fn cycle_focus_prev(&mut self) {
+        if self.page == AppPage::Regatta {
+            self.focus = match self.focus {
+                Focus::Runs => Focus::Machines,
+                Focus::Queue => Focus::Runs,
+                Focus::Machines => Focus::Queue,
+            };
+        }
+    }
+
+    /// The length of the focused list in the held snapshot, 0 when there is no snapshot yet.
+    fn focused_list_len(&self) -> usize {
+        let Some(snap) = &self.snapshot else {
+            return 0;
+        };
+        match self.focus() {
+            Focus::Runs => snap.runs.len(),
+            Focus::Queue => snap.queue.len(),
+            Focus::Machines => snap.machines.len(),
+        }
+    }
+
+    /// Moves the focused list's selection index forward one row, wrapping past the end. A
+    /// no-op, staying at 0, when the focused list is empty or there is no snapshot yet.
+    pub fn select_next(&mut self) {
+        let len = self.focused_list_len();
+        let (p, f) = (self.page_index(), self.focus_index());
+        self.selected[p][f] = if len == 0 {
+            0
+        } else {
+            (self.selected[p][f] + 1) % len
+        };
+    }
+
+    /// Moves the focused list's selection index back one row, wrapping before the start.
+    pub fn select_prev(&mut self) {
+        let len = self.focused_list_len();
+        let (p, f) = (self.page_index(), self.focus_index());
+        self.selected[p][f] = if len == 0 {
+            0
+        } else {
+            (self.selected[p][f] + len - 1) % len
+        };
+    }
+
+    /// Sets the focused list's selection index directly, clamped to the list's last row.
+    pub fn select_at(&mut self, idx: usize) {
+        let len = self.focused_list_len();
+        let (p, f) = (self.page_index(), self.focus_index());
+        self.selected[p][f] = if len == 0 { 0 } else { idx.min(len - 1) };
+    }
+
+    /// The kind and id the focused list's selected row names, or `None` when there is no
+    /// snapshot yet or the selection index is out of range.
+    pub fn selected_entity(&self) -> Option<(DetailKind, String)> {
+        let snap = self.snapshot.as_ref()?;
+        let idx = self.selected();
+        match self.focus() {
+            Focus::Runs => snap.runs.get(idx).map(|r| (DetailKind::Run, r.run.clone())),
+            Focus::Queue => snap
+                .queue
+                .get(idx)
+                .map(|q| (DetailKind::Initiative, q.initiative.clone())),
+            Focus::Machines => snap
+                .machines
+                .get(idx)
+                .map(|m| (DetailKind::Machine, m.name.clone())),
+        }
+    }
+
+    /// Opens the detail for the currently selected row; a no-op when nothing is selected.
+    pub fn open_detail(&mut self) {
+        if let Some((kind, id)) = self.selected_entity() {
+            self.detail = Some((kind, id, None));
+        }
+    }
+
+    /// Closes the open detail, if any; a no-op when none is open.
+    pub fn close_detail(&mut self) {
+        self.detail = None;
+    }
+
+    /// Fills in the open detail's snapshot slot, but only when the newly arrived snapshot's id
+    /// still matches the open detail's id. A stale response for a detail the user has since
+    /// navigated away from is dropped rather than overwriting the current one.
+    pub fn apply_detail_snapshot(&mut self, snap: DetailSnapshot) {
+        if let Some((_, id, slot)) = &mut self.detail {
+            if detail_snapshot_id(&snap) == id.as_str() {
+                *slot = Some(snap);
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -167,6 +344,13 @@ mod tests {
             r#"{{"schema":1,"at":"{at}","chair":{{"holder":"h","host":"h","epoch":1,"liveness":"live","beat_age_s":0}},"spend":{{"five_hour_fraction":0.0,"five_hour_source":"meter","weekly_fraction":0.0,"weekly_source":"meter","hard_stop_fraction":0.0,"five_hour_resets_at":"{at}","weekly_resets_at":"{at}"}},"machines":[{{"name":"m","state":"active","lanes_in_use":{lanes_in_use},"capacity":3,"login_ok":true,"login_checked_at":"{at}","beat_age_s":0,"checkouts":{{}}}}],"runs":[],"queue":[],"inbox":[],"watch":[]}}"#
         );
         crate::feed::parse_snapshot(&json).expect("literal snapshot should parse")
+    }
+
+    /// A snapshot with three runs (`r0`..`r2`), one queue entry (`i0`), and two machines
+    /// (`m0`, `m1`), for the selection and focus tests below.
+    fn make_rich_snapshot() -> FeedSnapshot {
+        let json = r#"{"schema":1,"at":"2026-09-29T00:00:00Z","chair":{"holder":"h","host":"h","epoch":1,"liveness":"live","beat_age_s":0},"spend":{"five_hour_fraction":0.0,"five_hour_source":"meter","weekly_fraction":0.0,"weekly_source":"meter","hard_stop_fraction":0.0,"five_hour_resets_at":"2026-09-29T00:00:00Z","weekly_resets_at":"2026-09-29T00:00:00Z"},"machines":[{"name":"m0","state":"active","lanes_in_use":0,"capacity":3,"login_ok":true,"login_checked_at":"2026-09-29T00:00:00Z","beat_age_s":0,"checkouts":{}},{"name":"m1","state":"active","lanes_in_use":0,"capacity":3,"login_ok":true,"login_checked_at":"2026-09-29T00:00:00Z","beat_age_s":0,"checkouts":{}}],"runs":[{"run":"r0","machine":"m0","phase":"p","node":"n","attempt":1,"turns":1,"cost":0.0,"verdict":"ok","status":"running"},{"run":"r1","machine":"m0","phase":"p","node":"n","attempt":1,"turns":1,"cost":0.0,"verdict":"ok","status":"running"},{"run":"r2","machine":"m0","phase":"p","node":"n","attempt":1,"turns":1,"cost":0.0,"verdict":"ok","status":"running"}],"queue":[{"initiative":"i0","priority":1,"phases_landed":0,"phases_total":1,"current_phase":"p"}],"inbox":[],"watch":[]}"#;
+        crate::feed::parse_snapshot(json).expect("literal snapshot should parse")
     }
 
     #[test]
@@ -278,5 +462,144 @@ mod tests {
         assert_eq!(app.regatta_layout_preset(), 2);
         app.cycle_regatta_layout_preset();
         assert_eq!(app.regatta_layout_preset(), 0);
+    }
+
+    #[test]
+    fn select_next_wraps_around_the_runs_list() {
+        let mut app = App::default();
+        app.apply_snapshot(make_rich_snapshot());
+        assert_eq!(app.selected(), 0);
+        app.select_next();
+        assert_eq!(app.selected(), 1);
+        app.select_next();
+        assert_eq!(app.selected(), 2);
+        app.select_next();
+        assert_eq!(app.selected(), 0);
+    }
+
+    #[test]
+    fn select_prev_wraps_around_the_runs_list() {
+        let mut app = App::default();
+        app.apply_snapshot(make_rich_snapshot());
+        app.select_prev();
+        assert_eq!(app.selected(), 2);
+    }
+
+    #[test]
+    fn select_at_clamps_an_out_of_range_index() {
+        let mut app = App::default();
+        app.apply_snapshot(make_rich_snapshot());
+        app.select_at(100);
+        assert_eq!(app.selected(), 2);
+    }
+
+    #[test]
+    fn selected_entity_returns_the_run_at_the_selected_index_on_the_regatta_page() {
+        let mut app = App::new(AppPage::Regatta, ThemeId::Regatta);
+        app.apply_snapshot(make_rich_snapshot());
+        app.select_at(1);
+        assert_eq!(
+            app.selected_entity(),
+            Some((DetailKind::Run, "r1".to_string()))
+        );
+    }
+
+    #[test]
+    fn selected_entity_returns_the_machine_at_the_selected_index() {
+        let mut app = App::default();
+        app.apply_snapshot(make_rich_snapshot());
+        app.cycle_focus_next();
+        app.cycle_focus_next();
+        assert_eq!(app.focus(), Focus::Machines);
+        app.select_at(1);
+        assert_eq!(
+            app.selected_entity(),
+            Some((DetailKind::Machine, "m1".to_string()))
+        );
+    }
+
+    #[test]
+    fn open_detail_then_close_detail_round_trips_app_detail() {
+        let mut app = App::default();
+        app.apply_snapshot(make_rich_snapshot());
+        assert!(app.detail().is_none());
+        app.open_detail();
+        let (kind, id, slot) = app
+            .detail()
+            .expect("detail should be open after open_detail");
+        assert_eq!(*kind, DetailKind::Run);
+        assert_eq!(id, "r0");
+        assert!(slot.is_none());
+        app.close_detail();
+        assert!(app.detail().is_none());
+    }
+
+    #[test]
+    fn apply_detail_snapshot_updates_the_slot_when_the_id_matches() {
+        let mut app = App::default();
+        app.apply_snapshot(make_rich_snapshot());
+        app.open_detail();
+        let detail_json = r#"{"kind":"run","schema":1,"at":"2026-09-29T00:00:00Z","run":"r0","machine":"m0","initiative":"i0","phase":"p","steps":[],"stopped_reason":null,"files":[],"last_tool_calls":[],"log_tail":[]}"#;
+        let snap = crate::detail::parse_detail(detail_json).expect("literal detail should parse");
+        app.apply_detail_snapshot(snap);
+        let (_, _, slot) = app.detail().expect("detail should still be open");
+        assert!(slot.is_some());
+    }
+
+    #[test]
+    fn apply_detail_snapshot_is_ignored_when_the_id_does_not_match() {
+        let mut app = App::default();
+        app.apply_snapshot(make_rich_snapshot());
+        app.open_detail();
+        let detail_json = r#"{"kind":"run","schema":1,"at":"2026-09-29T00:00:00Z","run":"not-r0","machine":"m0","initiative":"i0","phase":"p","steps":[],"stopped_reason":null,"files":[],"last_tool_calls":[],"log_tail":[]}"#;
+        let snap = crate::detail::parse_detail(detail_json).expect("literal detail should parse");
+        app.apply_detail_snapshot(snap);
+        let (_, _, slot) = app.detail().expect("detail should still be open");
+        assert!(slot.is_none());
+    }
+
+    #[test]
+    fn cycle_focus_next_cycles_runs_queue_machines_and_back_on_regatta() {
+        let mut app = App::new(AppPage::Regatta, ThemeId::Regatta);
+        assert_eq!(app.focus(), Focus::Runs);
+        app.cycle_focus_next();
+        assert_eq!(app.focus(), Focus::Queue);
+        app.cycle_focus_next();
+        assert_eq!(app.focus(), Focus::Machines);
+        app.cycle_focus_next();
+        assert_eq!(app.focus(), Focus::Runs);
+    }
+
+    #[test]
+    fn cycle_focus_next_is_a_no_op_on_slipstream() {
+        let mut app = App::new(AppPage::Slipstream, ThemeId::Regatta);
+        app.cycle_focus_next();
+        assert_eq!(app.focus(), Focus::Runs);
+    }
+
+    #[test]
+    fn switching_to_slipstream_after_moving_regatta_focus_reads_runs() {
+        let mut app = App::new(AppPage::Regatta, ThemeId::Regatta);
+        app.apply_snapshot(make_rich_snapshot());
+        app.cycle_focus_next();
+        app.cycle_focus_next();
+        app.next_page();
+        assert_eq!(app.focus(), Focus::Runs);
+        assert_eq!(
+            app.selected_entity(),
+            Some((DetailKind::Run, "r0".to_string()))
+        );
+        app.open_detail();
+        let (kind, _, _) = app.detail().expect("detail should be open");
+        assert_eq!(*kind, DetailKind::Run);
+    }
+
+    #[test]
+    fn regatta_focus_survives_a_round_trip_through_slipstream() {
+        let mut app = App::new(AppPage::Regatta, ThemeId::Regatta);
+        app.cycle_focus_next();
+        app.next_page();
+        app.next_page();
+        assert_eq!(app.focus(), Focus::Queue);
     }
 }
