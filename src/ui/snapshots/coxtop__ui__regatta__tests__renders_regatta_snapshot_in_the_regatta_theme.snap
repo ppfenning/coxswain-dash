@@ -1,6 +1,5 @@
 ---
 source: src/ui/regatta.rs
-assertion_line: 424
 expression: terminal.backend().to_string()
 ---
 "╭1 chair───────────────────────────────────────────────────╮╭2 spend───────────────────────────────────────────────────╮"
@@ -16,7 +15,7 @@ expression: terminal.backend().to_string()
 "│                                                          ││                                                          │"
 "╰──────────────────────────────────────────────────────────╯╰──────────────────────────────────────────────────────────╯"
 "╭3 machines────────────────────────────────────────────────╮╭4 lanes over 24h──────────────────────────────────────────╮"
-"│omarchy 2/3 login ok                                      ││                       █                                  │"
+"│  omarchy 2/3 login ok                                    ││                       █                                  │"
 "│                                                          ││                       █                                  │"
 "│                                                          ││                       █                                  │"
 "│                                                          ││                       █                                  │"
@@ -27,7 +26,7 @@ expression: terminal.backend().to_string()
 "│                                                          ││                       █                                  │"
 "╰──────────────────────────────────────────────────────────╯╰──────────────────────────────────────────────────────────╯"
 "╭5 runs────────────────────────────────────────────────────╮╭6 queue───────────────────────────────────────────────────╮"
-"│dash-feed-1 omarchy p1-foundations build 0.84             ││dash-feed-streams-a-versioned-json-snapshot-of 0/3 p1-foun│"
+"│▶ dash-feed-1 omarchy p1-foundations build 0.84           ││  dash-feed-streams-a-versioned-json-snapshot-of 0/3 p1-fo│"
 "│                                                          ││                                                          │"
 "│                                                          ││                                                          │"
 "│                                                          ││                                                          │"
