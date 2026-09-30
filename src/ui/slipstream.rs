@@ -10,7 +10,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph},
+    widgets::{Block, BorderType, Borders, Paragraph},
 };
 
 use crate::app::App;
@@ -73,7 +73,15 @@ pub fn render(f: &mut Frame, app: &App, theme: &Theme) {
         .direction(Direction::Horizontal)
         .constraints([Constraint::Min(1), Constraint::Length(RAIL_WIDTH)])
         .split(area);
-    render_cards(f, cols[0], snapshot, accent, card_border, theme);
+    render_cards(
+        f,
+        cols[0],
+        snapshot,
+        app.selected(),
+        accent,
+        card_border,
+        theme,
+    );
     render_rail(f, cols[1], snapshot, theme);
 }
 
@@ -93,6 +101,7 @@ fn render_cards(
     f: &mut Frame,
     area: Rect,
     snapshot: &FeedSnapshot,
+    selected: usize,
     accent: Color,
     card_border: Color,
     theme: &Theme,
@@ -105,8 +114,8 @@ fn render_cards(
         .direction(Direction::Vertical)
         .constraints(vec![Constraint::Length(3); runs.len()])
         .split(area);
-    for (rect, run) in rows.iter().zip(runs.iter()) {
-        render_card(f, *rect, run, accent, card_border, theme);
+    for (i, (rect, run)) in rows.iter().zip(runs.iter()).enumerate() {
+        render_card(f, *rect, run, i == selected, accent, card_border, theme);
     }
 }
 
@@ -132,14 +141,25 @@ fn render_card(
     f: &mut Frame,
     rect: Rect,
     run: &Run,
+    selected: bool,
     accent: Color,
     card_border: Color,
     theme: &Theme,
 ) {
-    let title = format!("{} {}", run.run, run.machine);
+    let title = if selected {
+        format!("\u{25b6} {} {}", run.run, run.machine)
+    } else {
+        format!("{} {}", run.run, run.machine)
+    };
+    let border_type = if selected {
+        BorderType::Double
+    } else {
+        BorderType::Plain
+    };
     let block = Block::default()
         .title(title)
         .borders(Borders::ALL)
+        .border_type(border_type)
         .border_style(Style::default().fg(card_border))
         .style(base_style(theme));
     let current = step_index(&run.node);
@@ -283,6 +303,19 @@ mod tests {
             .draw(|f| render(f, &app, &theme))
             .expect("draw should not fail");
         insta::assert_snapshot!(terminal.backend().to_string());
+    }
+
+    #[test]
+    fn the_selected_cards_title_shows_the_selection_marker() {
+        let app = app_with_fixture();
+        assert_eq!(app.selected(), 0);
+        let theme = crate::theme::resolve(ThemeId::Regatta);
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|f| render(f, &app, &theme))
+            .expect("draw should not fail");
+        assert!(terminal.backend().to_string().contains('\u{25b6}'));
     }
 
     #[test]

@@ -4,7 +4,7 @@
 use crossterm::event::{KeyCode, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
 
-use crate::app::App;
+use crate::app::{App, Focus};
 
 pub fn handle_key(app: &mut App, key: KeyCode) {
     match key {
@@ -29,11 +29,60 @@ fn contains(rect: Rect, x: u16, y: u16) -> bool {
     x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height
 }
 
-/// A left-button press inside `rects[i]` toggles regatta frame `i + 1`; a press outside every
-/// rect is a no-op. `rects` is `regatta::frame_rects`'s output, so this never disagrees with
-/// what is actually drawn.
+/// The zero-based row inside `rect`'s bordered block that `(x, y)` falls on, given the list
+/// drawn there has `len` rows. `None` for a point on the border, past the last row, or outside
+/// `rect` entirely. Mirrors `ui::regatta::row_at`'s per-rect math; duplicated here because
+/// `ui::regatta` is a private module this crate's mouse handler cannot reach, so this stays the
+/// mouse handler's own small, independently-tested copy.
+fn row_in_rect(rect: Rect, len: usize, x: u16, y: u16) -> Option<usize> {
+    if x < rect.x + 1
+        || x + 1 >= rect.x + rect.width
+        || y < rect.y + 1
+        || y + 1 >= rect.y + rect.height
+    {
+        return None;
+    }
+    let row = (y - rect.y - 1) as usize;
+    (row < len).then_some(row)
+}
+
+/// Which selectable list and row `(x, y)` lands on among `rects`' machines (index 2), runs
+/// (index 4) or queue (index 5) frames, or `None` when there is no snapshot yet or the point
+/// misses every one of them.
+fn row_hit(app: &App, rects: &[Option<Rect>; 6], x: u16, y: u16) -> Option<(Focus, usize)> {
+    let snapshot = app.snapshot()?;
+    let candidates = [
+        (2, Focus::Machines, snapshot.machines.len()),
+        (4, Focus::Runs, snapshot.runs.len()),
+        (5, Focus::Queue, snapshot.queue.len()),
+    ];
+    for (idx, focus, len) in candidates {
+        if let Some(rect) = rects[idx] {
+            if let Some(row) = row_in_rect(rect, len, x, y) {
+                return Some((focus, row));
+            }
+        }
+    }
+    None
+}
+
+/// A left-button press on a row of the runs, queue or machines frame focuses that list, selects
+/// the row and opens its detail. A press elsewhere inside `rects[i]` toggles regatta frame
+/// `i + 1`, today's behavior; a press outside every rect is a no-op. `rects` is
+/// `regatta::frame_rects`'s output, so this never disagrees with what is actually drawn.
 pub fn handle_mouse(app: &mut App, event: MouseEvent, rects: &[Option<Rect>; 6]) {
     if event.kind != MouseEventKind::Down(MouseButton::Left) {
+        return;
+    }
+    if let Some((focus, row)) = row_hit(app, rects, event.column, event.row) {
+        for _ in 0..3 {
+            if app.focus() == focus {
+                break;
+            }
+            app.cycle_focus_next();
+        }
+        app.select_at(row);
+        app.open_detail();
         return;
     }
     for (i, rect) in rects.iter().enumerate() {
@@ -95,6 +144,43 @@ mod tests {
         let rects = sample_rects();
         handle_mouse(&mut app, left_click_at(100, 100), &rects);
         assert_eq!(app.regatta_frames_visible(), [true; 6]);
+    }
+
+    #[test]
+    fn a_click_on_the_runs_frames_second_row_selects_it_and_opens_its_detail() {
+        let mut app = App::default();
+        app.apply_snapshot(snapshot_with_two_runs());
+        let area = Rect::new(0, 0, 120, 40);
+        let rects = crate::ui::regatta_frame_rects(area, &app);
+        let runs_rect = rects[4].expect("runs frame is visible");
+        handle_mouse(
+            &mut app,
+            left_click_at(runs_rect.x + 1, runs_rect.y + 2),
+            &rects,
+        );
+        assert_eq!(app.focus(), Focus::Runs);
+        assert_eq!(app.selected(), 1);
+        let (kind, id, _) = app.detail().expect("detail should be open");
+        assert_eq!(*kind, crate::app::DetailKind::Run);
+        assert_eq!(id, "r1");
+    }
+
+    #[test]
+    fn a_click_outside_every_row_changes_nothing() {
+        let mut app = App::default();
+        app.apply_snapshot(snapshot_with_two_runs());
+        let area = Rect::new(0, 0, 120, 40);
+        let rects = crate::ui::regatta_frame_rects(area, &app);
+        let before_focus = app.focus();
+        let before_selected = app.selected();
+        let before_visible = app.regatta_frames_visible();
+        // (119, 39) sits in the always-visible inbox strip below the six numbered frames, so it
+        // is outside every one of `rects`.
+        handle_mouse(&mut app, left_click_at(119, 39), &rects);
+        assert_eq!(app.focus(), before_focus);
+        assert_eq!(app.selected(), before_selected);
+        assert!(app.detail().is_none());
+        assert_eq!(app.regatta_frames_visible(), before_visible);
     }
 
     #[test]
