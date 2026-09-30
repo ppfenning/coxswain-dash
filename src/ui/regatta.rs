@@ -13,7 +13,7 @@ use ratatui::{
     widgets::{Block, BorderType, Borders, Gauge, Paragraph, Sparkline},
 };
 
-use crate::app::App;
+use crate::app::{App, Focus};
 use crate::feed::{FeedSnapshot, Run};
 use crate::theme::Theme;
 
@@ -46,6 +46,48 @@ pub fn render(f: &mut Frame, app: &App, theme: &Theme) {
 /// them out. A mouse handler can use this without touching the render path itself.
 pub fn frame_rects(area: Rect, app: &App) -> [Option<Rect>; 6] {
     layout_rects(area, app).0
+}
+
+/// The list and row `(x, y)` falls on, using the same layout `render` draws with: the runs
+/// (frame 5), queue (frame 6) or machines (frame 3) rect, whichever one's list actually has a
+/// row there. `None` when there is no snapshot yet, the point misses all three rects, lands on
+/// a border, or overshoots the matching list's last row.
+// `ui::regatta` is a private module, so `src/input.rs`'s mouse handler cannot call this
+// directly today (it carries its own small copy of the same math instead); clippy would
+// otherwise flag this pub fn and its `row_in_rect` helper as dead code outside the tests below.
+#[allow(dead_code)]
+pub fn row_at(area: Rect, app: &App, x: u16, y: u16) -> Option<(Focus, usize)> {
+    let snapshot = app.snapshot()?;
+    let (rects, _) = layout_rects(area, app);
+    let candidates = [
+        (2, Focus::Machines, snapshot.machines.len()),
+        (4, Focus::Runs, snapshot.runs.len()),
+        (5, Focus::Queue, snapshot.queue.len()),
+    ];
+    for (idx, focus, len) in candidates {
+        if let Some(rect) = rects[idx] {
+            if let Some(row) = row_in_rect(rect, len, x, y) {
+                return Some((focus, row));
+            }
+        }
+    }
+    None
+}
+
+/// The zero-based row inside `rect`'s bordered block that `(x, y)` falls on, given the list
+/// drawn there has `len` rows. `None` for a point on the border, past the last row, or outside
+/// `rect` entirely.
+#[allow(dead_code)]
+fn row_in_rect(rect: Rect, len: usize, x: u16, y: u16) -> Option<usize> {
+    if x < rect.x + 1
+        || x + 1 >= rect.x + rect.width
+        || y < rect.y + 1
+        || y + 1 >= rect.y + rect.height
+    {
+        return None;
+    }
+    let row = (y - rect.y - 1) as usize;
+    (row < len).then_some(row)
 }
 
 fn visible_frame_indices(app: &App) -> Vec<usize> {
@@ -147,7 +189,11 @@ fn base_style(theme: &Theme) -> Style {
     Style::default().fg(theme.fg).bg(theme.bg)
 }
 
-fn numbered_block(n: usize, name: &str, theme: &Theme) -> Block<'static> {
+/// A numbered, titled block; `focused` draws its border in `theme.accent` (today's border
+/// color, `theme.fg`, otherwise), so the runs, queue and machines frames can show which one
+/// Left/Right last focused.
+fn numbered_block(n: usize, name: &str, theme: &Theme, focused: bool) -> Block<'static> {
+    let border_color = if focused { theme.accent } else { theme.fg };
     Block::default()
         .title(Span::styled(
             format!("{n} {name}"),
@@ -155,7 +201,14 @@ fn numbered_block(n: usize, name: &str, theme: &Theme) -> Block<'static> {
         ))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(border_color))
         .style(base_style(theme))
+}
+
+/// `Some(app.selected())` when `focus` is the page's currently focused list, `None` otherwise
+/// so an unfocused frame's render helper knows to draw no row as selected.
+fn frame_selection(app: &App, focus: Focus) -> Option<usize> {
+    (app.focus() == focus).then(|| app.selected())
 }
 
 fn render_waiting(f: &mut Frame, area: Rect, theme: &Theme) {
@@ -180,10 +233,16 @@ fn render_frame(
     match idx {
         0 => render_chair(f, rect, snapshot, app, theme),
         1 => render_spend(f, rect, snapshot, app, theme),
-        2 => render_machines(f, rect, snapshot, theme),
+        2 => render_machines(
+            f,
+            rect,
+            snapshot,
+            frame_selection(app, Focus::Machines),
+            theme,
+        ),
         3 => render_lanes(f, rect, app, theme),
-        4 => render_runs(f, rect, snapshot, theme),
-        5 => render_queue(f, rect, snapshot, theme),
+        4 => render_runs(f, rect, snapshot, frame_selection(app, Focus::Runs), theme),
+        5 => render_queue(f, rect, snapshot, frame_selection(app, Focus::Queue), theme),
         _ => unreachable!("regatta frame index out of range: {idx}"),
     }
 }
@@ -199,7 +258,7 @@ fn render_chair(f: &mut Frame, rect: Rect, snapshot: &FeedSnapshot, app: &App, t
         Line::from(format!("beat age: {}s", chair.beat_age_s)),
     ];
     let paragraph = Paragraph::new(lines)
-        .block(numbered_block(1, FRAME_NAMES[0], theme))
+        .block(numbered_block(1, FRAME_NAMES[0], theme, false))
         .style(base_style(theme));
     f.render_widget(paragraph, rect);
 }
@@ -216,7 +275,7 @@ fn meter_color(theme: &Theme, fraction: f64) -> Color {
 
 fn render_spend(f: &mut Frame, rect: Rect, snapshot: &FeedSnapshot, app: &App, theme: &Theme) {
     let spend = &snapshot.spend;
-    let block = numbered_block(2, FRAME_NAMES[1], theme);
+    let block = numbered_block(2, FRAME_NAMES[1], theme, false);
     let inner = block.inner(rect);
     f.render_widget(block, rect);
     let rows = Layout::default()
@@ -247,25 +306,37 @@ fn render_spend(f: &mut Frame, rect: Rect, snapshot: &FeedSnapshot, app: &App, t
     f.render_widget(hard_stop, rows[2]);
 }
 
-fn render_machines(f: &mut Frame, rect: Rect, snapshot: &FeedSnapshot, theme: &Theme) {
+fn render_machines(
+    f: &mut Frame,
+    rect: Rect,
+    snapshot: &FeedSnapshot,
+    selected: Option<usize>,
+    theme: &Theme,
+) {
     let lines: Vec<Line> = snapshot
         .machines
         .iter()
         .enumerate()
         .map(|(i, m)| {
-            let accent = theme.machine_accents[i % theme.machine_accents.len()];
+            let is_selected = selected == Some(i);
+            let prefix = if is_selected { "\u{25b6} " } else { "  " };
+            let color = if is_selected {
+                theme.accent
+            } else {
+                theme.machine_accents[i % theme.machine_accents.len()]
+            };
             let login = if m.login_ok { "login ok" } else { "login down" };
             let name = &m.name;
             let lanes_in_use = m.lanes_in_use;
             let capacity = m.capacity;
             Line::styled(
-                format!("{name} {lanes_in_use}/{capacity} {login}"),
-                Style::default().fg(accent),
+                format!("{prefix}{name} {lanes_in_use}/{capacity} {login}"),
+                Style::default().fg(color),
             )
         })
         .collect();
     let paragraph = Paragraph::new(lines)
-        .block(numbered_block(3, FRAME_NAMES[2], theme))
+        .block(numbered_block(3, FRAME_NAMES[2], theme, selected.is_some()))
         .style(base_style(theme));
     f.render_widget(paragraph, rect);
 }
@@ -305,7 +376,7 @@ fn render_lanes(f: &mut Frame, rect: Rect, app: &App, theme: &Theme) {
     let cells = lane_cells(app.lanes_history());
     let data: Vec<u64> = cells.iter().map(|&n| u64::from(n)).collect();
     let sparkline = Sparkline::default()
-        .block(numbered_block(4, FRAME_NAMES[3], theme))
+        .block(numbered_block(4, FRAME_NAMES[3], theme, false))
         .data(&data)
         .style(Style::default().fg(theme.accent).bg(theme.bg));
     f.render_widget(sparkline, rect);
@@ -323,45 +394,71 @@ fn run_color(theme: &Theme, run: &Run) -> Color {
     }
 }
 
-fn render_runs(f: &mut Frame, rect: Rect, snapshot: &FeedSnapshot, theme: &Theme) {
+fn render_runs(
+    f: &mut Frame,
+    rect: Rect,
+    snapshot: &FeedSnapshot,
+    selected: Option<usize>,
+    theme: &Theme,
+) {
     let lines: Vec<Line> = snapshot
         .runs
         .iter()
-        .map(|r| {
-            let color = run_color(theme, r);
+        .enumerate()
+        .map(|(i, r)| {
+            let is_selected = selected == Some(i);
+            let prefix = if is_selected { "\u{25b6} " } else { "  " };
+            let color = if is_selected {
+                theme.accent
+            } else {
+                run_color(theme, r)
+            };
             let run = &r.run;
             let machine = &r.machine;
             let phase = &r.phase;
             let node = &r.node;
             let cost = r.cost;
             Line::styled(
-                format!("{run} {machine} {phase} {node} {cost:.2}"),
+                format!("{prefix}{run} {machine} {phase} {node} {cost:.2}"),
                 Style::default().fg(color),
             )
         })
         .collect();
     let paragraph = Paragraph::new(lines)
-        .block(numbered_block(5, FRAME_NAMES[4], theme))
+        .block(numbered_block(5, FRAME_NAMES[4], theme, selected.is_some()))
         .style(base_style(theme));
     f.render_widget(paragraph, rect);
 }
 
-fn render_queue(f: &mut Frame, rect: Rect, snapshot: &FeedSnapshot, theme: &Theme) {
+fn render_queue(
+    f: &mut Frame,
+    rect: Rect,
+    snapshot: &FeedSnapshot,
+    selected: Option<usize>,
+    theme: &Theme,
+) {
     let lines: Vec<Line> = snapshot
         .queue
         .iter()
-        .map(|q| {
+        .enumerate()
+        .map(|(i, q)| {
+            let is_selected = selected == Some(i);
+            let prefix = if is_selected { "\u{25b6} " } else { "  " };
             let initiative = &q.initiative;
             let phases_landed = q.phases_landed;
             let phases_total = q.phases_total;
             let current_phase = &q.current_phase;
-            Line::from(format!(
-                "{initiative} {phases_landed}/{phases_total} {current_phase}"
-            ))
+            let text =
+                format!("{prefix}{initiative} {phases_landed}/{phases_total} {current_phase}");
+            if is_selected {
+                Line::styled(text, Style::default().fg(theme.accent))
+            } else {
+                Line::from(text)
+            }
         })
         .collect();
     let paragraph = Paragraph::new(lines)
-        .block(numbered_block(6, FRAME_NAMES[5], theme))
+        .block(numbered_block(6, FRAME_NAMES[5], theme, selected.is_some()))
         .style(base_style(theme));
     f.render_widget(paragraph, rect);
 }
@@ -389,7 +486,7 @@ fn render_inbox(f: &mut Frame, rect: Rect, snapshot: &FeedSnapshot, theme: &Them
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::{AppPage, ThemeId};
+    use crate::app::{AppPage, Focus, ThemeId};
     use ratatui::{Terminal, backend::TestBackend};
 
     const FIXTURE: &str = include_str!("../../tests/fixtures/dash_feed_v1.json");
@@ -477,5 +574,70 @@ mod tests {
                 assert!(rect.is_some());
             }
         }
+    }
+
+    /// A snapshot with two runs (`r0`, `r1`), for `row_at`'s tests below.
+    fn app_with_two_runs() -> App {
+        let json = r#"{"schema":1,"at":"2026-09-29T00:00:00Z","chair":{"holder":"h","host":"h","epoch":1,"liveness":"live","beat_age_s":0},"spend":{"five_hour_fraction":0.0,"five_hour_source":"meter","weekly_fraction":0.0,"weekly_source":"meter","hard_stop_fraction":0.0,"five_hour_resets_at":"2026-09-29T00:00:00Z","weekly_resets_at":"2026-09-29T00:00:00Z"},"machines":[{"name":"m0","state":"active","lanes_in_use":0,"capacity":3,"login_ok":true,"login_checked_at":"2026-09-29T00:00:00Z","beat_age_s":0,"checkouts":{}}],"runs":[{"run":"r0","machine":"m0","phase":"p","node":"n","attempt":1,"turns":1,"cost":0.0,"verdict":"ok","status":"running"},{"run":"r1","machine":"m0","phase":"p","node":"n","attempt":1,"turns":1,"cost":0.0,"verdict":"ok","status":"running"}],"queue":[],"inbox":[],"watch":[]}"#;
+        let snapshot = crate::feed::parse_snapshot(json).expect("literal snapshot should parse");
+        let mut app = App::default();
+        app.apply_snapshot(snapshot);
+        app
+    }
+
+    #[test]
+    fn row_at_locates_the_runs_frames_second_row() {
+        let app = app_with_two_runs();
+        let area = Rect::new(0, 0, 120, 40);
+        let runs_rect = frame_rects(area, &app)[4].expect("runs frame is visible");
+        let (focus, row) = row_at(area, &app, runs_rect.x + 1, runs_rect.y + 2)
+            .expect("the second row should hit");
+        assert_eq!(focus, Focus::Runs);
+        assert_eq!(row, 1);
+    }
+
+    #[test]
+    fn row_at_misses_a_point_outside_every_rect() {
+        let app = app_with_two_runs();
+        let area = Rect::new(0, 0, 120, 40);
+        assert_eq!(row_at(area, &app, 119, 39), None);
+    }
+
+    /// The runs frame's selected row and its border are both drawn in `theme.accent` when the
+    /// runs list is focused: read straight from `terminal.backend().buffer()` cells, since a
+    /// text-only snapshot cannot show a style. `app_with_fixture` defaults to `Focus::Runs`
+    /// with `selected() == 0`, so the fixture's one run is both focused and selected.
+    fn runs_row_and_border_fg(theme_id: ThemeId) -> (Color, Color) {
+        let app = app_with_fixture();
+        assert_eq!(app.focus(), Focus::Runs);
+        assert_eq!(app.selected(), 0);
+        let theme = crate::theme::resolve(theme_id);
+        let area = Rect::new(0, 0, 120, 40);
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|f| render(f, &app, &theme))
+            .expect("draw should not fail");
+        let runs_rect = frame_rects(area, &app)[4].expect("runs frame is visible");
+        let buffer = terminal.backend().buffer();
+        let row_fg = buffer[(runs_rect.x + 1, runs_rect.y + 1)].fg;
+        let border_fg = buffer[(runs_rect.x, runs_rect.y)].fg;
+        (row_fg, border_fg)
+    }
+
+    #[test]
+    fn the_runs_frames_selected_row_and_border_are_drawn_in_the_regatta_accent() {
+        let (row_fg, border_fg) = runs_row_and_border_fg(ThemeId::Regatta);
+        let accent = crate::theme::resolve(ThemeId::Regatta).accent;
+        assert_eq!(row_fg, accent);
+        assert_eq!(border_fg, accent);
+    }
+
+    #[test]
+    fn the_runs_frames_selected_row_and_border_are_drawn_in_the_harbor_light_accent() {
+        let (row_fg, border_fg) = runs_row_and_border_fg(ThemeId::HarborLight);
+        let accent = crate::theme::resolve(ThemeId::HarborLight).accent;
+        assert_eq!(row_fg, accent);
+        assert_eq!(border_fg, accent);
     }
 }
