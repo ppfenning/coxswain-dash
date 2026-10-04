@@ -7,6 +7,9 @@ mod config;
 mod detail;
 mod feed;
 mod input;
+// A later task wires the pty session into the chair panel.
+#[allow(dead_code)]
+mod pty;
 mod theme;
 mod ui;
 

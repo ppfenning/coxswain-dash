@@ -21,6 +21,8 @@ pub struct FeedSnapshot {
     pub queue: Vec<QueueEntry>,
     pub inbox: Vec<InboxEntry>,
     pub watch: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub decisions: Vec<Decision>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -30,6 +32,18 @@ pub struct Chair {
     pub epoch: u32,
     pub liveness: String,
     pub beat_age_s: u64,
+    #[serde(default)]
+    pub session: String,
+}
+
+/// An open question for the chair. `asked_at` is RFC 3339 UTC, as `ui::local_time` expects.
+#[derive(Debug, Deserialize)]
+pub struct Decision {
+    pub id: String,
+    pub question: String,
+    pub options: Vec<String>,
+    pub context: String,
+    pub asked_at: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -122,6 +136,13 @@ mod tests {
         assert_eq!(snapshot.chair.host, "omarchy");
         assert_eq!(snapshot.runs[0].node, "build");
         assert_eq!(snapshot.inbox[0].kind, "needs_chair");
+    }
+
+    #[test]
+    fn parse_snapshot_reads_chair_session_and_decisions() {
+        let snapshot = parse_snapshot(FIXTURE).expect("fixture should parse");
+        assert_eq!(snapshot.chair.session, "d2820a82");
+        assert_eq!(snapshot.decisions.len(), 1);
     }
 
     #[test]
