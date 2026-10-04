@@ -4,7 +4,9 @@
 //! [`frame_rects`] is the pure layout core; [`render`] calls it so the rects it draws into and
 //! the rects a mouse click is tested against never disagree.
 
-use chrono::DateTime;
+use std::iter::once;
+
+use chrono::{DateTime, FixedOffset};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
@@ -14,8 +16,13 @@ use ratatui::{
 };
 
 use crate::app::{App, Focus};
-use crate::feed::{FeedSnapshot, Run};
+use crate::feed::{Chair, FeedSnapshot, Run};
 use crate::theme::Theme;
+
+use super::chair_card::{
+    CountRole, Freshness, TICK_INTERVAL_S, beat_freshness, counts_parts, doing_line, idle_line,
+    last_tick_line, wrap_status,
+};
 
 /// Titles for numbered frames 1-6, in slot order.
 const FRAME_NAMES: [&str; 6] = [
@@ -247,19 +254,110 @@ fn render_frame(
     }
 }
 
+/// Whole seconds from `since` to `at`, both RFC 3339. `None` when either does not parse;
+/// a `since` after `at` counts as zero.
+fn seconds_between(at: &str, since: &str) -> Option<u64> {
+    let at = DateTime::parse_from_rfc3339(at).ok()?;
+    let since = DateTime::parse_from_rfc3339(since).ok()?;
+    Some((at - since).num_seconds().max(0) as u64)
+}
+
+/// The liveness word's colour: `live` is done-green, anything else is failed-red.
+fn liveness_color(liveness: &str, theme: &Theme) -> Color {
+    if liveness == "live" {
+        theme.status_done
+    } else {
+        theme.status_failed
+    }
+}
+
+fn count_style(role: CountRole, theme: &Theme) -> Style {
+    match role {
+        CountRole::Plain => base_style(theme),
+        CountRole::Failure => base_style(theme).fg(theme.status_failed),
+        CountRole::NeedsChair => base_style(theme).fg(theme.status_waiting),
+    }
+}
+
+/// The chair card, top to bottom. `at` is the feed's own RFC 3339 timestamp: every age is
+/// measured from it, so no clock is read. The theme has no warning role, so a stale beat age
+/// is drawn in `meter_high`.
+fn chair_lines(
+    chair: &Chair,
+    at: &str,
+    offset: FixedOffset,
+    inner_width: usize,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
+    let holder_line = Line::from(vec![
+        Span::raw(format!("{} {} ", chair.holder, chair.host)),
+        Span::styled(
+            chair.liveness.clone(),
+            Style::default().fg(liveness_color(&chair.liveness, theme)),
+        ),
+    ]);
+    let beat_style = match beat_freshness(chair.beat_age_s, TICK_INTERVAL_S) {
+        Freshness::Stale => Style::default().fg(theme.meter_high),
+        Freshness::Fresh => Style::default(),
+    };
+    let beat_line = Line::from(Span::styled(
+        format!("beat age: {}s", chair.beat_age_s),
+        beat_style,
+    ));
+    let action_line = Line::from(match &chair.current_action {
+        Some(a) => doing_line(
+            &a.kind,
+            &a.target,
+            seconds_between(at, &a.since).unwrap_or(0),
+        ),
+        None => idle_line(),
+    });
+    let tick_line = chair.last_tick_at.as_deref().map(|t| {
+        let shown = super::local_time(t, offset);
+        Line::from(match seconds_between(at, t) {
+            Some(age) => last_tick_line(&shown, age),
+            None => format!("last tick {shown}"),
+        })
+    });
+    let today = &chair.today;
+    let counts_line = Line::from(
+        counts_parts(
+            today.lands,
+            today.launches,
+            today.refused_or_failed,
+            today.needs_chair_open,
+        )
+        .into_iter()
+        .enumerate()
+        .flat_map(|(i, (text, role))| {
+            let sep = (i > 0).then(|| Span::raw("  "));
+            sep.into_iter()
+                .chain(once(Span::styled(text, count_style(role, theme))))
+        })
+        .collect::<Vec<Span<'static>>>(),
+    );
+    let status_lines = wrap_status(chair.last_status.as_deref().unwrap_or(""), inner_width)
+        .into_iter()
+        .map(Line::from);
+    [holder_line, beat_line, action_line]
+        .into_iter()
+        .chain(tick_line)
+        .chain(once(counts_line))
+        .chain(status_lines)
+        .collect()
+}
+
 fn render_chair(f: &mut Frame, rect: Rect, snapshot: &FeedSnapshot, app: &App, theme: &Theme) {
-    let chair = &snapshot.chair;
-    let at = super::local_time(&snapshot.at, app.utc_offset());
-    let lines = vec![
-        Line::from(format!("as of {at}")),
-        Line::from(format!("holder: {}", chair.holder)),
-        Line::from(format!("host: {}", chair.host)),
-        Line::from(format!("liveness: {}", chair.liveness)),
-        Line::from(format!("beat age: {}s", chair.beat_age_s)),
-    ];
-    let paragraph = Paragraph::new(lines)
-        .block(numbered_block(1, FRAME_NAMES[0], theme, false))
-        .style(base_style(theme));
+    let block = numbered_block(1, FRAME_NAMES[0], theme, false);
+    let inner_width = usize::from(block.inner(rect).width);
+    let lines = chair_lines(
+        &snapshot.chair,
+        &snapshot.at,
+        app.utc_offset(),
+        inner_width,
+        theme,
+    );
+    let paragraph = Paragraph::new(lines).block(block).style(base_style(theme));
     f.render_widget(paragraph, rect);
 }
 
@@ -496,6 +594,63 @@ mod tests {
         let mut app = App::new(AppPage::Regatta, ThemeId::Regatta);
         app.apply_snapshot(snapshot);
         app
+    }
+
+    /// A whole feed around one literal `chair` object. The feed's `at` is 2026-09-29T00:00:00Z.
+    fn chair_feed(chair: &str) -> String {
+        format!(
+            r#"{{"schema": 1, "at": "2026-09-29T00:00:00Z", "chair": {chair},
+"spend": {{"five_hour_fraction": 0.1, "five_hour_source": "meter", "weekly_fraction": 0.2, "weekly_source": "meter", "hard_stop_fraction": 0.9, "five_hour_resets_at": "2026-09-29T02:00:00Z", "weekly_resets_at": "2026-10-04T04:00:00Z"}},
+"machines": [], "runs": [], "queue": [], "inbox": [], "watch": []}}"#
+        )
+    }
+
+    fn draw_chair(chair: &str) -> Terminal<TestBackend> {
+        let snapshot =
+            crate::feed::parse_snapshot(&chair_feed(chair)).expect("literal feed should parse");
+        let app = App::new(AppPage::Regatta, ThemeId::Regatta);
+        let theme = crate::theme::resolve(ThemeId::Regatta);
+        let mut terminal = Terminal::new(TestBackend::new(50, 12)).expect("terminal");
+        terminal
+            .draw(|f| render_chair(f, f.area(), &snapshot, &app, &theme))
+            .expect("draw should not fail");
+        terminal
+    }
+
+    const MID_LAND: &str = r#"{"holder": "chair@omarchy:12345", "host": "omarchy", "epoch": 7, "liveness": "live", "beat_age_s": 4, "last_tick_at": "2026-09-28T23:59:00Z", "last_status": "chair 09-28 19:59 EDT | landed 2, launched 1, waiting on api-runners review before the next land", "current_action": {"kind": "land_phase", "target": "api-runners/runner-parity", "since": "2026-09-28T23:58:30Z"}, "today": {"lands": 2, "launches": 1, "refused_or_failed": 0, "needs_chair_open": 0}}"#;
+
+    const IDLE: &str = r#"{"holder": "chair@omarchy:12345", "host": "omarchy", "epoch": 7, "liveness": "live", "beat_age_s": 20, "last_tick_at": "2026-09-28T23:58:00Z", "last_status": "chair idle", "current_action": null, "today": {"lands": 1, "launches": 0, "refused_or_failed": 3, "needs_chair_open": 1}}"#;
+
+    const STALE: &str = r#"{"holder": "chair@omarchy:12345", "host": "omarchy", "epoch": 7, "liveness": "stale", "beat_age_s": 130, "last_tick_at": "09-28 19:59 EDT", "last_status": "no tick since the beat went quiet", "current_action": null, "today": {"lands": 0, "launches": 0, "refused_or_failed": 0, "needs_chair_open": 0}}"#;
+
+    #[test]
+    fn chair_card_mid_land() {
+        let terminal = draw_chair(MID_LAND);
+        insta::assert_snapshot!(terminal.backend().to_string());
+    }
+
+    #[test]
+    fn chair_card_idle_between_ticks() {
+        let terminal = draw_chair(IDLE);
+        insta::assert_snapshot!(terminal.backend().to_string());
+    }
+
+    #[test]
+    fn chair_card_stale_beat() {
+        let terminal = draw_chair(STALE);
+        insta::assert_snapshot!(terminal.backend().to_string());
+        let warning = crate::theme::resolve(ThemeId::Regatta).meter_high;
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(1, 2)].symbol(), "b");
+        assert_eq!(buffer[(1, 2)].fg, warning);
+        assert_eq!(buffer[(10, 2)].fg, warning);
+    }
+
+    #[test]
+    fn a_fresh_beat_age_is_not_drawn_in_the_warning_colour() {
+        let terminal = draw_chair(MID_LAND);
+        let warning = crate::theme::resolve(ThemeId::Regatta).meter_high;
+        assert_ne!(terminal.backend().buffer()[(1, 2)].fg, warning);
     }
 
     #[test]

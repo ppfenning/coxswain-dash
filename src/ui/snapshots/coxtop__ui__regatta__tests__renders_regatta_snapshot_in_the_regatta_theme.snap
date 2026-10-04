@@ -3,12 +3,12 @@ source: src/ui/regatta.rs
 expression: terminal.backend().to_string()
 ---
 "╭1 chair───────────────────────────────────────────────────╮╭2 spend───────────────────────────────────────────────────╮"
-"│as of 00:00                                               ││█████████         5h 16% (resets 02:00)                   │"
-"│holder: chair@omarchy:12345                               ││██████████████████wk 35% (resets 04:00)                   │"
-"│host: omarchy                                             ││hard stop marked at 93%                                   │"
-"│liveness: live                                            ││                                                          │"
-"│beat age: 4s                                              ││                                                          │"
-"│                                                          ││                                                          │"
+"│chair@omarchy:12345 omarchy live                          ││█████████         5h 16% (resets 02:00)                   │"
+"│beat age: 4s                                              ││██████████████████wk 35% (resets 04:00)                   │"
+"│doing: land dash-feed/p2-feed · 10s                       ││hard stop marked at 93%                                   │"
+"│last tick 09-28 19:59 EDT                                 ││                                                          │"
+"│lands 2  launches 1  failures 1  needs chair 1            ││                                                          │"
+"│chair 09-28 19:59 EDT | landed 2, launched 1              ││                                                          │"
 "│                                                          ││                                                          │"
 "│                                                          ││                                                          │"
 "│                                                          ││                                                          │"

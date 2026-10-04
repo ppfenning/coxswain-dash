@@ -1,0 +1,16 @@
+---
+source: src/ui/regatta.rs
+expression: terminal.backend().to_string()
+---
+"╭1 chair─────────────────────────────────────────╮"
+"│chair@omarchy:12345 omarchy live                │"
+"│beat age: 20s                                   │"
+"│idle between ticks                              │"
+"│last tick 23:58 · 2m ago                        │"
+"│lands 1  launches 0  failures 3  needs chair 1  │"
+"│chair idle                                      │"
+"│                                                │"
+"│                                                │"
+"│                                                │"
+"│                                                │"
+"╰────────────────────────────────────────────────╯"
