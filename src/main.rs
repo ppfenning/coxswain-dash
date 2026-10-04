@@ -3,7 +3,11 @@
 //! save the page and theme and exit.
 
 mod app;
+// A later task wires the chair panel into the app.
+#[allow(dead_code)]
+mod chair_panel;
 mod config;
+mod decision_card;
 mod detail;
 mod feed;
 mod input;

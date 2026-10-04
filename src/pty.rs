@@ -43,10 +43,30 @@ struct Running {
     output: Receiver<Vec<u8>>,
 }
 
+/// Kills a spawned child, then waits so the process is reaped and not left defunct.
+/// `None` means there was nothing to stop.
+fn reap(running: Option<Running>) -> Result<(), PtyError> {
+    let mut running = running.ok_or_else(not_spawned)?;
+    let killed = running.child.kill().map_err(|e| PtyError(e.to_string()));
+    // A failed kill can leave a live child, and `wait` would then block the UI thread.
+    // `try_wait` still reaps a child that has already exited.
+    let _ = match killed {
+        Ok(()) => running.child.wait().map(Some),
+        Err(_) => running.child.try_wait(),
+    };
+    killed
+}
+
 /// A `PtySession` backed by the platform pty.
 #[derive(Default)]
 pub struct RealPty {
     running: Option<Running>,
+}
+
+impl Drop for RealPty {
+    fn drop(&mut self) {
+        let _ = reap(self.running.take());
+    }
 }
 
 impl RealPty {
@@ -57,16 +77,13 @@ impl RealPty {
 
 impl PtySession for RealPty {
     fn spawn(&mut self, argv: &[String], rows: u16, cols: u16) -> Result<(), PtyError> {
+        // A second spawn must not orphan the first child.
+        let _ = reap(self.running.take());
         if argv.is_empty() {
             return Err(PtyError("argv is empty".to_string()));
         }
         let pair = native_pty_system()
             .openpty(size(rows, cols))
-            .map_err(|e| PtyError(e.to_string()))?;
-        let command = CommandBuilder::from_argv(argv.iter().map(OsString::from).collect());
-        let child = pair
-            .slave
-            .spawn_command(command)
             .map_err(|e| PtyError(e.to_string()))?;
         let mut reader = pair
             .master
@@ -75,6 +92,12 @@ impl PtySession for RealPty {
         let writer = pair
             .master
             .take_writer()
+            .map_err(|e| PtyError(e.to_string()))?;
+        // The child spawns last. A failure after it would drop the child unkilled and unreaped.
+        let command = CommandBuilder::from_argv(argv.iter().map(OsString::from).collect());
+        let child = pair
+            .slave
+            .spawn_command(command)
             .map_err(|e| PtyError(e.to_string()))?;
         let (tx, output) = mpsc::channel();
         thread::spawn(move || {
@@ -119,8 +142,7 @@ impl PtySession for RealPty {
     }
 
     fn kill(&mut self) -> Result<(), PtyError> {
-        let running = self.running.as_mut().ok_or_else(not_spawned)?;
-        running.child.kill().map_err(|e| PtyError(e.to_string()))
+        reap(self.running.take())
     }
 }
 
