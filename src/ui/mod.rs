@@ -1,6 +1,7 @@
 //! Dispatches rendering to the current page's module. No layout logic lives here; each page
 //! module owns its own `render`.
 
+mod chair_card;
 pub mod initiative_drill;
 pub mod machine_drill;
 mod regatta;
