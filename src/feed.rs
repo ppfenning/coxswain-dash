@@ -134,19 +134,91 @@ pub fn parse_snapshot(line: &str) -> Result<FeedSnapshot, serde_json::Error> {
     serde_json::from_str(line)
 }
 
-// edge
-/// Spawns `cox dash --feed` (with `--interval` when `interval_secs` is `Some`) with stdout
-/// piped. The caller reads the child's stdout; this function only starts the process.
-pub fn spawn_feed(interval_secs: Option<u64>) -> std::process::Child {
+/// What the feed reader delivers to the app: a parsed snapshot, or a one-line failure.
+#[derive(Debug)]
+pub enum FeedMessage {
+    Snapshot(Box<FeedSnapshot>),
+    Error(String),
+}
+
+/// The last line that is not blank after trimming, or `None` when there is none.
+pub fn last_nonempty_line(text: &str) -> Option<String> {
+    text.lines()
+        .map(str::trim)
+        .rfind(|line| !line.is_empty())
+        .map(str::to_owned)
+}
+
+/// The error text for a finished feed. `code` is `Some(0)` on success and `None` when the
+/// child died without an exit code. Stderr text wins, even on a zero exit.
+pub fn exit_error(code: Option<i32>, stderr_last: Option<String>) -> Option<String> {
+    match (stderr_last, code) {
+        (Some(line), _) => Some(line),
+        (None, Some(0)) => None,
+        (None, Some(n)) => Some(format!("feed exited with status {n}")),
+        (None, None) => Some("feed exited without a status".to_owned()),
+    }
+}
+
+/// The `cox dash --feed` command, with `--interval` when `interval_secs` is `Some`.
+pub fn feed_command(interval_secs: Option<u64>) -> std::process::Command {
     let mut command = std::process::Command::new("cox");
     command.arg("dash").arg("--feed");
     if let Some(secs) = interval_secs {
         command.arg("--interval").arg(secs.to_string());
     }
     command
+}
+
+// edge
+/// Spawns `command` with stdout and stderr piped, so stderr is never inherited. Taking the
+/// command lets tests substitute a stub for the real feed.
+pub fn spawn_command(mut command: std::process::Command) -> std::process::Child {
+    command
         .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
         .spawn()
-        .expect("failed to spawn `cox dash --feed`")
+        .expect("failed to spawn the feed command")
+}
+
+// edge
+/// Spawns `cox dash --feed` with stdout and stderr piped. The caller hands the child to
+/// [`read_feed`]; this function only starts the process.
+pub fn spawn_feed(interval_secs: Option<u64>) -> std::process::Child {
+    spawn_command(feed_command(interval_secs))
+}
+
+// edge
+/// Reads the child to the end, sending a `Snapshot` per good stdout line. Lines that do not
+/// parse are skipped. Once stdout closes, sends one `Error` if stderr had text or the exit
+/// was not a success. The error always follows every snapshot.
+pub fn read_feed(mut child: std::process::Child, tx: std::sync::mpsc::Sender<FeedMessage>) {
+    use std::io::{BufRead, Read};
+
+    let stderr = child.stderr.take();
+    let stderr_reader = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        if let Some(mut pipe) = stderr {
+            let _ = pipe.read_to_end(&mut bytes);
+        }
+        String::from_utf8_lossy(&bytes).into_owned()
+    });
+
+    if let Some(stdout) = child.stdout.take() {
+        std::io::BufReader::new(stdout)
+            .lines()
+            .map_while(Result::ok)
+            .filter_map(|line| parse_snapshot(&line).ok())
+            .for_each(|snapshot| {
+                let _ = tx.send(FeedMessage::Snapshot(Box::new(snapshot)));
+            });
+    }
+
+    let stderr_text = stderr_reader.join().unwrap_or_default();
+    let code = child.wait().ok().and_then(|status| status.code());
+    if let Some(text) = exit_error(code, last_nonempty_line(&stderr_text)) {
+        let _ = tx.send(FeedMessage::Error(text));
+    }
 }
 
 #[cfg(test)]
@@ -227,5 +299,63 @@ mod tests {
     #[test]
     fn parse_snapshot_rejects_malformed_json() {
         assert!(parse_snapshot("{ not json").is_err());
+    }
+
+    fn run_stub(script: &str, line: &str) -> Vec<FeedMessage> {
+        let mut command = std::process::Command::new("sh");
+        command.args(["-c", script]).env("LINE", line);
+        let (tx, rx) = std::sync::mpsc::channel();
+        read_feed(spawn_command(command), tx);
+        rx.iter().collect()
+    }
+
+    #[test]
+    fn last_nonempty_line_skips_trailing_blank_lines() {
+        let text = "Traceback:\n  File x\nValueError: boom\n\n  \n";
+        assert_eq!(
+            last_nonempty_line(text),
+            Some("ValueError: boom".to_owned())
+        );
+        assert_eq!(last_nonempty_line(" \n\n"), None);
+    }
+
+    #[test]
+    fn exit_error_prefers_stderr_then_status_then_nothing() {
+        assert_eq!(
+            exit_error(Some(0), Some("warn".to_owned())),
+            Some("warn".to_owned())
+        );
+        assert_eq!(
+            exit_error(Some(3), None),
+            Some("feed exited with status 3".to_owned())
+        );
+        assert_eq!(exit_error(Some(0), None), None);
+        assert!(exit_error(None, None).is_some());
+    }
+
+    #[test]
+    fn read_feed_reports_the_last_traceback_line_as_the_error() {
+        let script = "printf 'Traceback (most recent call last):\\n  File \"x\"\\nValueError: boom\\n' >&2; exit 1";
+        let messages = run_stub(script, "");
+        assert_eq!(messages.len(), 1);
+        assert!(matches!(&messages[0], FeedMessage::Error(text) if text == "ValueError: boom"));
+    }
+
+    #[test]
+    fn read_feed_yields_the_snapshot_first_and_the_error_second() {
+        let value: serde_json::Value = serde_json::from_str(FIXTURE).expect("fixture is json");
+        let line = serde_json::to_string(&value).expect("value serializes");
+        let messages = run_stub("printf '%s\\n' \"$LINE\"; echo boom >&2; exit 1", &line);
+        assert_eq!(messages.len(), 2);
+        assert!(matches!(&messages[0], FeedMessage::Snapshot(s) if s.schema == 1));
+        assert!(matches!(&messages[1], FeedMessage::Error(text) if text == "boom"));
+    }
+
+    #[test]
+    fn read_feed_falls_back_to_the_exit_status_when_stderr_is_empty() {
+        let messages = run_stub("exit 3", "");
+        assert!(
+            matches!(&messages[..], [FeedMessage::Error(text)] if text == "feed exited with status 3")
+        );
     }
 }

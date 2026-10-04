@@ -109,18 +109,92 @@ pub fn parse_detail(line: &str) -> Result<DetailSnapshot, serde_json::Error> {
     serde_json::from_str(line)
 }
 
+/// The result of one detail child: its stdout body, or one line saying why it failed.
+#[derive(Debug, PartialEq)]
+pub enum DetailOutcome {
+    Body(String),
+    Error(String),
+}
+
+/// The last line of `reader` that is non-empty after trimming, trimmed. Reads to the end,
+/// holding one line at a time, so a long traceback costs no more memory than its longest line.
+fn last_nonempty_line(reader: impl std::io::BufRead) -> Option<String> {
+    reader
+        .split(b'\n')
+        .map_while(Result::ok)
+        .map(|bytes| String::from_utf8_lossy(&bytes).trim().to_string())
+        .filter(|line| !line.is_empty())
+        .last()
+}
+
+/// Any stderr line wins over the exit status; `code` is `None` when a signal killed the child.
+pub fn classify(stdout: String, stderr_line: Option<String>, code: Option<i32>) -> DetailOutcome {
+    match (stderr_line, code) {
+        (Some(line), _) => DetailOutcome::Error(line),
+        (None, Some(0)) => DetailOutcome::Body(stdout),
+        (None, Some(n)) => DetailOutcome::Error(format!("detail exited with status {n}")),
+        (None, None) => DetailOutcome::Error("detail terminated by signal".to_string()),
+    }
+}
+
 // edge
-/// Spawns `cox dash --detail <kind> <id>` with stdout piped. The caller reads the child's
-/// stdout; this function only starts the process.
-pub fn spawn_detail(kind: &str, id: &str) -> std::process::Child {
-    std::process::Command::new("cox")
-        .arg("dash")
-        .arg("--detail")
-        .arg(kind)
-        .arg(id)
+/// Builds `cox dash --detail <kind> <id>`. `spawn_piped` sets the pipes.
+fn detail_command(kind: &str, id: &str) -> std::process::Command {
+    let mut cmd = std::process::Command::new("cox");
+    cmd.arg("dash").arg("--detail").arg(kind).arg(id);
+    cmd
+}
+
+// edge
+/// Spawns `cmd` with stdout and stderr piped and drains stderr on its own thread, so a child
+/// that writes more than a pipe buffer to stderr cannot block its stdout. The returned
+/// `Child` has no stderr handle left. Join the handle after stdout ends for the last
+/// non-empty stderr line, and pass it with the exit code to [`classify`].
+pub fn spawn_piped(
+    mut cmd: std::process::Command,
+) -> std::io::Result<(std::process::Child, std::thread::JoinHandle<Option<String>>)> {
+    let mut child = cmd
         .stdout(std::process::Stdio::piped())
-        .spawn()
-        .expect("failed to spawn `cox dash --detail`")
+        .stderr(std::process::Stdio::piped())
+        .spawn()?;
+    let stderr = child.stderr.take();
+    let stderr_line = std::thread::spawn(move || {
+        stderr.and_then(|pipe| last_nonempty_line(std::io::BufReader::new(pipe)))
+    });
+    Ok((child, stderr_line))
+}
+
+// edge
+/// Spawns `cox dash --detail <kind> <id>` with stdout piped and stderr drained. The caller
+/// reads the child's stdout; this function only starts the process.
+pub fn spawn_detail(kind: &str, id: &str) -> std::process::Child {
+    // The stderr line is dropped here until main.rs moves to `spawn_piped` and keeps it.
+    // Dropping the handle detaches the drain thread; it still reads until the child exits.
+    let (child, _stderr_line) =
+        spawn_piped(detail_command(kind, id)).expect("failed to spawn `cox dash --detail`");
+    child
+}
+
+// edge
+/// Runs `cmd` to completion through [`spawn_piped`] and classifies what it produced.
+/// Takes a ready command so tests can substitute a stub for `cox`.
+pub fn run_detail(cmd: std::process::Command) -> DetailOutcome {
+    use std::io::Read;
+
+    match spawn_piped(cmd) {
+        Err(err) => DetailOutcome::Error(format!("failed to spawn detail: {err}")),
+        Ok((mut child, stderr_line)) => {
+            let mut stdout = String::new();
+            if let Some(mut pipe) = child.stdout.take() {
+                let _ = pipe.read_to_string(&mut stdout);
+            }
+            let line = stderr_line.join().unwrap_or(None);
+            match child.wait() {
+                Ok(status) => classify(stdout, line, status.code()),
+                Err(err) => DetailOutcome::Error(format!("failed to wait for detail: {err}")),
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -169,5 +243,95 @@ mod tests {
     #[test]
     fn parse_detail_rejects_malformed_json() {
         assert!(parse_detail("{ not json").is_err());
+    }
+
+    fn sh(script: &str) -> std::process::Command {
+        let mut cmd = std::process::Command::new("sh");
+        cmd.arg("-c").arg(script);
+        cmd
+    }
+
+    #[test]
+    fn last_nonempty_line_takes_the_final_line_and_none_for_blank_input() {
+        assert_eq!(
+            last_nonempty_line(&b"a\nb  \n\n"[..]),
+            Some("b".to_string())
+        );
+        assert_eq!(last_nonempty_line(&b"\n\n"[..]), None);
+    }
+
+    #[test]
+    fn classify_lets_a_stderr_line_win_and_falls_back_to_the_status() {
+        let body = || "{}".to_string();
+        assert_eq!(
+            classify(body(), Some("y".to_string()), Some(0)),
+            DetailOutcome::Error("y".to_string())
+        );
+        assert_eq!(
+            classify(body(), None, Some(3)),
+            DetailOutcome::Error("detail exited with status 3".to_string())
+        );
+        assert_eq!(
+            classify(body(), None, None),
+            DetailOutcome::Error("detail terminated by signal".to_string())
+        );
+        assert_eq!(classify(body(), None, Some(0)), DetailOutcome::Body(body()));
+    }
+
+    #[test]
+    fn run_detail_reports_the_last_traceback_line_and_nothing_else() {
+        let script = "echo 'Traceback (most recent call last):' >&2; \
+                      echo '  File \"dash.py\", line 9, in <module>' >&2; \
+                      echo 'ValueError: boom' >&2; exit 1";
+        assert_eq!(
+            run_detail(sh(script)),
+            DetailOutcome::Error("ValueError: boom".to_string())
+        );
+    }
+
+    #[test]
+    fn run_detail_reports_stderr_even_when_the_child_exits_zero() {
+        assert_eq!(
+            run_detail(sh("echo '{}'; echo 'warning: stale' >&2")),
+            DetailOutcome::Error("warning: stale".to_string())
+        );
+    }
+
+    #[test]
+    fn spawn_piped_drains_stderr_past_the_pipe_buffer_while_stdout_is_read() {
+        use std::io::Read;
+
+        let script = "yes 'noise from stderr' | head -n 60000 >&2; echo done";
+        let (mut child, stderr_line) = spawn_piped(sh(script)).expect("sh should spawn");
+        assert!(child.stderr.is_none());
+        let mut stdout = String::new();
+        child
+            .stdout
+            .take()
+            .expect("stdout should be piped")
+            .read_to_string(&mut stdout)
+            .expect("stdout should read");
+        assert_eq!(stdout, "done\n");
+        assert_eq!(
+            stderr_line.join().expect("drain thread should finish"),
+            Some("noise from stderr".to_string())
+        );
+        assert!(child.wait().expect("child should exit").success());
+    }
+
+    #[test]
+    fn run_detail_falls_back_to_the_exit_status_when_stderr_is_empty() {
+        assert_eq!(
+            run_detail(sh("exit 3")),
+            DetailOutcome::Error("detail exited with status 3".to_string())
+        );
+    }
+
+    #[test]
+    fn run_detail_returns_the_body_on_a_clean_exit() {
+        assert_eq!(
+            run_detail(sh("echo '{}'")),
+            DetailOutcome::Body("{}\n".to_string())
+        );
     }
 }
