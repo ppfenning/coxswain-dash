@@ -1,0 +1,11 @@
+---
+source: src/chair_panel.rs
+assertion_line: 711
+expression: "drawn(&panel, ThemeId::HarborLight)"
+---
+"┌ chair ─────────────────────┐"
+"│no session published        │"
+"│                            │"
+"│                            │"
+"│                            │"
+"└────────────────────────────┘"
