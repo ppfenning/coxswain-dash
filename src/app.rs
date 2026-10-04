@@ -1,10 +1,12 @@
 //! The application's own state: the latest feed snapshot, the current page and theme, the
 //! regatta page's frame visibility and layout preset, the focused list and per-page selection,
-//! and the open detail request. Every method here mutates only `self` and does no I/O; loading
-//! and saving that state to disk lives in [`crate::config`].
+//! the open detail request, and the last feed and detail error lines. Every method here mutates
+//! only `self` and does no I/O; loading and saving that state to disk lives in
+//! [`crate::config`].
 
-// `apply_snapshot` and the `snapshot` accessor aren't exercised yet: the feed-reading loop that
-// calls them lands with the UI wiring, so clippy would otherwise flag them as dead code.
+// `apply_snapshot`, `apply_feed_error`, `apply_detail_error` and their accessors aren't exercised
+// yet: the feed-reading loop that calls them lands with the UI wiring, so clippy would otherwise
+// flag them as dead code.
 #![allow(dead_code)]
 
 use chrono::{DateTime, FixedOffset};
@@ -59,9 +61,44 @@ fn detail_snapshot_id(snap: &DetailSnapshot) -> &str {
     }
 }
 
+/// What the app knows about the feed: whether a snapshot ever arrived, the last error line,
+/// and whether the feed failed before its first snapshot. `failed` is sticky.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct FeedState {
+    has_snapshot: bool,
+    error: Option<String>,
+    failed: bool,
+}
+
+/// One thing the feed reader reports.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum FeedEvent {
+    Snapshot,
+    Error(String),
+}
+
+/// The pure transition. A snapshot clears the error and keeps `failed`; an error records its
+/// text and sets `failed` only when no snapshot has ever arrived.
+fn next_feed_state(old: FeedState, event: FeedEvent) -> FeedState {
+    match event {
+        FeedEvent::Snapshot => FeedState {
+            has_snapshot: true,
+            error: None,
+            failed: old.failed,
+        },
+        FeedEvent::Error(line) => FeedState {
+            has_snapshot: old.has_snapshot,
+            error: Some(line),
+            failed: old.failed || !old.has_snapshot,
+        },
+    }
+}
+
 #[derive(Debug)]
 pub struct App {
     snapshot: Option<FeedSnapshot>,
+    feed: FeedState,
+    detail_error: Option<String>,
     page: AppPage,
     theme: ThemeId,
     regatta_frames_visible: [bool; 6],
@@ -79,6 +116,8 @@ impl Default for App {
     fn default() -> Self {
         App {
             snapshot: None,
+            feed: FeedState::default(),
+            detail_error: None,
             page: AppPage::Regatta,
             theme: ThemeId::Regatta,
             regatta_frames_visible: [true; 6],
@@ -103,6 +142,27 @@ impl App {
 
     pub fn snapshot(&self) -> Option<&FeedSnapshot> {
         self.snapshot.as_ref()
+    }
+
+    /// The last feed error line, or `None` once a good snapshot has cleared it.
+    pub fn feed_error(&self) -> Option<&str> {
+        self.feed.error.as_deref()
+    }
+
+    /// Whether any snapshot ever arrived. False with `feed_failed` false means waiting.
+    pub fn has_snapshot(&self) -> bool {
+        self.feed.has_snapshot
+    }
+
+    /// Whether the feed errored before its first snapshot. Never reverts, so the renderer
+    /// never shows waiting again once this is true.
+    pub fn feed_failed(&self) -> bool {
+        self.feed.failed
+    }
+
+    /// The last detail error line, or `None` once the next detail body has cleared it.
+    pub fn detail_error(&self) -> Option<&str> {
+        self.detail_error.as_deref()
     }
 
     pub fn page(&self) -> AppPage {
@@ -159,6 +219,17 @@ impl App {
             });
         }
         self.snapshot = Some(snap);
+        self.feed = next_feed_state(self.feed.clone(), FeedEvent::Snapshot);
+    }
+
+    /// Records the feed's one-line failure. A held snapshot is kept.
+    pub fn apply_feed_error(&mut self, line: String) {
+        self.feed = next_feed_state(self.feed.clone(), FeedEvent::Error(line));
+    }
+
+    /// Records the detail child's one-line failure.
+    pub fn apply_detail_error(&mut self, line: String) {
+        self.detail_error = Some(line);
     }
 
     pub fn next_page(&mut self) {
@@ -313,12 +384,14 @@ impl App {
     pub fn open_detail(&mut self) {
         if let Some((kind, id)) = self.selected_entity() {
             self.detail = Some((kind, id, None));
+            self.detail_error = None;
         }
     }
 
     /// Closes the open detail, if any; a no-op when none is open.
     pub fn close_detail(&mut self) {
         self.detail = None;
+        self.detail_error = None;
     }
 
     /// Fills in the open detail's snapshot slot, but only when the newly arrived snapshot's id
@@ -328,6 +401,7 @@ impl App {
         if let Some((_, id, slot)) = &mut self.detail {
             if detail_snapshot_id(&snap) == id.as_str() {
                 *slot = Some(snap);
+                self.detail_error = None;
             }
         }
     }
@@ -556,6 +630,130 @@ mod tests {
         app.apply_detail_snapshot(snap);
         let (_, _, slot) = app.detail().expect("detail should still be open");
         assert!(slot.is_none());
+    }
+
+    #[test]
+    fn next_feed_state_keeps_the_snapshot_flag_on_an_error_after_a_snapshot() {
+        let old = FeedState {
+            has_snapshot: true,
+            error: None,
+            failed: false,
+        };
+        let new = next_feed_state(old, FeedEvent::Error("boom".to_string()));
+        assert_eq!(
+            new,
+            FeedState {
+                has_snapshot: true,
+                error: Some("boom".to_string()),
+                failed: false,
+            }
+        );
+    }
+
+    #[test]
+    fn next_feed_state_marks_an_error_before_any_snapshot_as_failed() {
+        let new = next_feed_state(FeedState::default(), FeedEvent::Error("boom".to_string()));
+        assert_eq!(
+            new,
+            FeedState {
+                has_snapshot: false,
+                error: Some("boom".to_string()),
+                failed: true,
+            }
+        );
+    }
+
+    #[test]
+    fn next_feed_state_snapshot_clears_the_error_and_keeps_failed() {
+        let old = FeedState {
+            has_snapshot: false,
+            error: Some("boom".to_string()),
+            failed: true,
+        };
+        let new = next_feed_state(old, FeedEvent::Snapshot);
+        assert_eq!(
+            new,
+            FeedState {
+                has_snapshot: true,
+                error: None,
+                failed: true,
+            }
+        );
+    }
+
+    #[test]
+    fn an_error_after_a_good_snapshot_keeps_that_snapshot() {
+        let mut app = App::default();
+        app.apply_snapshot(make_snapshot("2026-09-29T00:00:00Z", 1));
+        app.apply_feed_error("boom".to_string());
+        assert_eq!(app.feed_error(), Some("boom"));
+        assert!(app.has_snapshot());
+        assert!(!app.feed_failed());
+        assert_eq!(
+            app.snapshot().map(|s| s.at.as_str()),
+            Some("2026-09-29T00:00:00Z")
+        );
+    }
+
+    #[test]
+    fn an_error_before_any_snapshot_marks_the_feed_failed_for_good() {
+        let mut app = App::default();
+        assert!(!app.has_snapshot() && !app.feed_failed());
+        app.apply_feed_error("boom".to_string());
+        assert_eq!(app.feed_error(), Some("boom"));
+        assert!(!app.has_snapshot());
+        assert!(app.feed_failed());
+        app.apply_feed_error("again".to_string());
+        assert!(app.feed_failed());
+        app.apply_snapshot(make_snapshot("2026-09-29T00:00:00Z", 1));
+        assert!(app.feed_failed());
+        assert!(app.has_snapshot());
+    }
+
+    #[test]
+    fn a_good_snapshot_clears_the_feed_error() {
+        let mut app = App::default();
+        app.apply_feed_error("boom".to_string());
+        app.apply_snapshot(make_snapshot("2026-09-29T00:00:00Z", 1));
+        assert_eq!(app.feed_error(), None);
+    }
+
+    #[test]
+    fn a_detail_error_clears_when_the_matching_detail_body_arrives() {
+        let mut app = App::default();
+        app.apply_snapshot(make_rich_snapshot());
+        app.open_detail();
+        app.apply_detail_error("boom".to_string());
+        assert_eq!(app.detail_error(), Some("boom"));
+        let detail_json = r#"{"kind":"run","schema":1,"at":"2026-09-29T00:00:00Z","run":"r0","machine":"m0","initiative":"i0","phase":"p","steps":[],"stopped_reason":null,"files":[],"last_tool_calls":[],"log_tail":[]}"#;
+        let snap = crate::detail::parse_detail(detail_json).expect("literal detail should parse");
+        app.apply_detail_snapshot(snap);
+        assert_eq!(app.detail_error(), None);
+    }
+
+    #[test]
+    fn a_stale_detail_body_leaves_the_detail_error_in_place() {
+        let mut app = App::default();
+        app.apply_snapshot(make_rich_snapshot());
+        app.open_detail();
+        app.apply_detail_error("boom".to_string());
+        let detail_json = r#"{"kind":"run","schema":1,"at":"2026-09-29T00:00:00Z","run":"not-r0","machine":"m0","initiative":"i0","phase":"p","steps":[],"stopped_reason":null,"files":[],"last_tool_calls":[],"log_tail":[]}"#;
+        let snap = crate::detail::parse_detail(detail_json).expect("literal detail should parse");
+        app.apply_detail_snapshot(snap);
+        assert_eq!(app.detail_error(), Some("boom"));
+    }
+
+    #[test]
+    fn closing_or_reopening_the_detail_drops_its_error() {
+        let mut app = App::default();
+        app.apply_snapshot(make_rich_snapshot());
+        app.open_detail();
+        app.apply_detail_error("boom".to_string());
+        app.close_detail();
+        assert_eq!(app.detail_error(), None);
+        app.apply_detail_error("boom".to_string());
+        app.open_detail();
+        assert_eq!(app.detail_error(), None);
     }
 
     #[test]
