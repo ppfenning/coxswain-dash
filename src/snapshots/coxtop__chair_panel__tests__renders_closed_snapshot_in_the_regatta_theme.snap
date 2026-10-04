@@ -1,0 +1,11 @@
+---
+source: src/chair_panel.rs
+assertion_line: 705
+expression: "drawn(&panel, ThemeId::Regatta)"
+---
+"┌ chair ─────────────────────┐"
+"│no session published        │"
+"│                            │"
+"│                            │"
+"│                            │"
+"└────────────────────────────┘"

@@ -1,0 +1,11 @@
+---
+source: src/chair_panel.rs
+assertion_line: 721
+expression: "drawn(&open_panel(), ThemeId::HarborLight)"
+---
+"┌ chair ─────────────────────┐"
+"│hello                       │"
+"│world                       │"
+"│                            │"
+"│                            │"
+"└────────────────────────────┘"
