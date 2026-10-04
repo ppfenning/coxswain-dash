@@ -1,4 +1,4 @@
 # Slipstream page accent colors, layered on top of the active `Theme`'s bg/fg/dim/status
 # colors. Loaded by `src/ui/slipstream.rs` on each render; not a third `ThemeId` variant.
-accent = "#14213d"
+accent = "#2dd4bf"
 card_border = "#2a9d8f"
