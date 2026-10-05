@@ -1,6 +1,6 @@
 ---
 source: src/ui/slipstream.rs
-assertion_line: 970
+assertion_line: 991
 expression: "snapshot_text(ThemeId::HarborLight, 160, 46)"
 ---
 coxtop                                                                                                                                   Tue Sep 29 00:00 v1.2.3
@@ -48,4 +48,4 @@ R U N S                                                                         
                                                                                                                         │2 lands today · beat 4s               │
                                                                                                                         │                                      │
                                                                                                                         ╰──────────────────────────────────────╯
-j/k select   enter open   esc close   tab page   t theme   q quit   p pause  k kill  m move   : palette
+↑↓ select   enter open   esc close   tab page   t theme   q quit   p pause  k kill  m move   : palette

@@ -17,7 +17,7 @@ use super::regatta::action_hints;
 use super::{CollapsedRun, collapse_runs, count_suffix, end_chip};
 use crate::app::{App, Focus};
 use crate::feed::{Chair, FeedSnapshot, InboxEntry, Machine, Run, Spend};
-use crate::theme::{SlipstreamPalette, Theme, resolve, slipstream_palette, slipstream_palette_for};
+use crate::theme::{SlipstreamPalette, Theme, resolve, slipstream_palette_for};
 
 /// Width of the right rail, in columns.
 pub const RAIL_WIDTH: u16 = 40;
