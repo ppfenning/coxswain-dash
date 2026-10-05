@@ -172,10 +172,13 @@ fn main() {
 
         if let Some(rx) = &detail_rx {
             while let Ok(line) = rx.try_recv() {
-                if let Ok(snapshot) = detail::parse_detail(&line) {
-                    app.apply_detail_snapshot(snapshot);
-                    changed = true;
+                // A line that does not parse replaces the loading paragraph with why,
+                // instead of leaving the drill on loading forever.
+                match detail::parse_detail(&line) {
+                    Ok(snapshot) => app.apply_detail_snapshot(snapshot),
+                    Err(err) => app.apply_detail_error(format!("detail did not parse: {err}")),
                 }
+                changed = true;
             }
         }
 
