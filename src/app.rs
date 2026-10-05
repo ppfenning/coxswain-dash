@@ -42,7 +42,7 @@ pub enum ThemeId {
     HarborLight,
 }
 
-/// Which of the Regatta page's four row lists Up/Down/Enter act on. The Slipstream page has
+/// Which of the Regatta page's five row lists Up/Down/Enter act on. The Slipstream page has
 /// only a runs list, so its focus never leaves `Focus::Runs`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
@@ -50,6 +50,7 @@ pub enum Focus {
     Queue,
     Machines,
     History,
+    Inbox,
 }
 
 /// Which kind of entity an open detail request names, matching the id field the detail
@@ -121,8 +122,9 @@ pub struct App {
     utc_offset: FixedOffset,
     focus: Focus,
     /// Selection index per page (`AppPage::Regatta` then `AppPage::Slipstream`) and per focus
-    /// (`Focus::Runs`, `Focus::Queue`, `Focus::Machines`, `Focus::History` in that order).
-    selected: [[usize; 4]; 2],
+    /// (`Focus::Runs`, `Focus::Queue`, `Focus::Machines`, `Focus::History`, `Focus::Inbox` in
+    /// that order).
+    selected: [[usize; 5]; 2],
     detail: Option<(DetailKind, String, Option<DetailSnapshot>)>,
     chair_panel: ChairPanel<Box<dyn PtySession>>,
     decision_card: DecisionCard,
@@ -151,7 +153,7 @@ impl Default for App {
             lanes_history: Vec::new(),
             utc_offset: FixedOffset::east_opt(0).expect("zero is a valid UTC offset"),
             focus: Focus::Runs,
-            selected: [[0; 4]; 2],
+            selected: [[0; 5]; 2],
             detail: None,
             chair_panel: ChairPanel::new(Box::new(RealPty::new())),
             decision_card: DecisionCard::new(),
@@ -393,15 +395,17 @@ impl App {
             Focus::Queue => 1,
             Focus::Machines => 2,
             Focus::History => 3,
+            Focus::Inbox => 4,
         }
     }
 
-    /// The current page's, current focus's selection index. The history row is clamped to the
-    /// held history, so a feed refresh that shortens it never leaves the selection past the end.
+    /// The current page's, current focus's selection index. The history and inbox rows are
+    /// clamped to the held list, so a feed refresh that shortens it never leaves the selection
+    /// past the end.
     pub fn selected(&self) -> usize {
         let idx = self.selected[self.page_index()][self.focus_index()];
         match self.focus() {
-            Focus::History => self.clamp_to_list(idx),
+            Focus::History | Focus::Inbox => self.clamp_to_list(idx),
             _ => idx,
         }
     }
@@ -415,27 +419,30 @@ impl App {
         self.detail.as_ref()
     }
 
-    /// Right cycles focus Runs -> Queue -> Machines -> History -> Runs on the Regatta page; a
-    /// no-op on the Slipstream page, which only ever has a runs list to focus.
+    /// Right cycles focus Runs -> Queue -> Machines -> History -> Inbox -> Runs on the Regatta
+    /// page; a no-op on the Slipstream page, which only ever has a runs list to focus.
+    /// Inbox follows History, not Machines, because History already sits after Machines.
     pub fn cycle_focus_next(&mut self) {
         if self.page == AppPage::Regatta {
             self.focus = match self.focus {
                 Focus::Runs => Focus::Queue,
                 Focus::Queue => Focus::Machines,
                 Focus::Machines => Focus::History,
-                Focus::History => Focus::Runs,
+                Focus::History => Focus::Inbox,
+                Focus::Inbox => Focus::Runs,
             };
         }
     }
 
-    /// Left cycles focus the other way around the same four stops; a no-op on Slipstream.
+    /// Left cycles focus the other way around the same five stops; a no-op on Slipstream.
     pub fn cycle_focus_prev(&mut self) {
         if self.page == AppPage::Regatta {
             self.focus = match self.focus {
-                Focus::Runs => Focus::History,
+                Focus::Runs => Focus::Inbox,
                 Focus::Queue => Focus::Runs,
                 Focus::Machines => Focus::Queue,
                 Focus::History => Focus::Machines,
+                Focus::Inbox => Focus::History,
             };
         }
     }
@@ -450,6 +457,7 @@ impl App {
             Focus::Queue => snap.queue.len(),
             Focus::Machines => snap.machines.len(),
             Focus::History => snap.history.len(),
+            Focus::Inbox => snap.inbox.len(),
         }
     }
 
@@ -506,6 +514,22 @@ impl App {
                 .history
                 .get(idx)
                 .map(|h| (DetailKind::Run, h.run.clone())),
+            // Inbox rows have no drill-down.
+            Focus::Inbox => None,
+        }
+    }
+
+    /// The `target` of the focused inbox row (the feed carries no separate id), or `None` when
+    /// the focus is not the inbox or the inbox is empty.
+    pub fn selected_inbox_id(&self) -> Option<String> {
+        match self.focus() {
+            Focus::Inbox => self
+                .snapshot
+                .as_ref()?
+                .inbox
+                .get(self.selected())
+                .map(|e| e.target.clone()),
+            _ => None,
         }
     }
 
@@ -958,9 +982,125 @@ mod tests {
         app.cycle_focus_next();
         assert_eq!(app.focus(), Focus::History);
         app.cycle_focus_next();
+        assert_eq!(app.focus(), Focus::Inbox);
+        app.cycle_focus_next();
         assert_eq!(app.focus(), Focus::Runs);
         app.cycle_focus_prev();
+        assert_eq!(app.focus(), Focus::Inbox);
+        app.cycle_focus_prev();
         assert_eq!(app.focus(), Focus::History);
+    }
+
+    /// A snapshot whose inbox has `targets.len()` rows, one per target.
+    fn snapshot_with_inbox(targets: &[&str]) -> FeedSnapshot {
+        let rows = targets
+            .iter()
+            .map(|t| format!(r#"{{"kind":"needs_chair","target":"{t}","reason":"r"}}"#))
+            .collect::<Vec<_>>()
+            .join(",");
+        let json = format!(
+            r#"{{"schema":1,"at":"2026-09-29T00:00:00Z","chair":{{"holder":"h","host":"h","epoch":1,"liveness":"live","beat_age_s":0}},"spend":{{"five_hour_fraction":0.0,"five_hour_source":"meter","weekly_fraction":0.0,"weekly_source":"meter","hard_stop_fraction":0.0,"five_hour_resets_at":"2026-09-29T00:00:00Z","weekly_resets_at":"2026-09-29T00:00:00Z"}},"machines":[],"runs":[],"queue":[],"inbox":[{rows}],"watch":[]}}"#
+        );
+        crate::feed::parse_snapshot(&json).expect("literal snapshot should parse")
+    }
+
+    fn app_on_inbox(snap: Option<FeedSnapshot>) -> App {
+        let mut app = App::new(AppPage::Regatta, ThemeId::Regatta);
+        if let Some(snap) = snap {
+            app.apply_snapshot(snap);
+        }
+        for _ in 0..4 {
+            app.cycle_focus_next();
+        }
+        app
+    }
+
+    #[test]
+    fn right_from_machines_reaches_history_then_inbox_then_runs() {
+        let mut app = App::new(AppPage::Regatta, ThemeId::Regatta);
+        app.cycle_focus_prev();
+        app.cycle_focus_prev();
+        assert_eq!(app.focus(), Focus::History);
+        app.cycle_focus_prev();
+        assert_eq!(app.focus(), Focus::Machines);
+        app.cycle_focus_next();
+        assert_eq!(app.focus(), Focus::History);
+        app.cycle_focus_next();
+        assert_eq!(app.focus(), Focus::Inbox);
+        app.cycle_focus_next();
+        assert_eq!(app.focus(), Focus::Runs);
+    }
+
+    #[test]
+    fn inbox_selection_wraps_in_a_three_row_inbox() {
+        let mut app = app_on_inbox(Some(snapshot_with_inbox(&["a", "b", "c"])));
+        assert_eq!(app.focus(), Focus::Inbox);
+        app.select_prev();
+        assert_eq!(app.selected(), 2);
+        app.select_next();
+        assert_eq!(app.selected(), 0);
+        app.select_next();
+        app.select_next();
+        assert_eq!(app.selected(), 2);
+        app.select_at(9);
+        assert_eq!(app.selected(), 2);
+    }
+
+    #[test]
+    fn inbox_selection_is_zero_with_no_snapshot() {
+        let mut app = app_on_inbox(None);
+        app.select_next();
+        assert_eq!(app.selected(), 0);
+        app.select_prev();
+        assert_eq!(app.selected(), 0);
+        app.select_at(2);
+        assert_eq!(app.selected(), 0);
+        assert_eq!(app.selected_inbox_id(), None);
+    }
+
+    #[test]
+    fn selected_inbox_id_names_the_focused_row_and_is_none_elsewhere() {
+        let mut app = app_on_inbox(Some(snapshot_with_inbox(&["a", "b", "c"])));
+        app.select_next();
+        assert_eq!(app.selected_inbox_id(), Some("b".to_string()));
+        app.cycle_focus_next();
+        assert_eq!(app.focus(), Focus::Runs);
+        assert_eq!(app.selected_inbox_id(), None);
+    }
+
+    #[test]
+    fn selected_inbox_id_is_none_on_an_empty_inbox() {
+        let app = app_on_inbox(Some(snapshot_with_inbox(&[])));
+        assert_eq!(app.selected_inbox_id(), None);
+    }
+
+    #[test]
+    fn selected_entity_is_none_on_the_inbox() {
+        let app = app_on_inbox(Some(snapshot_with_inbox(&["a", "b", "c"])));
+        assert_eq!(app.selected_entity(), None);
+    }
+
+    #[test]
+    fn inbox_selection_reads_clamped_after_the_inbox_shrinks() {
+        let mut app = app_on_inbox(Some(snapshot_with_inbox(&["a", "b", "c"])));
+        app.select_at(2);
+        assert_eq!(app.selected_inbox_id(), Some("c".to_string()));
+        app.apply_snapshot(snapshot_with_inbox(&["d"]));
+        assert_eq!(app.selected(), 0);
+        assert_eq!(app.selected_inbox_id(), Some("d".to_string()));
+    }
+
+    #[test]
+    fn the_slipstream_page_never_reaches_inbox() {
+        let mut app = App::new(AppPage::Slipstream, ThemeId::Regatta);
+        app.apply_snapshot(snapshot_with_inbox(&["a"]));
+        for _ in 0..6 {
+            app.cycle_focus_next();
+            assert_eq!(app.focus(), Focus::Runs);
+            app.cycle_focus_prev();
+            assert_eq!(app.focus(), Focus::Runs);
+        }
+        assert_eq!(app.selected_inbox_id(), None);
     }
 
     /// A snapshot with two ended runs (`h0`, `h1`) in its history and nothing else of note.
