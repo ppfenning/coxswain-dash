@@ -41,10 +41,12 @@ use std::time::Duration;
 
 use crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
+    KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+    supports_keyboard_enhancement,
 };
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
@@ -56,6 +58,15 @@ use exec::{CmdRunner, ExecResult};
 
 fn version_line() -> String {
     format!("coxtop {}", env!("CARGO_PKG_VERSION"))
+}
+
+/// Without these flags a terminal reports Shift+Enter as a bare Enter. Only a confirmed
+/// `Ok(true)` pushes them; an unsupported terminal or a failed query pushes nothing.
+fn enhancement_flags(support: Result<bool, ()>) -> Option<KeyboardEnhancementFlags> {
+    match support {
+        Ok(true) => Some(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES),
+        Ok(false) | Err(()) => None,
+    }
 }
 
 /// The `cox dash --detail` argument naming `kind`. The `src/ui/mod.rs` twin, `kind_label`,
@@ -152,6 +163,16 @@ fn main() {
     let mut out = io::stdout();
     execute!(out, EnterAlternateScreen, EnableMouseCapture)
         .expect("failed to enter the alternate screen");
+    let pushed = enhancement_flags(supports_keyboard_enhancement().map_err(|_| ()));
+    if let Some(flags) = pushed {
+        execute!(out, PushKeyboardEnhancementFlags(flags))
+            .expect("failed to push the keyboard enhancement flags");
+        let previous_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            let _ = execute!(io::stdout(), PopKeyboardEnhancementFlags);
+            previous_hook(info);
+        }));
+    }
     let backend = CrosstermBackend::new(out);
     let mut terminal = Terminal::new(backend).expect("failed to build the terminal");
 
@@ -283,6 +304,10 @@ fn main() {
     // Kills the local attach process only. The chair's remote session keeps running.
     app.chair_panel_mut().close();
 
+    if pushed.is_some() {
+        execute!(terminal.backend_mut(), PopKeyboardEnhancementFlags)
+            .expect("failed to pop the keyboard enhancement flags");
+    }
     disable_raw_mode().expect("failed to disable raw mode");
     execute!(
         terminal.backend_mut(),
@@ -306,6 +331,24 @@ mod tests {
     #[test]
     fn the_version_line_names_the_binary() {
         assert!(version_line().starts_with("coxtop "));
+    }
+
+    #[test]
+    fn a_supported_terminal_gets_the_disambiguate_flag() {
+        assert_eq!(
+            enhancement_flags(Ok(true)),
+            Some(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+        );
+    }
+
+    #[test]
+    fn an_unsupported_terminal_gets_no_flags() {
+        assert_eq!(enhancement_flags(Ok(false)), None);
+    }
+
+    #[test]
+    fn a_failed_support_query_gets_no_flags() {
+        assert_eq!(enhancement_flags(Err(())), None);
     }
 
     fn done() -> ExecResult {

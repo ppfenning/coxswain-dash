@@ -361,6 +361,7 @@ fn key_bytes(key: KeyEvent) -> Option<Vec<u8>> {
     let backspace = if ctrl { 0x08 } else { 0x7f };
     match key.code {
         KeyCode::Char(c) => Some(alt_prefixed(char_bytes(c, ctrl), mods)),
+        KeyCode::Enter if mods.contains(KeyModifiers::SHIFT) => Some(vec![0x1b, b'\r']),
         KeyCode::Enter => Some(alt_prefixed(vec![b'\r'], mods)),
         KeyCode::Tab => Some(alt_prefixed(vec![b'\t'], mods)),
         KeyCode::BackTab => Some(b"\x1b[Z".to_vec()),
@@ -774,6 +775,14 @@ mod tests {
             None,
         ];
         assert_eq!(encoded, expected.map(|bytes| bytes.map(<[u8]>::to_vec)));
+    }
+
+    #[test]
+    fn key_bytes_sends_esc_cr_for_shift_and_alt_enter_and_cr_for_plain_enter() {
+        let enter = |mods| key_bytes(KeyEvent::new(KeyCode::Enter, mods));
+        assert_eq!(enter(KeyModifiers::SHIFT), Some(b"\x1b\r".to_vec()));
+        assert_eq!(enter(KeyModifiers::ALT), Some(b"\x1b\r".to_vec()));
+        assert_eq!(enter(KeyModifiers::NONE), Some(b"\r".to_vec()));
     }
 
     #[test]
