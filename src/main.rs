@@ -3,7 +3,7 @@
 //! save the page and theme and exit.
 
 mod app;
-// A later task wires the chair panel into the app.
+// The panel's drawing and `start_session` are not wired yet.
 #[allow(dead_code)]
 mod chair_panel;
 mod config;
@@ -11,13 +11,13 @@ mod decision_card;
 mod detail;
 mod feed;
 mod input;
-// A later task wires the pty session into the chair panel.
+// Only `RealPty` is used outside tests; `FakePty` is the test seam.
 #[allow(dead_code)]
 mod pty;
 mod theme;
 mod ui;
 
-use std::io::{self, BufRead, BufReader};
+use std::io::{self, BufRead, BufReader, Write};
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -99,6 +99,7 @@ fn main() {
     let mut detail_key: Option<(DetailKind, String)> = None;
 
     let mut changed = true;
+    let mut bells_rung = 0;
     loop {
         while let Ok(line) = rx.try_recv() {
             if let Ok(snapshot) = feed::parse_snapshot(&line) {
@@ -135,13 +136,19 @@ fn main() {
         if event::poll(Duration::from_millis(100)).unwrap_or(false) {
             match event::read() {
                 Ok(Event::Key(key)) if key.kind == KeyEventKind::Press => {
-                    let is_quit = key.code == KeyCode::Char('q')
-                        || (key.code == KeyCode::Char('c')
-                            && key.modifiers.contains(KeyModifiers::CONTROL));
+                    // A focused panel owns every key, `q` and Ctrl-C included.
+                    let is_quit = !app.chair_panel().focused()
+                        && (key.code == KeyCode::Char('q')
+                            || (key.code == KeyCode::Char('c')
+                                && key.modifiers.contains(KeyModifiers::CONTROL)));
                     if is_quit {
                         break;
                     }
-                    input::handle_key(&mut app, key.code);
+                    input::handle_event(&mut app, key);
+                    changed = true;
+                }
+                Ok(Event::Resize(cols, rows)) => {
+                    app.chair_panel_mut().resize(rows, cols);
                     changed = true;
                 }
                 Ok(Event::Mouse(mouse)) if app.page() == AppPage::Regatta => {
@@ -155,6 +162,17 @@ fn main() {
             }
         }
 
+        if app.chair_panel().is_open() {
+            app.chair_panel_mut().poll();
+            changed = true;
+        }
+
+        if app.bells() != bells_rung {
+            bells_rung = app.bells();
+            let bell = terminal.backend_mut();
+            let _ = bell.write_all(b"\x07").and_then(|()| bell.flush());
+        }
+
         if changed {
             let theme = theme::resolve(app.theme());
             terminal
@@ -165,6 +183,8 @@ fn main() {
     }
 
     config::save_state(&config::state_path(), app.page(), app.theme());
+    // Kills the local attach process only. The chair's remote session keeps running.
+    app.chair_panel_mut().close();
 
     disable_raw_mode().expect("failed to disable raw mode");
     execute!(

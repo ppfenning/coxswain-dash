@@ -22,6 +22,25 @@ pub trait PtySession {
     fn kill(&mut self) -> Result<(), PtyError>;
 }
 
+/// Lets a caller own any session behind one type.
+impl PtySession for Box<dyn PtySession> {
+    fn spawn(&mut self, argv: &[String], rows: u16, cols: u16) -> Result<(), PtyError> {
+        (**self).spawn(argv, rows, cols)
+    }
+    fn write(&mut self, bytes: &[u8]) -> Result<(), PtyError> {
+        (**self).write(bytes)
+    }
+    fn resize(&mut self, rows: u16, cols: u16) -> Result<(), PtyError> {
+        (**self).resize(rows, cols)
+    }
+    fn read_output(&mut self) -> Vec<u8> {
+        (**self).read_output()
+    }
+    fn kill(&mut self) -> Result<(), PtyError> {
+        (**self).kill()
+    }
+}
+
 fn size(rows: u16, cols: u16) -> PtySize {
     PtySize {
         rows,
@@ -212,6 +231,30 @@ impl PtySession for FakePty {
     fn kill(&mut self) -> Result<(), PtyError> {
         self.calls.push(PtyCall::Kill);
         Ok(())
+    }
+}
+
+/// A `FakePty` the test keeps a handle to after boxing a clone into the app.
+#[cfg(test)]
+#[derive(Clone, Default)]
+pub struct SharedFakePty(pub std::rc::Rc<std::cell::RefCell<FakePty>>);
+
+#[cfg(test)]
+impl PtySession for SharedFakePty {
+    fn spawn(&mut self, argv: &[String], rows: u16, cols: u16) -> Result<(), PtyError> {
+        self.0.borrow_mut().spawn(argv, rows, cols)
+    }
+    fn write(&mut self, bytes: &[u8]) -> Result<(), PtyError> {
+        self.0.borrow_mut().write(bytes)
+    }
+    fn resize(&mut self, rows: u16, cols: u16) -> Result<(), PtyError> {
+        self.0.borrow_mut().resize(rows, cols)
+    }
+    fn read_output(&mut self) -> Vec<u8> {
+        self.0.borrow_mut().read_output()
+    }
+    fn kill(&mut self) -> Result<(), PtyError> {
+        self.0.borrow_mut().kill()
     }
 }
 
