@@ -1,18 +1,18 @@
 ---
 source: src/ui/slipstream.rs
-assertion_line: 852
+assertion_line: 970
 expression: "snapshot_text(ThemeId::HarborLight, 160, 46)"
 ---
 coxtop                                                                                                                                   Tue Sep 29 00:00 v1.2.3
 R U N S                                                                                                                 S P E N D
 ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮5h █████░░░░░░░░░░░░░░░░░░░░░░░░░░░  16%
-│dash-feed-1                                                                                                      $0.84│wk ███████████░░░░░░░░░░░░░░░░░░░░░  35%
+│dash-feed-2 ● running ×2                                                                                         $0.00│wk ███████████░░░░░░░░░░░░░░░░░░░░░  35%
 │omarchy p1-foundations   plan   build   handoff   review   arbitrate   land                                           │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯M A C H I N E S
-╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮╭──────────────────────────────────────╮
-│dash-feed-2                                                                                                      $0.00││omarchy                            2/3│
-│omarchy p1-foundations   plan   build   handoff   review   arbitrate   land                                           ││████████████ ████████████ ░░░░░░░░░░░░│
-╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯╰──────────────────────────────────────╯
+                                                                                                                        ╭──────────────────────────────────────╮
+                                                                                                                        │omarchy                            2/3│
+                                                                                                                        │████████████ ████████████ ░░░░░░░░░░░░│
+                                                                                                                        ╰──────────────────────────────────────╯
                                                                                                                         I N B O X
                                                                                                                         needs_chair some-task
                                                                                                                           budget stop after 2 attempts
@@ -48,4 +48,4 @@ R U N S                                                                         
                                                                                                                         │2 lands today · beat 4s               │
                                                                                                                         │                                      │
                                                                                                                         ╰──────────────────────────────────────╯
-↑↓ select   enter open   esc close   tab page   t theme   q quit   p pause  k kill  m move   : palette
+j/k select   enter open   esc close   tab page   t theme   q quit   p pause  k kill  m move   : palette

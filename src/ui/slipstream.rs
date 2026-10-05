@@ -14,9 +14,10 @@ use ratatui::{
 
 use super::chair_card::{Freshness, TICK_INTERVAL_S, beat_freshness, short_age};
 use super::regatta::action_hints;
+use super::{CollapsedRun, collapse_runs, count_suffix, end_chip};
 use crate::app::{App, Focus};
 use crate::feed::{Chair, FeedSnapshot, InboxEntry, Machine, Run, Spend};
-use crate::theme::{SlipstreamPalette, slipstream_palette_for};
+use crate::theme::{SlipstreamPalette, Theme, resolve, slipstream_palette, slipstream_palette_for};
 
 /// Width of the right rail, in columns.
 pub const RAIL_WIDTH: u16 = 40;
@@ -109,39 +110,45 @@ fn chip_style(state: ChipState, p: &SlipstreamPalette) -> Style {
     Style::default().fg(fg).bg(bg)
 }
 
-/// The dim note after the chips. The feed has no landed time, so a landed run says only `landed`.
-fn status_note(run: &Run) -> String {
-    match run.status.as_str() {
-        "quarantined" => "quarantined".to_string(),
-        "landed" => "landed".to_string(),
-        "approved" => "approved waits to land".to_string(),
-        _ if run.attempt > 1 => format!("attempt {}", run.attempt),
-        "running" => String::new(),
-        other => other.to_string(),
-    }
-}
-
-/// `left` and `right` on one line of exactly `width` chars. `left` is cut with an ellipsis when
-/// it would crowd `right`.
-fn justify(left: &str, right: &str, width: usize) -> String {
-    let right_len = right.chars().count();
-    let room = width.saturating_sub(right_len + 1);
-    let left_len = left.chars().count();
-    let shown: String = if left_len > room {
-        left.chars()
+/// `text` cut to at most `room` chars, with an ellipsis when it was cut.
+fn clip(text: &str, room: usize) -> String {
+    if text.chars().count() > room {
+        text.chars()
             .take(room.saturating_sub(1))
             .chain(std::iter::once('\u{2026}'))
             .take(room)
             .collect()
     } else {
-        left.to_string()
-    };
-    let pad = width.saturating_sub(shown.chars().count() + right_len);
-    format!("{shown}{}{right}", " ".repeat(pad))
+        text.to_string()
+    }
 }
 
-fn name_and_cost(name: &str, cost: f64, width: usize) -> String {
-    justify(name, &format!("${cost:.2}"), width)
+/// The card's first line: the name, then `mid` (the end chip and count), then the cost flush
+/// right. The name is cut first when the line is short.
+fn title_spans(name: &str, mid: Vec<Span<'static>>, cost: f64, width: usize) -> Vec<Span<'static>> {
+    let cost = format!("${cost:.2}");
+    let mid_len: usize = mid.iter().map(|s| s.content.chars().count()).sum();
+    let name = clip(
+        name,
+        width.saturating_sub(mid_len + cost.chars().count() + 1),
+    );
+    let pad = width.saturating_sub(name.chars().count() + mid_len + cost.chars().count());
+    std::iter::once(Span::raw(name))
+        .chain(mid)
+        .chain([Span::raw(" ".repeat(pad)), Span::raw(cost)])
+        .collect()
+}
+
+/// The index of the collapsed row that holds `runs[selected]`, or `None` when `selected` is out
+/// of range. Rows keep first-seen order, so the row is the one whose count grows when the
+/// selected run joins the runs before it.
+fn selected_row(runs: &[Run], selected: usize) -> Option<usize> {
+    let after = collapse_runs(runs.get(..=selected)?);
+    let before = collapse_runs(&runs[..selected]);
+    after
+        .iter()
+        .enumerate()
+        .position(|(i, row)| row.count != before.get(i).map_or(0, |b| b.count))
 }
 
 /// `Tue Sep 29 14:00 v0.1.0`: the day in `offset`, its local time, the version. A timestamp that
@@ -293,7 +300,14 @@ fn render_with(f: &mut Frame, app: &App, p: SlipstreamPalette, version: &str) {
     };
     let r = regions(area);
     render_header(f, r.header, snapshot, app.utc_offset(), version, &p);
-    render_cards(f, r.left, snapshot, app.selected(), &p);
+    render_cards(
+        f,
+        r.left,
+        snapshot,
+        app.selected(),
+        &p,
+        &resolve(app.theme()),
+    );
     render_rail(f, r.rail, snapshot, &p);
     f.render_widget(
         Paragraph::new(Span::styled(keys_text(app.focus()), dim_style(&p))),
@@ -338,10 +352,12 @@ fn render_cards(
     snapshot: &FeedSnapshot,
     selected: usize,
     p: &SlipstreamPalette,
+    theme: &Theme,
 ) {
     render_label(f, area, "RUNS", p);
-    let constraints: Vec<Constraint> = snapshot
-        .runs
+    let collapsed = collapse_runs(&snapshot.runs);
+    let selected_row = selected_row(&snapshot.runs, selected);
+    let constraints: Vec<Constraint> = collapsed
         .iter()
         .map(|_| Constraint::Length(CARD_HEIGHT))
         .chain(std::iter::once(Constraint::Min(0)))
@@ -350,24 +366,28 @@ fn render_cards(
         .direction(Direction::Vertical)
         .constraints(constraints)
         .split(below_first_row(area));
-    for (i, (rect, run)) in rows.iter().zip(snapshot.runs.iter()).enumerate() {
-        render_card(f, *rect, run, &snapshot.machines, i == selected, p);
+    for (i, (rect, row)) in rows.iter().zip(collapsed.iter()).enumerate() {
+        let selected = selected_row == Some(i);
+        render_card(f, *rect, row, &snapshot.machines, selected, p, theme);
     }
 }
 
 fn render_card(
     f: &mut Frame,
     rect: Rect,
-    run: &Run,
+    row: &CollapsedRun,
     machines: &[Machine],
     selected: bool,
     p: &SlipstreamPalette,
+    theme: &Theme,
 ) {
-    let block = if selected {
-        card_block(p.selected_border, p.card, p)
+    let run = row.run;
+    let (border, card_bg) = if selected {
+        (p.selected_border, p.card)
     } else {
-        card_block(p.card_border, p.ground, p)
+        (p.card_border, p.ground)
     };
+    let block = card_block(border, card_bg, p);
     let inner = block.inner(rect);
     f.render_widget(block, rect);
     let current = step_index(&run.node);
@@ -389,15 +409,24 @@ fn render_card(
             Span::raw(" "),
         ]
     });
-    let note = [Span::styled(status_note(run), dim_style(p))];
+    // The chip keeps its status colour; the card's own background replaces the theme's.
+    let end = end_chip(run.end.as_ref(), &run.status, theme)
+        .spans
+        .into_iter()
+        .map(|s| Span::styled(s.content, s.style.bg(card_bg)));
+    let count = count_suffix(row.count, theme).map(|s| Span::styled(s.content, dim_style(p)));
+    let mid: Vec<Span<'static>> = std::iter::once(Span::raw(" "))
+        .chain(end)
+        .chain(count)
+        .collect();
     let lines = vec![
-        Line::from(name_and_cost(&run.run, run.cost, usize::from(inner.width))),
-        Line::from(
-            head.into_iter()
-                .chain(chips)
-                .chain(note)
-                .collect::<Vec<_>>(),
-        ),
+        Line::from(title_spans(
+            &run.run,
+            mid,
+            run.cost,
+            usize::from(inner.width),
+        )),
+        Line::from(head.into_iter().chain(chips).collect::<Vec<_>>()),
     ];
     f.render_widget(Paragraph::new(lines), inner);
 }
@@ -612,6 +641,51 @@ mod tests {
         }
     }
 
+    fn named(id: &str) -> Run {
+        Run {
+            run: id.to_string(),
+            ..run("plan", "running", 1)
+        }
+    }
+
+    /// The fixture with its second run renamed, so its two runs are two initiatives.
+    fn two_initiatives() -> String {
+        FIXTURE.replace("\"run\": \"dash-feed-2\"", "\"run\": \"other-2\"")
+    }
+
+    /// The fixture with `runs` in place of its own.
+    fn with_runs(runs: Vec<serde_json::Value>) -> String {
+        let mut feed: serde_json::Value = serde_json::from_str(FIXTURE).expect("fixture is json");
+        feed["runs"] = serde_json::Value::Array(runs);
+        feed.to_string()
+    }
+
+    /// One run for `id` that ended as `end`, a bare kind or a `{kind, cause}` object.
+    fn run_json(id: &str, end: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({
+            "run": id, "machine": "omarchy", "phase": "p1", "node": "build", "attempt": 1,
+            "turns": 1, "cost": 1.5, "verdict": "none", "status": "running",
+            "cost_series": [], "end": end
+        })
+    }
+
+    /// One run of each end kind, each its own initiative.
+    fn end_kinds_json() -> String {
+        use serde_json::json;
+        with_runs(vec![
+            run_json("alpha-1", json!("running")),
+            run_json("bravo-1", json!("landed")),
+            run_json("charlie-1", json!("approved")),
+            run_json(
+                "delta-1",
+                json!({"kind": "quarantined", "cause": "budget stop"}),
+            ),
+            run_json("echo-1", json!("idle")),
+            run_json("foxtrot-1", json!({"kind": "died", "cause": "chair gone"})),
+            run_json("golf-1", json!("stopped")),
+        ])
+    }
+
     /// The cell where `needle` starts on row `y`.
     fn cell_of<'a>(buffer: &'a Buffer, y: u16, needle: &str) -> &'a ratatui::buffer::Cell {
         let row: String = (0..buffer.area.width)
@@ -695,14 +769,20 @@ mod tests {
     }
 
     #[test]
-    fn name_and_cost_right_aligns_the_cost_and_truncates_the_name() {
+    fn title_spans_puts_the_chip_after_the_name_and_the_cost_flush_right() {
+        let text = |name, mid: &str, cost, width| -> String {
+            title_spans(name, vec![Span::raw(mid.to_string())], cost, width)
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect()
+        };
         assert_eq!(
-            name_and_cost("dash-feed-1", 0.84, 20),
-            "dash-feed-1    $0.84"
+            text("dash-feed-1", " \u{25cf} landed", 0.84, 32),
+            "dash-feed-1 \u{25cf} landed       $0.84"
         );
         assert_eq!(
-            name_and_cost("a-very-long-run-name", 12.5, 14),
-            "a-very\u{2026} $12.50"
+            text("a-very-long-run-name", " \u{25cf} died", 12.5, 24),
+            "a-very-lo\u{2026} \u{25cf} died $12.50"
         );
     }
 
@@ -721,15 +801,13 @@ mod tests {
     }
 
     #[test]
-    fn status_note_names_the_attempt_the_wait_and_the_end_states() {
-        assert_eq!(status_note(&run("build", "running", 2)), "attempt 2");
-        assert_eq!(status_note(&run("build", "running", 1)), "");
+    fn selected_row_finds_the_row_that_holds_a_hidden_relaunch() {
+        let runs = [named("a-1"), named("b-1"), named("a-2"), named("c-1")];
+        let rows = |i| selected_row(&runs, i);
         assert_eq!(
-            status_note(&run("land", "approved", 1)),
-            "approved waits to land"
+            [rows(0), rows(1), rows(2), rows(3), rows(4)],
+            [Some(0), Some(1), Some(0), Some(2), None]
         );
-        assert_eq!(status_note(&run("land", "landed", 1)), "landed");
-        assert_eq!(status_note(&run("build", "quarantined", 3)), "quarantined");
     }
 
     #[test]
@@ -780,7 +858,7 @@ mod tests {
 
     #[test]
     fn a_done_chip_is_drawn_in_the_done_chip_colors() {
-        let terminal = draw(&app_from(FIXTURE, ThemeId::Regatta), 120, 40);
+        let terminal = draw(&app_from(&two_initiatives(), ThemeId::Regatta), 120, 40);
         let cell = cell_of(terminal.backend().buffer(), CHIP_ROW, "plan");
         let p = slipstream_palette();
         assert_eq!((cell.fg, cell.bg), (p.done_chip_text, p.done_chip));
@@ -788,14 +866,14 @@ mod tests {
 
     #[test]
     fn the_current_chip_is_drawn_in_the_accent() {
-        let terminal = draw(&app_from(FIXTURE, ThemeId::Regatta), 120, 40);
+        let terminal = draw(&app_from(&two_initiatives(), ThemeId::Regatta), 120, 40);
         let cell = cell_of(terminal.backend().buffer(), CHIP_ROW, "build");
         assert_eq!(cell.bg, slipstream_palette().accent);
     }
 
     #[test]
     fn a_pending_chip_is_drawn_in_the_pending_chip_colors() {
-        let terminal = draw(&app_from(FIXTURE, ThemeId::Regatta), 120, 40);
+        let terminal = draw(&app_from(&two_initiatives(), ThemeId::Regatta), 120, 40);
         let cell = cell_of(terminal.backend().buffer(), CHIP_ROW, "handoff");
         let p = slipstream_palette();
         assert_eq!((cell.fg, cell.bg), (p.pending_chip_text, p.pending_chip));
@@ -812,7 +890,7 @@ mod tests {
 
     #[test]
     fn a_failed_chip_is_drawn_in_the_failed_chip_color() {
-        let json = FIXTURE.replace("\"status\": \"running\"", "\"status\": \"failed\"");
+        let json = two_initiatives().replace("\"status\": \"running\"", "\"status\": \"failed\"");
         let terminal = draw(&app_from(&json, ThemeId::Regatta), 120, 40);
         let cell = cell_of(terminal.backend().buffer(), CHIP_ROW, "build");
         assert_eq!(cell.bg, slipstream_palette().failed_chip);
@@ -840,6 +918,57 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    /// The card column only, as plain rows: seven cards, one per end kind.
+    fn end_kinds_text(theme: ThemeId) -> String {
+        let terminal = draw(&app_from(&end_kinds_json(), theme), 120, 34);
+        let buffer = terminal.backend().buffer();
+        (0..34)
+            .map(|y| {
+                let row: String = (0..80).map(|x| buffer[(x, y)].symbol()).collect();
+                row.trim_end().to_string()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn card_end_kinds_in_the_regatta_theme() {
+        insta::assert_snapshot!(end_kinds_text(ThemeId::Regatta));
+    }
+
+    #[test]
+    fn card_end_kinds_in_the_harbor_light_theme() {
+        insta::assert_snapshot!(end_kinds_text(ThemeId::HarborLight));
+    }
+
+    #[test]
+    fn a_died_end_chip_is_drawn_in_the_status_failed_color_on_the_card() {
+        let terminal = draw(&app_from(&end_kinds_json(), ThemeId::Regatta), 120, 34);
+        let cell = cell_of(terminal.backend().buffer(), 2 + 5 * 4 + 1, "died");
+        assert_eq!(cell.fg, resolve(ThemeId::Regatta).status_failed);
+        assert_eq!(cell.bg, slipstream_palette().ground);
+    }
+
+    #[test]
+    fn relaunches_of_one_initiative_draw_one_card_with_a_dim_count() {
+        let json = with_runs(
+            ["foo-1", "foo-2", "foo-3"]
+                .map(|id| run_json(id, serde_json::json!("landed")))
+                .to_vec(),
+        );
+        let terminal = draw(&app_from(&json, ThemeId::Regatta), 120, 20);
+        let buffer = terminal.backend().buffer();
+        let name = cell_of(buffer, 3, "foo-3");
+        let count = cell_of(buffer, 3, "\u{d7}3");
+        assert_eq!(name.symbol(), "f");
+        assert_eq!(count.fg, slipstream_palette().dim);
+        let rows: String = (0..20)
+            .flat_map(|y| (0..80).map(move |x| (x, y)))
+            .map(|(x, y)| buffer[(x, y)].symbol())
+            .collect();
+        assert_eq!(rows.matches("foo-").count(), 1);
     }
 
     #[test]
