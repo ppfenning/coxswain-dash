@@ -42,7 +42,7 @@ pub struct Theme {
     pub machine_accents: [Color; 4],
 }
 
-/// The Slipstream page's own palette, separate from `Theme`. Dark only.
+/// The Slipstream page's own palette, separate from `Theme`: a dark and a Harbor Light variant.
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SlipstreamPalette {
@@ -116,6 +116,23 @@ const HARBOR_LIGHT: Theme = Theme {
     status_failed: rgb(0xc21d2a),
     status_waiting: rgb(0x57606a),
     machine_accents: [rgb(0x0550ae), rgb(0xb04400), rgb(0x7438c9), rgb(0x0a6c74)],
+};
+
+/// Slipstream on Harbor Light: the light theme's ground, text, borders and status colours.
+const SLIPSTREAM_LIGHT: SlipstreamPalette = SlipstreamPalette {
+    ground: rgb(0xf7f5ef),
+    text: rgb(0x1f2328),
+    dim: rgb(0x57606a),
+    card: rgb(0xfbfaf6),
+    card_border: rgb(0xd6d0c0),
+    selected_border: rgb(0x0a6c74),
+    accent: rgb(0x0a6c74),
+    done_chip: rgb(0x1a7f37),
+    done_chip_text: rgb(0xfbfaf6),
+    pending_chip: rgb(0xe8e3d6),
+    pending_chip_text: rgb(0x57606a),
+    failed_chip: rgb(0xc21d2a),
+    accents: [rgb(0x0550ae), rgb(0xb04400)],
 };
 
 const SLIPSTREAM: SlipstreamPalette = SlipstreamPalette {
@@ -237,6 +254,14 @@ impl SlipstreamPalette {
 #[allow(dead_code)]
 pub fn slipstream_palette() -> SlipstreamPalette {
     SLIPSTREAM
+}
+
+/// The Slipstream palette for a theme: the dark canvas palette, or the light one built from Harbor Light.
+pub fn slipstream_palette_for(id: crate::app::ThemeId) -> SlipstreamPalette {
+    match id {
+        crate::app::ThemeId::Regatta => SLIPSTREAM,
+        crate::app::ThemeId::HarborLight => SLIPSTREAM_LIGHT,
+    }
 }
 
 /// Looks up the `Theme` for a `ThemeId`. Truecolor when `colorterm` is `truecolor` or `24bit`,

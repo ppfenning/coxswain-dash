@@ -1,7 +1,7 @@
 //! Rendering for the Slipstream page: a header row, one rounded card per run showing its
 //! position in the six-step pipeline (plan, build, handoff, review, arbitrate, land), a 40-column
 //! right rail (spend, machines, inbox, chair) and a key bar. Every color comes from
-//! `SlipstreamPalette`, which is dark only: the page ignores the `t` theme toggle.
+//! `SlipstreamPalette`, dark or Harbor Light to follow the `t` theme toggle.
 
 use chrono::{DateTime, FixedOffset};
 use ratatui::{
@@ -16,7 +16,7 @@ use super::chair_card::{Freshness, TICK_INTERVAL_S, beat_freshness, short_age};
 use super::regatta::action_hints;
 use crate::app::{App, Focus};
 use crate::feed::{Chair, FeedSnapshot, InboxEntry, Machine, Run, Spend};
-use crate::theme::{SlipstreamPalette, slipstream_palette};
+use crate::theme::{SlipstreamPalette, slipstream_palette_for};
 
 /// Width of the right rail, in columns.
 pub const RAIL_WIDTH: u16 = 40;
@@ -34,7 +34,7 @@ const MACHINE_HEIGHT: u16 = 4;
 const STEP_NAMES: [&str; 6] = ["plan", "build", "handoff", "review", "arbitrate", "land"];
 
 /// The keys `input::handle_key` and `main` bind that act on this page.
-const KEYS: &str = "j/k select   enter open   esc close   tab page   t theme   q quit";
+const KEYS: &str = "\u{2191}\u{2193} select   enter open   esc close   tab page   t theme   q quit";
 
 /// The key row: `KEYS`, then the focused list's action keys, then `:` for the palette.
 fn keys_text(focus: Focus) -> String {
@@ -60,16 +60,16 @@ enum ChipState {
 }
 
 /// The palette for a `COLORTERM` value: truecolor as defined, else the nearest xterm-256 indexes.
-fn for_colorterm(colorterm: Option<&str>) -> SlipstreamPalette {
+fn for_colorterm(theme: crate::app::ThemeId, colorterm: Option<&str>) -> SlipstreamPalette {
     match colorterm {
-        Some("truecolor") | Some("24bit") => slipstream_palette(),
-        _ => slipstream_palette().to_256(),
+        Some("truecolor") | Some("24bit") => slipstream_palette_for(theme),
+        _ => slipstream_palette_for(theme).to_256(),
     }
 }
 
 /// The edge: the palette this terminal can draw. Also used by tests elsewhere in `ui`.
-pub fn resolved_palette() -> SlipstreamPalette {
-    for_colorterm(std::env::var("COLORTERM").ok().as_deref())
+pub fn resolved_palette(theme: crate::app::ThemeId) -> SlipstreamPalette {
+    for_colorterm(theme, std::env::var("COLORTERM").ok().as_deref())
 }
 
 /// Maps a run's `node` to its index (0-5) among the six pipeline steps. `None` for a node that
@@ -276,7 +276,12 @@ fn render_label(f: &mut Frame, rect: Rect, label: &str, p: &SlipstreamPalette) {
 }
 
 pub fn render(f: &mut Frame, app: &App) {
-    render_with(f, app, resolved_palette(), env!("CARGO_PKG_VERSION"));
+    render_with(
+        f,
+        app,
+        resolved_palette(app.theme()),
+        env!("CARGO_PKG_VERSION"),
+    );
 }
 
 fn render_with(f: &mut Frame, app: &App, p: SlipstreamPalette, version: &str) {
@@ -571,6 +576,7 @@ fn render_error_line(f: &mut Frame, chair_box: Rect, err: &str, p: &SlipstreamPa
 mod tests {
     use super::*;
     use crate::app::{AppPage, ThemeId};
+    use crate::theme::slipstream_palette;
     use ratatui::{Terminal, backend::TestBackend, buffer::Buffer};
 
     const FIXTURE: &str = include_str!("../../tests/fixtures/dash_feed_v1.json");
@@ -585,7 +591,7 @@ mod tests {
     fn draw(app: &App, width: u16, height: u16) -> Terminal<TestBackend> {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
         terminal
-            .draw(|f| render_with(f, app, slipstream_palette(), "1.2.3"))
+            .draw(|f| render_with(f, app, slipstream_palette_for(app.theme()), "1.2.3"))
             .expect("draw should not fail");
         terminal
     }
@@ -753,8 +759,23 @@ mod tests {
 
     #[test]
     fn for_colorterm_keeps_truecolor_and_downgrades_otherwise() {
-        assert_eq!(for_colorterm(Some("truecolor")), slipstream_palette());
-        assert_eq!(for_colorterm(None), slipstream_palette().to_256());
+        use crate::app::ThemeId;
+        assert_eq!(
+            for_colorterm(ThemeId::Regatta, Some("truecolor")),
+            slipstream_palette()
+        );
+        assert_eq!(
+            for_colorterm(ThemeId::Regatta, None),
+            slipstream_palette().to_256()
+        );
+        assert_eq!(
+            for_colorterm(ThemeId::HarborLight, Some("truecolor")),
+            slipstream_palette_for(ThemeId::HarborLight)
+        );
+        assert_ne!(
+            slipstream_palette_for(ThemeId::HarborLight),
+            slipstream_palette()
+        );
     }
 
     #[test]
@@ -778,6 +799,15 @@ mod tests {
         let cell = cell_of(terminal.backend().buffer(), CHIP_ROW, "handoff");
         let p = slipstream_palette();
         assert_eq!((cell.fg, cell.bg), (p.pending_chip_text, p.pending_chip));
+    }
+
+    #[test]
+    fn the_harbor_light_theme_draws_the_light_slipstream_palette() {
+        let terminal = draw(&app_from(FIXTURE, ThemeId::HarborLight), 120, 40);
+        let cell = cell_of(terminal.backend().buffer(), CHIP_ROW, "handoff");
+        let p = slipstream_palette_for(ThemeId::HarborLight);
+        assert_eq!((cell.fg, cell.bg), (p.pending_chip_text, p.pending_chip));
+        assert_ne!(p.ground, slipstream_palette().ground);
     }
 
     #[test]

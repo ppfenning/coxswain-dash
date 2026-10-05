@@ -1,5 +1,6 @@
 ---
 source: src/ui/slipstream.rs
+assertion_line: 668
 expression: row.trim_end()
 ---
-j/k select   enter open   esc close   tab page   t theme   q quit   p pause  k kill  m move   : palette
+↑↓ select   enter open   esc close   tab page   t theme   q quit   p pause  k kill  m move   : palette
