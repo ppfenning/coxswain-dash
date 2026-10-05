@@ -1469,7 +1469,7 @@ const KEY_BAR: [(&str, &str); 7] = [
     ("\u{2191}\u{2193}", "select"),
     ("\u{23ce}", "drill down"),
     ("t", "theme"),
-    ("p", "layout"),
+    ("v", "layout"),
     ("q", "quit"),
 ];
 
@@ -2527,7 +2527,7 @@ mod tests {
         let row = row_text(&terminal, 39);
         assert_eq!(
             row.trim_end(),
-            "1-6 frames \u{b7} \u{2190}\u{2192} focus \u{b7} \u{2191}\u{2193} select \u{b7} \u{23ce} drill down \u{b7} t theme \u{b7} p layout \u{b7} q quit \u{2502} p pause  k kill  m move \u{b7} : palette"
+            "1-6 frames \u{b7} \u{2190}\u{2192} focus \u{b7} \u{2191}\u{2193} select \u{b7} \u{23ce} drill down \u{b7} t theme \u{b7} v layout \u{b7} q quit \u{2502} p pause  k kill  m move \u{b7} : palette"
         );
         assert_eq!(
             fg_at(&terminal, 39, "1-6"),
@@ -2578,7 +2578,7 @@ mod tests {
         row_text(&terminal, 39).trim_end().to_string()
     }
 
-    const FIXED_KEYS: &str = "1-6 frames \u{b7} \u{2190}\u{2192} focus \u{b7} \u{2191}\u{2193} select \u{b7} \u{23ce} drill down \u{b7} t theme \u{b7} p layout \u{b7} q quit";
+    const FIXED_KEYS: &str = "1-6 frames \u{b7} \u{2190}\u{2192} focus \u{b7} \u{2191}\u{2193} select \u{b7} \u{23ce} drill down \u{b7} t theme \u{b7} v layout \u{b7} q quit";
 
     const FOCUS_ACTIONS: [(Focus, &str); 4] = [
         (Focus::Runs, "p pause  k kill  m move"),
@@ -2719,9 +2719,8 @@ mod tests {
         use crossterm::event::KeyCode;
         let before = app_with_fixture();
         let mut layout = app_with_fixture();
-        // `p` pauses a run, so the layout toggle is pressed on the queue list.
-        crate::input::handle_key(&mut layout, KeyCode::Right);
-        crate::input::handle_key(&mut layout, KeyCode::Char('p'));
+        // `v` cycles the layout on any focus; `p` stays run pause.
+        crate::input::handle_key(&mut layout, KeyCode::Char('v'));
         assert_ne!(
             layout.regatta_layout_preset(),
             before.regatta_layout_preset()
