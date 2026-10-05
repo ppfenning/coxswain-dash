@@ -11,6 +11,7 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph},
 };
 
+use crate::actions::Target;
 use crate::detail::{HistoryEntry, InitiativeDetail, PhaseDetail};
 use crate::theme::Theme;
 
@@ -107,11 +108,18 @@ fn render_phases(
 fn render_history(
     f: &mut Frame,
     area: Rect,
-    history: &[HistoryEntry],
+    detail: &InitiativeDetail,
     theme: &Theme,
     offset: chrono::FixedOffset,
 ) {
-    let block = Block::default().title("history").borders(Borders::ALL);
+    let block = Block::default()
+        .title("history")
+        .title_bottom(super::footer_line(
+            &Target::Initiative(detail.initiative.clone()),
+            theme,
+        ))
+        .borders(Borders::ALL);
+    let history = &detail.history;
     let paragraph = Paragraph::new(history_lines(history, offset))
         .block(block)
         .style(base_style(theme));
@@ -149,7 +157,7 @@ pub fn render(
     f.render_widget(title, title_area);
 
     render_phases(f, phases_area, &detail.phases, theme, offset);
-    render_history(f, history_area, &detail.history, theme, offset);
+    render_history(f, history_area, detail, theme, offset);
 }
 
 #[cfg(test)]

@@ -13,6 +13,7 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph},
 };
 
+use crate::actions::Target;
 use crate::detail::MachineDetail;
 use crate::theme::Theme;
 
@@ -50,6 +51,10 @@ pub fn render(f: &mut Frame, detail: &MachineDetail, theme: &Theme, offset: chro
     let area = f.area();
     let block = Block::default()
         .title(format!("Machine {}", detail.machine))
+        .title_bottom(super::footer_line(
+            &Target::Machine(detail.machine.clone()),
+            theme,
+        ))
         .borders(Borders::ALL)
         .style(base_style(theme));
     let inner = block.inner(area);
