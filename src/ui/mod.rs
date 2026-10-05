@@ -9,6 +9,9 @@ pub mod palette_frame;
 mod regatta;
 mod run_cost;
 pub mod run_drill;
+// The settings frame is not wired into the page dispatch yet.
+#[allow(dead_code)]
+pub mod settings_frame;
 mod slipstream;
 pub mod status_line;
 
