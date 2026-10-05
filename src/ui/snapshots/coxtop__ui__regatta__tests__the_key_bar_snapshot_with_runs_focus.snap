@@ -2,4 +2,4 @@
 source: src/ui/regatta.rs
 expression: "key_bar_row(Focus::Runs, 120)"
 ---
-1-6 frames · ←→ focus · ↑↓ select · ⏎ drill down · t theme · p layout · q quit │ p pause  k kill  m move · : palette
+1-6 frames · ←→ focus · ↑↓ select · ⏎ drill down · t theme · v layout · q quit │ p pause  k kill  m move · : palette

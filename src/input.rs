@@ -92,7 +92,7 @@ pub fn handle_key(app: &mut App, key: KeyCode) {
         app.open_palette();
         return;
     }
-    // `p` is run pause on a run target and the layout toggle everywhere else.
+    // `p` is run pause on a run target; the layout toggle is `v`, so the two never share a key.
     if let KeyCode::Char(c) = key {
         if app.begin_action(c) {
             return;
@@ -106,7 +106,7 @@ pub fn handle_key(app: &mut App, key: KeyCode) {
         KeyCode::Char('t') => app.toggle_theme(),
         // `s` was unbound in the landed keymap, so it opens the settings screen.
         KeyCode::Char('s') => app.open_settings(),
-        KeyCode::Char('p') => app.cycle_regatta_layout_preset(),
+        KeyCode::Char('v') => app.cycle_regatta_layout_preset(),
         KeyCode::Char('7') => app.toggle_history_frame(),
         KeyCode::Char('8') => app.toggle_run_cost_frame(),
         KeyCode::Char(c) if c.is_ascii_digit() && c != '0' => {
@@ -402,9 +402,9 @@ mod tests {
     }
 
     #[test]
-    fn char_p_advances_the_regatta_layout_preset() {
+    fn char_v_advances_the_regatta_layout_preset() {
         let mut app = App::default();
-        handle_key(&mut app, KeyCode::Char('p'));
+        handle_key(&mut app, KeyCode::Char('v'));
         assert_eq!(app.regatta_layout_preset(), 1);
     }
 
@@ -600,7 +600,7 @@ mod tests {
     }
 
     #[test]
-    fn p_on_a_run_opens_pause_and_on_machines_cycles_the_layout() {
+    fn p_on_a_run_opens_pause_and_v_cycles_the_layout() {
         let mut app = app_on_runs();
         handle_key(&mut app, KeyCode::Char('p'));
         assert_eq!(confirm_command(&app), Some("cox runs pause r0"));
@@ -611,6 +611,9 @@ mod tests {
         handle_key(&mut app, KeyCode::Right);
         assert_eq!(app.focus(), Focus::Machines);
         handle_key(&mut app, KeyCode::Char('p'));
+        assert!(app.modal().is_none());
+        assert_eq!(app.regatta_layout_preset(), 0);
+        handle_key(&mut app, KeyCode::Char('v'));
         assert!(app.modal().is_none());
         assert_eq!(app.regatta_layout_preset(), 1);
     }
