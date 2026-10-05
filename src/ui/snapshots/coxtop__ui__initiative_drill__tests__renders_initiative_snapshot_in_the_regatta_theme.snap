@@ -1,6 +1,6 @@
 ---
 source: src/ui/initiative_drill.rs
-assertion_line: 198
+assertion_line: 205
 expression: terminal.backend().to_string()
 ---
 "┌Initiative dash-feed-streams-a-versioned-json-snapshot-of─────────────────────────────────────────────────────────────┐"
@@ -42,4 +42,4 @@ expression: terminal.backend().to_string()
 "└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘"
 "┌history───────────────────────────────────────────────────────────────────────────────────────────────────────────────┐"
 "│22:10 phase p1-foundations landed                                                                                     │"
-"└] priority up  [ priority down────────────────────────────────────────────────────────────────────────────────────────┘"
+"└] priority up  [ priority down  e edit  x remove──────────────────────────────────────────────────────────────────────┘"

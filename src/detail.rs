@@ -55,6 +55,12 @@ pub struct InitiativeDetail {
     pub schema: u32,
     pub at: String,
     pub initiative: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub repo: String,
+    #[serde(default)]
+    pub body: String,
     pub phases: Vec<PhaseDetail>,
     pub history: Vec<HistoryEntry>,
 }
@@ -227,6 +233,31 @@ mod tests {
             }
             other => panic!("expected DetailSnapshot::Initiative, got {other:?}"),
         }
+    }
+
+    fn initiative_with(extra: &str) -> InitiativeDetail {
+        let line = format!(
+            r#"{{"schema":1,"kind":"initiative","at":"2026-09-29T12:00:00Z","initiative":"i1",{extra}"phases":[],"history":[]}}"#
+        );
+        match parse_detail(&line).expect("literal should parse") {
+            DetailSnapshot::Initiative(initiative) => initiative,
+            other => panic!("expected DetailSnapshot::Initiative, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_detail_reads_the_initiative_title_repo_and_body() {
+        let initiative =
+            initiative_with(r#""title":"A title","repo":"coxtop","body":"Some prose.","#);
+        assert_eq!(initiative.title, "A title");
+        assert_eq!(initiative.repo, "coxtop");
+        assert_eq!(initiative.body, "Some prose.");
+    }
+
+    #[test]
+    fn parse_detail_defaults_a_missing_initiative_body_to_empty() {
+        let initiative = initiative_with(r#""title":"A title","repo":"coxtop","#);
+        assert_eq!(initiative.body, "");
     }
 
     #[test]

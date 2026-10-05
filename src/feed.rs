@@ -269,6 +269,8 @@ pub struct QueueEntry {
     pub phases_landed: u32,
     pub phases_total: u32,
     pub current_phase: String,
+    #[serde(default)]
+    pub repo: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -281,6 +283,22 @@ pub struct InboxEntry {
 /// Deserializes one feed line into a [`FeedSnapshot`]. Does nothing but deserialize.
 pub fn parse_snapshot(line: &str) -> Result<FeedSnapshot, serde_json::Error> {
     serde_json::from_str(line)
+}
+
+/// The distinct non-empty repos of the queue, in order of first appearance.
+pub fn queue_repos(snapshot: &FeedSnapshot) -> Vec<String> {
+    snapshot
+        .queue
+        .iter()
+        .map(|entry| entry.repo.as_str())
+        .filter(|repo| !repo.is_empty())
+        .fold(Vec::new(), |seen, repo| {
+            if seen.iter().any(|s| s == repo) {
+                seen
+            } else {
+                seen.into_iter().chain([repo.to_string()]).collect()
+            }
+        })
 }
 
 /// What the feed reader delivers to the app: a parsed snapshot, or a one-line failure.
@@ -390,6 +408,35 @@ mod tests {
         let snapshot = parse_snapshot(FIXTURE).expect("fixture should parse");
         assert_eq!(snapshot.chair.session, "d2820a82");
         assert_eq!(snapshot.decisions.len(), 1);
+    }
+
+    fn with_queue(queue: &str) -> FeedSnapshot {
+        parse_snapshot(&format!(
+            r#"{{"schema":1,"at":"2026-09-29T00:00:00Z","chair":{{"holder":"h","host":"x","epoch":1,"liveness":"live","beat_age_s":1}},"spend":{{"five_hour_fraction":0.1,"five_hour_source":"meter","weekly_fraction":0.1,"weekly_source":"meter","hard_stop_fraction":0.9,"five_hour_resets_at":"2026-09-29T02:00:00Z","weekly_resets_at":"2026-10-04T04:00:00Z"}},"machines":[],"runs":[],"queue":{queue},"inbox":[],"watch":[]}}"#
+        ))
+        .expect("literal snapshot should parse")
+    }
+
+    #[test]
+    fn queue_repos_lists_distinct_repos_in_queue_order() {
+        let entry = |id: &str, repo: &str| {
+            format!(
+                r#"{{"initiative":"{id}","priority":1,"phases_landed":0,"phases_total":1,"current_phase":"p1","repo":"{repo}"}}"#
+            )
+        };
+        let queue = format!(
+            "[{},{},{}]",
+            entry("i1", "coxswain"),
+            entry("i2", "coxswain"),
+            entry("i3", "coxtop")
+        );
+        assert_eq!(queue_repos(&with_queue(&queue)), ["coxswain", "coxtop"]);
+    }
+
+    #[test]
+    fn queue_repos_skips_entries_without_a_repo() {
+        let queue = r#"[{"initiative":"i1","priority":1,"phases_landed":0,"phases_total":1,"current_phase":"p1"}]"#;
+        assert!(queue_repos(&with_queue(queue)).is_empty());
     }
 
     fn with_chair(chair: &str) -> String {
