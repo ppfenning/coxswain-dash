@@ -7,7 +7,7 @@ use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::widgets::{Block, Paragraph, Wrap};
+use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
 
 use crate::pty::PtySession;
 use crate::theme::Theme;
@@ -50,6 +50,15 @@ pub enum KeyOutcome {
     Consumed,
 }
 
+/// What `request_close` did, so the caller knows whether to ask the user.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CloseOutcome {
+    /// The panel is closed. No question was needed.
+    Closed,
+    /// The panel runs a session it started. It waits for `answer_close`.
+    NeedsConfirm,
+}
+
 /// Owns exactly one `PtySession` and the state of the terminal drawn from it.
 pub struct ChairPanel<P: PtySession> {
     pty: P,
@@ -58,6 +67,8 @@ pub struct ChairPanel<P: PtySession> {
     width: WidthMode,
     screen: Option<vt100::Parser>,
     error: Option<String>,
+    started: bool,
+    confirming_close: bool,
 }
 
 impl<P: PtySession> ChairPanel<P> {
@@ -69,6 +80,8 @@ impl<P: PtySession> ChairPanel<P> {
             width: WidthMode::Narrow,
             screen: None,
             error: None,
+            started: false,
+            confirming_close: false,
         }
     }
 
@@ -112,9 +125,23 @@ impl<P: PtySession> ChairPanel<P> {
             return;
         };
         let argv = ["claude", "attach", id].map(String::from);
-        match self.pty.spawn(&argv, rows, cols) {
+        self.spawn_session(&argv, rows, cols, false);
+    }
+
+    /// Starts `cox session`. A no-op while open, which also rules out attaching over it.
+    pub fn start_session(&mut self, rows: u16, cols: u16) {
+        if self.open {
+            return;
+        }
+        let argv = ["cox", "session"].map(String::from);
+        self.spawn_session(&argv, rows, cols, true);
+    }
+
+    fn spawn_session(&mut self, argv: &[String], rows: u16, cols: u16, started: bool) {
+        match self.pty.spawn(argv, rows, cols) {
             Ok(()) => {
                 self.open = true;
+                self.started = started;
                 self.error = None;
                 self.screen = Some(vt100::Parser::new(rows, cols, 0));
             }
@@ -127,7 +154,37 @@ impl<P: PtySession> ChairPanel<P> {
         }
     }
 
-    /// Kills the local attach process once and clears the panel. A no-op while closed.
+    /// True while the open pty is a session `start_session` spawned.
+    pub fn started(&self) -> bool {
+        self.started
+    }
+
+    /// True between `request_close` returning `NeedsConfirm` and `answer_close`.
+    pub fn confirming_close(&self) -> bool {
+        self.confirming_close
+    }
+
+    /// Closes at once unless the panel runs a started session, which waits for `answer_close`.
+    pub fn request_close(&mut self) -> CloseOutcome {
+        if self.started {
+            self.confirming_close = true;
+            CloseOutcome::NeedsConfirm
+        } else {
+            self.close();
+            CloseOutcome::Closed
+        }
+    }
+
+    /// `true` closes the session; `false` drops the question and leaves it running.
+    pub fn answer_close(&mut self, close: bool) {
+        if close {
+            self.close();
+        } else {
+            self.confirming_close = false;
+        }
+    }
+
+    /// Kills the local process once and clears the panel. A no-op while closed.
     pub fn close(&mut self) {
         if !self.open {
             return;
@@ -138,6 +195,8 @@ impl<P: PtySession> ChairPanel<P> {
         self.focused = false;
         self.screen = None;
         self.error = None;
+        self.started = false;
+        self.confirming_close = false;
     }
 
     /// Focus needs a live terminal to receive the keys.
@@ -194,7 +253,23 @@ impl<P: PtySession> ChairPanel<P> {
         let inner = block.inner(area);
         frame.render_widget(block, area);
         match (&self.screen, &self.error) {
-            (Some(parser), _) => draw_screen(frame.buffer_mut(), inner, parser.screen(), theme),
+            (Some(parser), _) => {
+                draw_screen(frame.buffer_mut(), inner, parser.screen(), theme);
+                if self.confirming_close {
+                    let prompt = Rect {
+                        y: inner.bottom().saturating_sub(1).max(inner.y),
+                        height: inner.height.min(1),
+                        ..inner
+                    };
+                    // Paragraph leaves cells past its text untouched; clear the child's row first.
+                    frame.render_widget(Clear, prompt);
+                    frame.render_widget(
+                        Paragraph::new("Closing ends this session. Close? (y/n)")
+                            .style(Style::new().fg(theme.fg).bg(theme.bg)),
+                        prompt,
+                    );
+                }
+            }
             (None, Some(message)) => frame.render_widget(
                 Paragraph::new(message.as_str())
                     .style(Style::new().fg(theme.fg).bg(theme.bg))
@@ -202,7 +277,7 @@ impl<P: PtySession> ChairPanel<P> {
                 inner,
             ),
             (None, None) => frame.render_widget(
-                Paragraph::new("no session published")
+                Paragraph::new("no session published\nEnter starts a session")
                     .style(Style::new().fg(theme.dim).bg(theme.bg)),
                 inner,
             ),
@@ -689,6 +764,92 @@ mod tests {
         assert_eq!(
             panel.pty().calls().last(),
             Some(&PtyCall::Resize { rows: 10, cols: 40 })
+        );
+    }
+
+    fn kills(calls: &[PtyCall]) -> usize {
+        calls.iter().filter(|c| **c == PtyCall::Kill).count()
+    }
+
+    fn started_panel() -> ChairPanel<FakePty> {
+        let mut panel = ChairPanel::new(FakePty::default());
+        panel.start_session(24, 80);
+        panel
+    }
+
+    #[test]
+    fn start_session_spawns_cox_session_once_and_sets_open_and_started() {
+        let panel = started_panel();
+        let argv = ["cox", "session"].map(String::from).to_vec();
+        assert_eq!(
+            panel.pty().calls(),
+            [PtyCall::Spawn {
+                argv,
+                rows: 24,
+                cols: 80
+            }]
+        );
+        assert_eq!((panel.is_open(), panel.started()), (true, true));
+    }
+
+    #[test]
+    fn request_close_on_a_started_panel_asks_then_kills_once_on_yes_and_never_on_no() {
+        let mut yes = started_panel();
+        assert_eq!(yes.request_close(), CloseOutcome::NeedsConfirm);
+        assert_eq!(kills(yes.pty().calls()), 0);
+        assert!(yes.confirming_close());
+        yes.answer_close(true);
+        assert_eq!(kills(yes.pty().calls()), 1);
+        assert_eq!((yes.is_open(), yes.started()), (false, false));
+
+        let mut no = started_panel();
+        no.request_close();
+        no.answer_close(false);
+        assert_eq!(kills(no.pty().calls()), 0);
+        assert_eq!((no.is_open(), no.confirming_close()), (true, false));
+    }
+
+    #[test]
+    fn request_close_on_an_attach_panel_kills_once_and_returns_closed() {
+        let mut panel = ChairPanel::new(FakePty::default());
+        panel.open(Some("abc"), 24, 80);
+        assert_eq!(panel.request_close(), CloseOutcome::Closed);
+        assert_eq!(kills(panel.pty().calls()), 1);
+        assert_eq!((panel.confirming_close(), panel.started()), (false, false));
+    }
+
+    #[test]
+    fn open_after_start_session_is_a_no_op_and_started_stays_true() {
+        let mut panel = started_panel();
+        panel.open(Some("d2820a82"), 10, 10);
+        assert_eq!(panel.pty().calls().len(), 1);
+        assert!(panel.started());
+    }
+
+    #[test]
+    fn the_confirm_prompt_replaces_the_bottom_row_and_keeps_the_rest_of_the_screen() {
+        let bottom = "z".repeat(48);
+        let output = format!("hello\r\n\r\n\r\n{bottom}");
+        let mut panel = ChairPanel::new(FakePty::with_output(output.as_bytes()));
+        panel.start_session(4, 48);
+        panel.poll();
+        panel.request_close();
+        let mut terminal = Terminal::new(TestBackend::new(50, 6)).unwrap();
+        terminal
+            .draw(|frame| panel.render(frame, frame.area(), &resolve(ThemeId::Regatta)))
+            .unwrap();
+        let rows: Vec<String> = terminal
+            .backend()
+            .to_string()
+            .lines()
+            .map(String::from)
+            .collect();
+        assert_eq!(
+            [rows[1].as_str(), rows[4].as_str()],
+            [
+                "\"│hello                                           │\"",
+                "\"│Closing ends this session. Close? (y/n)         │\"",
+            ]
         );
     }
 
