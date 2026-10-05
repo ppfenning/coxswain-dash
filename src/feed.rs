@@ -23,6 +23,8 @@ pub struct FeedSnapshot {
     pub watch: Vec<serde_json::Value>,
     #[serde(default)]
     pub decisions: Vec<Decision>,
+    #[serde(default)]
+    pub spend_series: Vec<SpendPoint>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -111,6 +113,46 @@ pub struct Run {
     pub cost: f64,
     pub verdict: String,
     pub status: String,
+    /// At most 60 points. Empty means the run has made no calls yet.
+    #[serde(default)]
+    pub cost_series: Vec<CostPoint>,
+}
+
+/// One `[at, cumulative_cost_usd, node]` point. `at` is RFC 3339 UTC, kept as sent.
+#[derive(Debug, Deserialize, PartialEq)]
+#[serde(from = "(String, f64, String)")]
+pub struct CostPoint {
+    pub at: String,
+    pub cumulative_cost_usd: f64,
+    pub node: String,
+}
+
+impl From<(String, f64, String)> for CostPoint {
+    fn from((at, cumulative_cost_usd, node): (String, f64, String)) -> Self {
+        Self {
+            at,
+            cumulative_cost_usd,
+            node,
+        }
+    }
+}
+
+/// One `[at, cumulative_cost_usd]` point per 10-minute slot that holds a call. `at` is the
+/// slot start in RFC 3339 UTC, kept as sent.
+#[derive(Debug, Deserialize, PartialEq)]
+#[serde(from = "(String, f64)")]
+pub struct SpendPoint {
+    pub at: String,
+    pub cumulative_cost_usd: f64,
+}
+
+impl From<(String, f64)> for SpendPoint {
+    fn from((at, cumulative_cost_usd): (String, f64)) -> Self {
+        Self {
+            at,
+            cumulative_cost_usd,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -294,6 +336,55 @@ mod tests {
         .expect("null action should parse")
         .chair;
         assert!(chair.current_action.is_none());
+    }
+
+    fn cost(at: &str, cumulative_cost_usd: f64, node: &str) -> CostPoint {
+        CostPoint {
+            at: at.to_string(),
+            cumulative_cost_usd,
+            node: node.to_string(),
+        }
+    }
+
+    fn spend(at: &str, cumulative_cost_usd: f64) -> SpendPoint {
+        SpendPoint {
+            at: at.to_string(),
+            cumulative_cost_usd,
+        }
+    }
+
+    #[test]
+    fn parse_snapshot_reads_the_cost_and_spend_series_from_the_fixture() {
+        let snapshot = parse_snapshot(FIXTURE).expect("fixture should parse");
+        assert_eq!(
+            snapshot.runs[0].cost_series,
+            vec![
+                cost("2026-10-04T14:00:10Z", 0.10, "plan"),
+                cost("2026-10-04T14:01:20Z", 0.42, "build"),
+                cost("2026-10-04T14:02:10Z", 0.84, "build"),
+            ]
+        );
+        assert!(snapshot.runs[1].cost_series.is_empty());
+        assert_eq!(
+            snapshot.spend_series,
+            vec![
+                spend("2026-10-04T13:40:00Z", 0.30),
+                spend("2026-10-04T13:50:00Z", 0.55),
+                spend("2026-10-04T14:00:00Z", 1.20),
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_snapshot_defaults_both_series_to_empty_when_the_keys_are_absent() {
+        let line = with_chair(&format!("{OLD_CHAIR}}}")).replace(
+            r#""runs":[]"#,
+            r#""runs":[{"run":"r1","machine":"m","phase":"p","node":"build","attempt":1,"turns":2,"cost":0.5,"verdict":"approve","status":"running"}]"#,
+        );
+        let snapshot = parse_snapshot(&line).expect("feed without series should parse");
+        assert_eq!(snapshot.runs.len(), 1);
+        assert!(snapshot.runs[0].cost_series.is_empty());
+        assert!(snapshot.spend_series.is_empty());
     }
 
     #[test]
