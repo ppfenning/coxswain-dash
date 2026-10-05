@@ -1,0 +1,29 @@
+---
+source: src/ui/form_frame.rs
+assertion_line: 150
+expression: screen
+---
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"        ┌Literal───────────────────────────────────────────────────────┐        "
+"        │   kind   beta  [alpha/beta/gamma]                            │        "
+"        │ > notes  first line  (22 chars)                              │        "
+"        │                                                              │        "
+"        │ Tab next  Enter confirm  Esc cancel                          │        "
+"        └──────────────────────────────────────────────────────────────┘        "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "

@@ -20,6 +20,7 @@ use crate::app::{App, Focus};
 use crate::feed::{
     Chair, FeedSnapshot, HistoryRow, HistoryToday, InboxEntry, Machine, Outcome, QueueEntry, Run,
 };
+use crate::form::KEY_ADD_MACHINE;
 use crate::theme::Theme;
 
 use super::chair_card::{Freshness, TICK_INTERVAL_S, beat_freshness, short_age};
@@ -1495,6 +1496,7 @@ fn key_bar_line(focus: Focus, width: u16, theme: &Theme) -> Line<'static> {
     let pair = |k: String, l: &str| [Span::styled(k, key), Span::styled(format!(" {l}"), label)];
     let actions = action_hints(focus)
         .into_iter()
+        .chain((focus == Focus::Machines).then_some((KEY_ADD_MACHINE, "add machine")))
         .enumerate()
         .flat_map(|(i, (k, l))| {
             (i > 0)
@@ -2574,7 +2576,7 @@ mod tests {
         (Focus::Runs, "p pause  k kill  m move"),
         (
             Focus::Machines,
-            "+ lanes up  - lanes down  d drain  a activate",
+            "+ lanes up  - lanes down  d drain  a activate  A add machine",
         ),
         (Focus::Queue, "] priority up  [ priority down"),
         (Focus::Inbox, "a accept  x deny"),
@@ -2596,7 +2598,7 @@ mod tests {
     fn a_fixed_key_that_does_not_fit_is_dropped_whole_from_the_end() {
         assert_eq!(
             key_bar_row(Focus::Machines, 120),
-            "1-6 frames \u{b7} \u{2190}\u{2192} focus \u{b7} \u{2191}\u{2193} select \u{b7} \u{23ce} drill down \u{b7} t theme \u{2502} + lanes up  - lanes down  d drain  a activate \u{b7} : palette"
+            "1-6 frames \u{b7} \u{2190}\u{2192} focus \u{b7} \u{2191}\u{2193} select \u{2502} + lanes up  - lanes down  d drain  a activate  A add machine \u{b7} : palette"
         );
         assert_eq!(
             key_bar_row(Focus::Queue, 120),

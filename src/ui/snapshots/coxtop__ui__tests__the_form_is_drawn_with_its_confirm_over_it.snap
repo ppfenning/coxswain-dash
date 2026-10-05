@@ -1,0 +1,18 @@
+---
+source: src/ui/mod.rs
+assertion_line: 552
+expression: text
+---
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭ 6 queue ──────────────────────────────────────────────────────────╮╭ inbox ──────────────────────────────────────────╮
+│  dash-feed-streams-a-versi┌Add machine───────────────────────────────────────────────────┐budget stop after 2 attempt│
+│                           │ ┌Add machine edge-1, then run cox host doctor edge-1───────┐ │                           │
+│                           │ │ $ cox host add edge-1 --ssh pat@edge-1 --capacity 4      │ │                           │
+│                           │ │                                                          │ │                           │
+│                           │ │ y run    n cancel                                        │ │                           │
+│                           │ └──────────────────────────────────────────────────────────┘ │                           │
+╰───────────────────────────│ Tab next  Enter confirm  Esc cancel                          │───────────────────────────╯
+╭ 8 run cost ───────────────└──────────────────────────────────────────────────────────────┘───────────────────────────╮
+│$2  │                                                                                                    ┌───────────┐│
+│    │                                                                                                    │dash-feed-1││
+1-6 frames · ←→ focus · ↑↓ select · ⏎ drill down · t theme · p layout · q quit │ p pause  k kill  m move · : palette
