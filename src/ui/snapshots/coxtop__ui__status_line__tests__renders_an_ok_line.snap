@@ -1,0 +1,6 @@
+---
+source: src/ui/status_line.rs
+assertion_line: 70
+expression: drawn(Some(&status)).backend().to_string()
+---
+"landed task p3-widgets                  "
