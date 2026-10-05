@@ -1,0 +1,13 @@
+---
+source: src/ui/regatta.rs
+expression: terminal.backend().to_string()
+---
+"╭ history ─────────────────────────────────────────────────────────────────────╮"
+"│today  3 lands  1 quarantines  $4.20  5 runs                                  │"
+"│  13:12 omarchy    dash-feed              landed #41                     $1.25│"
+"│  12:40 omarchy    dash-feed              approved                       $0.50│"
+"│  11:05 spare      history-frame          quarantined verify_failed      $2.10│"
+"│  10:30 spare      history-frame          stopped                        $0.30│"
+"│  09:15 omarchy    dash-feed              crashed                        $0.10│"
+"│  08:00 spare      history-frame          unknown                        $0.00│"
+"╰──────────────────────────────────────────────────────────────────────────────╯"
