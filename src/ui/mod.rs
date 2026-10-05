@@ -10,8 +10,6 @@ pub mod palette_frame;
 mod regatta;
 mod run_cost;
 pub mod run_drill;
-// The settings frame is not wired into the page dispatch yet.
-#[allow(dead_code)]
 pub mod settings_frame;
 mod slipstream;
 pub mod status_line;
@@ -68,7 +66,11 @@ fn render_modal(f: &mut Frame, app: &App, theme: &Theme) {
     }
 }
 
+/// An open settings screen takes the page body in place of the page or detail view.
 fn render_base(f: &mut Frame, app: &App, theme: &Theme) {
+    if let Some(screen) = app.settings() {
+        return settings_frame::render(f, f.area(), theme, screen);
+    }
     match (app.detail(), app.detail_error()) {
         (Some((kind, id, _)), Some(err)) => render_detail_error(f, *kind, id, err, theme),
         (Some((_, _, Some(DetailSnapshot::Run(detail)))), None) => {
@@ -611,5 +613,108 @@ mod tests {
         assert!(with_status[39].starts_with("stopped dash-feed-1"));
         assert!(!with_status[39].contains("frames"));
         assert_eq!(with_status[..39], bare[..39]);
+    }
+
+    const SETTINGS_ROWS: &str = r#"{"sections":[{"id":"budgets","rows":[{"section":"budgets","scope":"budgets","key":"max_usd","value":"20","file":"f.toml","tracked":true,"pat_only":false}]}]}"#;
+
+    fn settings_result(code: Option<i32>, output: &str) -> ExecResult {
+        ExecResult {
+            argv: Vec::new(),
+            code,
+            output: output.to_owned(),
+        }
+    }
+
+    fn settings_keys(app: &mut App, keys: &[KeyCode]) {
+        keys.iter()
+            .for_each(|key| app.settings_key(KeyEvent::from(*key)));
+    }
+
+    /// The feed-loaded app with the settings screen open and `budgets max_usd` staged at 40.
+    fn app_with_staged_settings() -> App {
+        let mut app = app_with_feed();
+        app.open_settings();
+        app.take_pending();
+        app.apply_exec_result(
+            settings_result(Some(0), SETTINGS_ROWS),
+            Origin::SettingsLoad,
+        );
+        settings_keys(
+            &mut app,
+            &[
+                KeyCode::Tab,
+                KeyCode::Enter,
+                KeyCode::Backspace,
+                KeyCode::Backspace,
+                KeyCode::Char('4'),
+                KeyCode::Char('0'),
+                KeyCode::Enter,
+            ],
+        );
+        app
+    }
+
+    fn settings_origin(apply: bool) -> Origin {
+        let (scope, key) = ("budgets".to_owned(), "max_usd".to_owned());
+        match apply {
+            true => Origin::SettingsApply { scope, key },
+            false => Origin::SettingsDryRun { scope, key },
+        }
+    }
+
+    fn settings_text(app: &App) -> String {
+        let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
+        rows(&draw(app, &theme))
+            .iter()
+            .map(|row| row.trim_end())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn the_settings_screen_replaces_the_page_over_a_loaded_snapshot() {
+        let mut app = app_with_feed();
+        app.open_settings();
+        app.apply_exec_result(
+            settings_result(Some(0), SETTINGS_ROWS),
+            Origin::SettingsLoad,
+        );
+        let text = settings_text(&app);
+        assert!(text.contains("budgets"));
+        assert!(text.contains("max_usd"));
+        assert!(!text.contains("1-6 frames"));
+        insta::assert_snapshot!(text);
+    }
+
+    #[test]
+    fn the_confirm_dialog_is_drawn_over_the_settings_screen() {
+        let mut app = app_with_staged_settings();
+        settings_keys(&mut app, &[KeyCode::Tab, KeyCode::Char('a')]);
+        let text = settings_text(&app);
+        assert!(text.contains("$ cox settings set budgets max_usd 40"));
+        assert!(text.contains("max_usd"));
+        insta::assert_snapshot!(text);
+    }
+
+    #[test]
+    fn a_refusal_is_drawn_beside_its_staged_field() {
+        let mut app = app_with_staged_settings();
+        app.apply_exec_result(
+            settings_result(Some(1), "max_usd must be below 30\n"),
+            settings_origin(false),
+        );
+        let text = settings_text(&app);
+        assert!(text.contains("max_usd must be below 30"));
+        insta::assert_snapshot!(text);
+    }
+
+    #[test]
+    fn an_apply_status_takes_the_footer_row_under_the_settings_screen() {
+        let mut app = app_with_staged_settings();
+        app.apply_exec_result(settings_result(Some(1), "locked\n"), settings_origin(true));
+        let with_status = settings_text(&app);
+        let footer = with_status.lines().last().unwrap_or("");
+        assert!(footer.contains("locked"));
+        assert!(!footer.contains("Tab next pane"));
     }
 }
