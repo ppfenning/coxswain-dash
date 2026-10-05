@@ -1,6 +1,6 @@
 ---
 source: src/ui/regatta.rs
-assertion_line: 2677
+assertion_line: 2987
 expression: "key_bar_row(Focus::Queue, 120)"
 ---
-1-6 frames · ←→ focus · ↑↓ select · ⏎ drill down │ ] priority up  [ priority down  n new  e edit  x remove · : palette
+1-9 frames · ←→ focus · ↑↓ select · ⏎ drill down │ ] priority up  [ priority down  n new  e edit  x remove · : palette
