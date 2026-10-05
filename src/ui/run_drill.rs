@@ -64,10 +64,18 @@ fn base_style(theme: &Theme) -> Style {
 }
 
 fn render_title(f: &mut Frame, rect: Rect, detail: &RunDetail, theme: &Theme) {
-    let line = Line::from(format!(
-        "{} | {} | {} | {}",
-        detail.run, detail.machine, detail.initiative, detail.phase
-    ));
+    // A field the store has not filled yet is left out rather than drawn as an empty cell.
+    let parts: Vec<&str> = [
+        &detail.run,
+        &detail.machine,
+        &detail.initiative,
+        &detail.phase,
+    ]
+    .into_iter()
+    .map(String::as_str)
+    .filter(|part| !part.is_empty())
+    .collect();
+    let line = Line::from(parts.join(" | "));
     let paragraph = Paragraph::new(line).style(Style::default().fg(theme.accent).bg(theme.bg));
     f.render_widget(paragraph, rect);
 }
