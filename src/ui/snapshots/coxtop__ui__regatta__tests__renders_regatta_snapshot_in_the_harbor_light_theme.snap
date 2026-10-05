@@ -27,7 +27,7 @@ expression: terminal.backend().to_string()
 "╰──────────────────────────────────────────────────────────╯╰──────────────────────────────────────────────────────────╯"
 "╭5 runs────────────────────────────────────────────────────╮╭6 queue───────────────────────────────────────────────────╮"
 "│▶ dash-feed-1 omarchy p1-foundations build 0.84           ││  dash-feed-streams-a-versioned-json-snapshot-of 0/3 p1-fo│"
-"│                                                          ││                                                          │"
+"│  dash-feed-2 omarchy p1-foundations plan 0.00            ││                                                          │"
 "│                                                          ││                                                          │"
 "│                                                          ││                                                          │"
 "│                                                          ││                                                          │"

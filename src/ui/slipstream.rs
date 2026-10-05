@@ -582,6 +582,7 @@ mod tests {
             cost: 0.0,
             verdict: String::new(),
             status: status.to_string(),
+            cost_series: Vec::new(),
         }
     }
 

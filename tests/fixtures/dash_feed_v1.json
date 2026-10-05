@@ -4,9 +4,10 @@
   "chair": {"holder": "chair@omarchy:12345", "host": "omarchy", "epoch": 7, "liveness": "live", "beat_age_s": 4, "session": "d2820a82", "last_tick_at": "09-28 19:59 EDT", "last_status": "chair 09-28 19:59 EDT | landed 2, launched 1", "current_action": {"kind": "land", "target": "dash-feed/p2-feed", "since": "2026-09-28T23:59:50Z"}, "today": {"lands": 2, "launches": 1, "refused_or_failed": 1, "needs_chair_open": 1}},
   "spend": {"five_hour_fraction": 0.16, "five_hour_source": "meter", "weekly_fraction": 0.35, "weekly_source": "meter", "hard_stop_fraction": 0.93, "five_hour_resets_at": "2026-09-29T02:00:00Z", "weekly_resets_at": "2026-10-04T04:00:00Z"},
   "machines": [{"name": "omarchy", "state": "active", "lanes_in_use": 2, "capacity": 3, "login_ok": true, "login_checked_at": "2026-09-28T23:50:00Z", "beat_age_s": 12, "checkouts": {"coxswain-tools": {"behind_main": 0}}}],
-  "runs": [{"run": "dash-feed-1", "machine": "omarchy", "phase": "p1-foundations", "node": "build", "attempt": 1, "turns": 12, "cost": 0.84, "verdict": "approve", "status": "running"}],
+  "runs": [{"run": "dash-feed-1", "machine": "omarchy", "phase": "p1-foundations", "node": "build", "attempt": 1, "turns": 12, "cost": 0.84, "verdict": "approve", "status": "running", "cost_series": [["2026-10-04T14:00:10Z", 0.10, "plan"], ["2026-10-04T14:01:20Z", 0.42, "build"], ["2026-10-04T14:02:10Z", 0.84, "build"]]}, {"run": "dash-feed-2", "machine": "omarchy", "phase": "p1-foundations", "node": "plan", "attempt": 1, "turns": 0, "cost": 0.0, "verdict": "none", "status": "running", "cost_series": []}],
   "queue": [{"initiative": "dash-feed-streams-a-versioned-json-snapshot-of", "priority": 1, "phases_landed": 0, "phases_total": 3, "current_phase": "p1-foundations"}],
   "inbox": [{"kind": "needs_chair", "target": "some-task", "reason": "budget stop after 2 attempts"}],
   "watch": [],
-  "decisions": [{"id": "dec-1", "question": "Ship the 0.26 preview now?", "options": ["ship", "hold"], "context": "Spend is under the raised stop for the preview.", "asked_at": "2026-09-29T00:00:00Z"}]
+  "decisions": [{"id": "dec-1", "question": "Ship the 0.26 preview now?", "options": ["ship", "hold"], "context": "Spend is under the raised stop for the preview.", "asked_at": "2026-09-29T00:00:00Z"}],
+  "spend_series": [["2026-10-04T13:40:00Z", 0.30], ["2026-10-04T13:50:00Z", 0.55], ["2026-10-04T14:00:00Z", 1.20]]
 }
