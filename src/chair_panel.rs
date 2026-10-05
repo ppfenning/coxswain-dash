@@ -69,6 +69,11 @@ pub struct ChairPanel<P: PtySession> {
     error: Option<String>,
     started: bool,
     confirming_close: bool,
+    /// The last line a session printed before it exited on its own, shown until the next open.
+    ended: Option<String>,
+    /// The session id being attached to, and one whose attach already exited: never retried.
+    attached: Option<String>,
+    dead_attach: Option<String>,
 }
 
 impl<P: PtySession> std::fmt::Debug for ChairPanel<P> {
@@ -91,7 +96,20 @@ impl<P: PtySession> ChairPanel<P> {
             error: None,
             started: false,
             confirming_close: false,
+            ended: None,
+            attached: None,
+            dead_attach: None,
         }
+    }
+
+    /// False for a session id whose attach already exited, so the caller starts a new session.
+    pub fn attachable(&self, id: &str) -> bool {
+        self.dead_attach.as_deref() != Some(id)
+    }
+
+    /// What the last session printed before it ended on its own; None after a new open.
+    pub fn ended(&self) -> Option<&str> {
+        self.ended.as_deref()
     }
 
     pub fn pty(&self) -> &P {
@@ -129,10 +147,11 @@ impl<P: PtySession> ChairPanel<P> {
         if self.open {
             return;
         }
-        let Some(id) = session_id else {
+        let Some(id) = session_id.filter(|id| self.attachable(id)) else {
             self.error = None;
             return;
         };
+        self.attached = Some(id.to_string());
         let argv = ["claude", "attach", id].map(String::from);
         self.spawn_session(&argv, rows, cols, false);
     }
@@ -142,11 +161,13 @@ impl<P: PtySession> ChairPanel<P> {
         if self.open {
             return;
         }
+        self.attached = None;
         let argv = ["cox", "session"].map(String::from);
         self.spawn_session(&argv, rows, cols, true);
     }
 
     fn spawn_session(&mut self, argv: &[String], rows: u16, cols: u16, started: bool) {
+        self.ended = None;
         match self.pty.spawn(argv, rows, cols) {
             Ok(()) => {
                 self.open = true;
@@ -247,6 +268,23 @@ impl<P: PtySession> ChairPanel<P> {
         if let Some(parser) = self.screen.as_mut() {
             parser.process(&self.pty.read_output());
         }
+        // A session that exits on its own closes the panel and hands keys back, so the panel
+        // never holds focus on a dead process. A failed attach is not retried.
+        if self.open && self.pty.has_exited() {
+            let last = self
+                .screen_text()
+                .lines()
+                .rev()
+                .find(|line| !line.trim().is_empty())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            if !self.started {
+                self.dead_attach = self.attached.take();
+            }
+            self.close();
+            self.ended = Some(last);
+        }
     }
 
     pub fn render(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
@@ -283,6 +321,15 @@ impl<P: PtySession> ChairPanel<P> {
                 Paragraph::new(message.as_str())
                     .style(Style::new().fg(theme.fg).bg(theme.bg))
                     .wrap(Wrap { trim: true }),
+                inner,
+            ),
+            (None, None) if self.ended.is_some() => frame.render_widget(
+                Paragraph::new(format!(
+                    "{}\n\nsession ended \u{b7} Enter starts a new session \u{b7} ` hides",
+                    self.ended.as_deref().unwrap_or("")
+                ))
+                .style(Style::new().fg(theme.dim).bg(theme.bg))
+                .wrap(Wrap { trim: true }),
                 inner,
             ),
             (None, None) => frame.render_widget(

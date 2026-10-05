@@ -335,6 +335,16 @@ impl App {
     }
 
     /// Hands focus to or from a shown panel with no session. Only a shown, closed panel takes it.
+    /// Polls the panel's pty. When its session ended on its own, the shown panel keeps focus so
+    /// Enter starts a new session and the backtick hides it.
+    pub fn poll_chair_panel(&mut self) {
+        let was_open = self.chair_panel.is_open();
+        self.chair_panel.poll();
+        if was_open && !self.chair_panel.is_open() {
+            self.set_chair_panel_focus(true);
+        }
+    }
+
     pub fn set_chair_panel_focus(&mut self, focused: bool) {
         self.chair_panel_focused = focused && self.chair_panel_shown && !self.chair_panel.is_open();
     }
@@ -350,7 +360,10 @@ impl App {
     }
 
     fn published_session(&self) -> Option<&str> {
-        self.snapshot.as_ref().and_then(|s| session_id(&s.chair))
+        self.snapshot
+            .as_ref()
+            .and_then(|s| session_id(&s.chair))
+            .filter(|id| self.chair_panel.attachable(id))
     }
 
     /// An open panel goes through `request_close`, and a started session waits there for
@@ -1150,6 +1163,38 @@ mod tests {
                 cols: PANEL_COLS
             }]
         );
+    }
+
+    #[test]
+    fn a_failed_attach_closes_the_panel_frees_the_keys_and_is_not_retried() {
+        let fake = crate::pty::SharedFakePty::default();
+        let mut app = App::default().with_pty(Box::new(fake.clone()));
+        app.apply_snapshot(snapshot_with_decisions(&["d1"]));
+        app.toggle_chair_panel();
+        assert!(app.chair_panel().is_open());
+        fake.0.borrow_mut().set_exited();
+        app.poll_chair_panel();
+        assert!(!app.chair_panel().is_open());
+        assert!(!app.chair_panel().focused());
+        assert!(app.chair_panel().ended().is_some());
+        // The dead session is no longer offered, so Enter would start a new one.
+        assert!(app.chair_panel_awaits_start());
+        let spawns = fake
+            .0
+            .borrow()
+            .calls()
+            .iter()
+            .filter(|c| matches!(c, crate::pty::PtyCall::Spawn { .. }))
+            .count();
+        app.toggle_chair_panel();
+        let after = fake
+            .0
+            .borrow()
+            .calls()
+            .iter()
+            .filter(|c| matches!(c, crate::pty::PtyCall::Spawn { .. }))
+            .count();
+        assert_eq!(spawns, after, "no second attach to the dead session");
     }
 
     #[test]
