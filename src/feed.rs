@@ -134,6 +134,9 @@ pub struct Chair {
     /// A local display string such as "09-28 19:59 EDT", not RFC 3339. Do not pass it to `ui::local_time`.
     #[serde(default)]
     pub last_tick_at: Option<String>,
+    /// Seconds since the chair's last tick; absent or null on older feeds.
+    #[serde(default)]
+    pub tick_age_s: Option<u64>,
     #[serde(default)]
     pub last_status: Option<String>,
     #[serde(default)]
@@ -490,6 +493,33 @@ mod tests {
         .expect("null action should parse")
         .chair;
         assert!(chair.current_action.is_none());
+    }
+
+    #[test]
+    fn parse_snapshot_reads_tick_age_s_when_present() {
+        let chair = parse_snapshot(&with_chair(&format!(r#"{OLD_CHAIR},"tick_age_s":42}}"#)))
+            .expect("chair with tick age should parse")
+            .chair;
+        assert_eq!(chair.tick_age_s, Some(42));
+    }
+
+    #[test]
+    fn parse_snapshot_without_tick_age_s_leaves_it_none_and_the_rest_unchanged() {
+        let chair = parse_snapshot(&with_chair(&format!("{OLD_CHAIR}}}")))
+            .expect("old chair should parse")
+            .chair;
+        assert!(chair.tick_age_s.is_none());
+        assert_eq!(chair.holder, "h");
+        assert_eq!(chair.beat_age_s, 4);
+        assert_eq!(chair.session, "");
+        assert!(chair.last_tick_at.is_none());
+        assert!(chair.last_status.is_none());
+        assert!(chair.current_action.is_none());
+        assert_eq!(chair.today, ChairToday::default());
+        let null_age = parse_snapshot(&with_chair(&format!(r#"{OLD_CHAIR},"tick_age_s":null}}"#)))
+            .expect("null tick age should parse")
+            .chair;
+        assert!(null_age.tick_age_s.is_none());
     }
 
     fn cost(at: &str, cumulative_cost_usd: f64, node: &str) -> CostPoint {
