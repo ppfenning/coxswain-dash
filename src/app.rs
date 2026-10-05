@@ -19,6 +19,8 @@ use crate::decision_card::DecisionCard;
 use crate::detail::DetailSnapshot;
 use crate::exec::{ExecResult, StatusLevel, frame_lines, status_summary};
 use crate::feed::{Chair, FeedSnapshot};
+use crate::form::{Form, FormAnswer, shell_join};
+use crate::form_machine;
 use crate::palette::{PaletteEvent, PaletteState};
 use crate::pty::{PtySession, RealPty};
 use crate::settings;
@@ -84,8 +86,18 @@ pub enum Origin {
     Action,
     Palette,
     SettingsLoad,
-    SettingsDryRun { scope: String, key: String },
-    SettingsApply { scope: String, key: String },
+    SettingsDryRun {
+        scope: String,
+        key: String,
+    },
+    SettingsApply {
+        scope: String,
+        key: String,
+    },
+    /// A step of the open form's plan, counted from zero.
+    Form {
+        step: usize,
+    },
 }
 
 /// A command the app wants run. The loop in `main` takes it, runs it and reports back.
@@ -171,6 +183,12 @@ pub struct App {
     confirm_origin: Option<Origin>,
     status: Option<(StatusLevel, String)>,
     settings: Option<SettingsScreen>,
+    /// The open form. It stays here underneath its confirm and until the plan ends.
+    form: Option<Form>,
+    /// The argv of each step of the submitted plan, kept so later edits cannot change it.
+    form_steps: Vec<Vec<String>>,
+    /// The body field a form asked an editor for. Emptied by `take_editor_request`.
+    editor_request: Option<usize>,
 }
 
 /// The `cox settings get --json` command that fills the settings screen.
@@ -219,6 +237,9 @@ impl Default for App {
             confirm_origin: None,
             status: None,
             settings: None,
+            form: None,
+            form_steps: Vec::new(),
+            editor_request: None,
         }
     }
 }
@@ -679,6 +700,73 @@ impl App {
         self.modal = Some(Modal::Palette(PaletteState::open()));
     }
 
+    pub fn form(&self) -> Option<&Form> {
+        self.form.as_ref()
+    }
+
+    pub fn open_add_machine(&mut self) {
+        self.form = Some(form_machine::form());
+    }
+
+    /// The body field index a form asked an editor for, once.
+    pub fn take_editor_request(&mut self) -> Option<usize> {
+        self.editor_request.take()
+    }
+
+    /// Sends a key to the open form. A confirm over the form takes keys through `modal_key`.
+    pub fn form_key(&mut self, key: KeyEvent) {
+        if self.modal.is_some() {
+            return;
+        }
+        let answer = self.form.as_mut().map(|form| form.handle_key(key));
+        match answer {
+            Some(FormAnswer::Cancel) => self.form = None,
+            Some(FormAnswer::OpenEditor(idx)) => self.editor_request = Some(idx),
+            Some(FormAnswer::Submit) => self.submit_form(),
+            Some(FormAnswer::Editing) | None => {}
+        }
+    }
+
+    /// Opens a confirm on the plan's first step, or leaves the form open showing its error.
+    fn submit_form(&mut self) {
+        let plan = self.form.as_mut().and_then(Form::submit);
+        if let Some(plan) = plan
+            && let Some(first) = plan.steps.first().cloned()
+        {
+            let display = shell_join(&first);
+            self.form_steps = plan.steps;
+            self.open_confirm(plan.confirm_title, first, display, Origin::Form { step: 0 });
+        }
+    }
+
+    /// Runs the form plan forward. A further step is queued on success. The last step, or a
+    /// failure after the first, closes the form and shows the result in the palette frame.
+    /// A failure on the first step leaves the form open for another try.
+    fn form_result(&mut self, result: &ExecResult, step: usize) {
+        let next = if result.code == Some(0) {
+            self.form_steps.get(step + 1).cloned()
+        } else {
+            None
+        };
+        match next {
+            Some(argv) => self.queue(Pending {
+                argv,
+                origin: Origin::Form { step: step + 1 },
+            }),
+            None if step == 0 && result.code != Some(0) => {
+                self.status = Some(status_summary(result));
+            }
+            None => {
+                self.form = None;
+                self.form_steps = Vec::new();
+                self.status = Some(status_summary(result));
+                let mut palette = PaletteState::open();
+                palette.set_output(frame_lines(result));
+                self.modal = Some(Modal::Palette(palette));
+            }
+        }
+    }
+
     /// Routes a key to the open modal. A command is queued only while none is pending, so one
     /// confirm runs one command.
     pub fn modal_key(&mut self, key: KeyEvent) {
@@ -739,6 +827,7 @@ impl App {
                     palette.set_output(frame_lines(&result));
                 }
             }
+            Origin::Form { step } => self.form_result(&result, step),
             Origin::SettingsLoad => self.settings_loaded(&result),
             Origin::SettingsDryRun { scope, key } => {
                 if let Some(screen) = self.settings.as_mut() {
@@ -1881,5 +1970,210 @@ mod tests {
                 Some(Origin::SettingsLoad)
             );
         }
+    }
+
+    fn form_keys(app: &mut App, keys: &[crossterm::event::KeyCode]) {
+        keys.iter().for_each(|code| app.form_key(press(*code)));
+    }
+
+    fn type_into_form(app: &mut App, text: &str) {
+        text.chars()
+            .for_each(|c| app.form_key(press(crossterm::event::KeyCode::Char(c))));
+    }
+
+    /// Fills the add machine form and presses Enter on its last field.
+    fn submitted_machine_form() -> App {
+        use crossterm::event::KeyCode::{Backspace, Enter};
+        let mut app = App::default();
+        app.open_add_machine();
+        type_into_form(&mut app, "edge-1");
+        form_keys(&mut app, &[Enter]);
+        type_into_form(&mut app, "pat@edge-1");
+        form_keys(&mut app, &[Enter, Backspace]);
+        type_into_form(&mut app, "4");
+        form_keys(&mut app, &[Enter, Enter]);
+        app
+    }
+
+    fn form_result_of(words: &[&str], code: Option<i32>, output: &str) -> ExecResult {
+        ExecResult {
+            argv: argv(words),
+            code,
+            output: output.to_string(),
+        }
+    }
+
+    const ADD: [&str; 8] = [
+        "cox",
+        "host",
+        "add",
+        "edge-1",
+        "--ssh",
+        "pat@edge-1",
+        "--capacity",
+        "4",
+    ];
+
+    #[test]
+    fn submitting_a_filled_machine_form_confirms_the_exact_add_command() {
+        let app = submitted_machine_form();
+        let Some(Modal::Confirm(confirm)) = app.modal() else {
+            panic!("expected a confirm, got {:?}", app.modal());
+        };
+        assert_eq!(
+            confirm.command,
+            "cox host add edge-1 --ssh pat@edge-1 --capacity 4"
+        );
+        assert!(app.form().is_some());
+    }
+
+    #[test]
+    fn no_on_the_confirm_returns_to_the_form_with_its_values() {
+        let mut app = submitted_machine_form();
+        app.modal_key(press(crossterm::event::KeyCode::Char('n')));
+        assert_eq!(app.modal(), None);
+        assert_eq!(app.take_pending(), None);
+        let form = app.form().expect("the form stays open");
+        assert_eq!(form.value_of("name"), "edge-1");
+        assert_eq!(form.value_of("ssh"), "pat@edge-1");
+        assert_eq!(form.value_of("capacity"), "4");
+    }
+
+    #[test]
+    fn yes_on_the_confirm_sets_pending_to_the_add_argv_with_step_zero() {
+        let mut app = submitted_machine_form();
+        app.modal_key(press(crossterm::event::KeyCode::Char('y')));
+        assert_eq!(
+            app.take_pending(),
+            Some(Pending {
+                argv: argv(&ADD),
+                origin: Origin::Form { step: 0 },
+            })
+        );
+        assert!(app.form().is_some());
+    }
+
+    #[test]
+    fn a_refused_add_keeps_the_form_open_and_shows_the_refusal() {
+        let mut app = submitted_machine_form();
+        app.modal_key(press(crossterm::event::KeyCode::Char('y')));
+        app.take_pending();
+        let refused = form_result_of(&ADD, Some(2), "host edge-1 already exists");
+        app.apply_exec_result(refused, Origin::Form { step: 0 });
+        assert!(app.form().is_some());
+        assert_eq!(app.modal(), None);
+        assert_eq!(
+            app.status(),
+            Some(&(
+                StatusLevel::Failed,
+                "failed (exit 2): host edge-1 already exists".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn a_successful_add_sets_pending_to_the_doctor_argv_with_step_one() {
+        let mut app = submitted_machine_form();
+        app.modal_key(press(crossterm::event::KeyCode::Char('y')));
+        app.take_pending();
+        app.apply_exec_result(form_result_of(&ADD, Some(0), ""), Origin::Form { step: 0 });
+        assert_eq!(
+            app.take_pending(),
+            Some(Pending {
+                argv: argv(&["cox", "host", "doctor", "edge-1"]),
+                origin: Origin::Form { step: 1 },
+            })
+        );
+        assert!(app.form().is_some());
+    }
+
+    #[test]
+    fn the_doctor_result_closes_the_form_and_fills_the_palette_frame() {
+        let mut app = submitted_machine_form();
+        app.modal_key(press(crossterm::event::KeyCode::Char('y')));
+        app.take_pending();
+        app.apply_exec_result(form_result_of(&ADD, Some(0), ""), Origin::Form { step: 0 });
+        app.take_pending();
+        let doctor = ["cox", "host", "doctor", "edge-1"];
+        app.apply_exec_result(
+            form_result_of(&doctor, Some(0), "ssh ok"),
+            Origin::Form { step: 1 },
+        );
+        assert!(app.form().is_none());
+        let Some(Modal::Palette(palette)) = app.modal() else {
+            panic!("expected a palette, got {:?}", app.modal());
+        };
+        let output = palette.output().expect("the palette is in frame mode");
+        assert_eq!(
+            output.first().map(String::as_str),
+            Some("$ cox host doctor edge-1")
+        );
+        assert_eq!(app.status(), Some(&(StatusLevel::Ok, "ssh ok".to_string())));
+    }
+
+    #[test]
+    fn a_failed_doctor_still_closes_the_form_and_shows_its_lines() {
+        let mut app = submitted_machine_form();
+        app.modal_key(press(crossterm::event::KeyCode::Char('y')));
+        app.take_pending();
+        app.apply_exec_result(form_result_of(&ADD, Some(0), ""), Origin::Form { step: 0 });
+        app.take_pending();
+        let doctor = ["cox", "host", "doctor", "edge-1"];
+        app.apply_exec_result(
+            form_result_of(&doctor, Some(1), "ssh refused"),
+            Origin::Form { step: 1 },
+        );
+        assert!(app.form().is_none());
+        assert!(matches!(app.modal(), Some(Modal::Palette(_))));
+        assert_eq!(
+            app.status().map(|(level, _)| *level),
+            Some(StatusLevel::Failed)
+        );
+    }
+
+    #[test]
+    fn an_invalid_form_shows_its_error_and_opens_no_confirm() {
+        use crossterm::event::KeyCode::Enter;
+        let mut app = App::default();
+        app.open_add_machine();
+        form_keys(&mut app, &[Enter, Enter, Enter, Enter]);
+        assert_eq!(app.modal(), None);
+        let form = app.form().expect("the form stays open");
+        assert_eq!(
+            form.error.as_deref(),
+            Some("name must be non-empty with no whitespace")
+        );
+    }
+
+    #[test]
+    fn esc_closes_the_form() {
+        let mut app = App::default();
+        app.open_add_machine();
+        form_keys(&mut app, &[crossterm::event::KeyCode::Esc]);
+        assert!(app.form().is_none());
+    }
+
+    #[test]
+    fn form_keys_are_ignored_while_a_confirm_is_open() {
+        let mut app = submitted_machine_form();
+        type_into_form(&mut app, "x");
+        assert_eq!(app.form().map(|f| f.value_of("capabilities")), Some(""));
+    }
+
+    #[test]
+    fn a_second_yes_on_a_form_confirm_while_pending_is_ignored() {
+        let mut app = submitted_machine_form();
+        app.modal_key(press(crossterm::event::KeyCode::Char('y')));
+        form_keys(&mut app, &[crossterm::event::KeyCode::Enter]);
+        app.modal_key(press(crossterm::event::KeyCode::Char('y')));
+        assert_eq!(app.take_pending().map(|p| p.argv), Some(argv(&ADD)));
+        assert_eq!(app.take_pending(), None);
+    }
+
+    #[test]
+    fn take_editor_request_is_empty_without_a_body_field() {
+        let mut app = App::default();
+        app.open_add_machine();
+        assert_eq!(app.take_editor_request(), None);
     }
 }
