@@ -1,0 +1,19 @@
+---
+source: src/ui/settings_frame.rs
+assertion_line: 690
+expression: terminal.backend().to_string()
+---
+"> lanes and machines   lanes and machines                                                           "
+"  models and tiers     > lanes.max   4  .cox/settings.toml  git-tracked                             "
+"  crew seats             lanes.idle  2  ~/.cox/local.toml   machine-local                           "
+"                                                                                                    "
+"                       staged                                                                       "
+"                       > $ cox settings set repo lanes.max 6 --dry-run                              "
+"                           --- .cox/settings.toml                                                   "
+"                           +++ .cox/settings.toml                                                   "
+"                           -lanes.max = 4                                                           "
+"                           +lanes.max = 6                                                           "
+"                                                                                                    "
+"                                                                                                    "
+"                                                                                                    "
+"Up/Down entry   a apply   x unstage   Tab next pane   r reload   Esc close                          "
