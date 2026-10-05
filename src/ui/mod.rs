@@ -316,7 +316,7 @@ mod tests {
         let theme = crate::theme::resolve(ThemeId::Regatta);
         let buffer = draw(&app, &theme);
         let text = screen(&buffer);
-        assert!(text.contains("chair@host-b:12345 host-b live"));
+        assert!(text.contains("chair@host-b:12345 @ host-b"));
         assert_drawn_in(&buffer, ERROR_LINE, theme.status_failed);
         assert_eq!(text.matches("feed error").count(), 1);
         for traceback in ["Traceback", "most recent call", "File \"x\""] {
