@@ -106,6 +106,8 @@ pub struct App {
     /// The history frame's visibility, kept apart from the six numbered frames so their
     /// fixed-size array and its consumers in `ui` stay as they are.
     history_visible: bool,
+    /// The run cost frame's visibility, apart from the six numbered frames for the same reason.
+    run_cost_visible: bool,
     regatta_layout_preset: usize,
     lanes_history: Vec<(String, u32)>,
     utc_offset: FixedOffset,
@@ -126,6 +128,7 @@ impl Default for App {
             theme: ThemeId::Regatta,
             regatta_frames_visible: [true; 6],
             history_visible: true,
+            run_cost_visible: true,
             regatta_layout_preset: 0,
             lanes_history: Vec::new(),
             utc_offset: FixedOffset::east_opt(0).expect("zero is a valid UTC offset"),
@@ -184,6 +187,10 @@ impl App {
 
     pub fn regatta_history_visible(&self) -> bool {
         self.history_visible
+    }
+
+    pub fn regatta_run_cost_visible(&self) -> bool {
+        self.run_cost_visible
     }
 
     pub fn regatta_layout_preset(&self) -> usize {
@@ -271,6 +278,11 @@ impl App {
     /// Flips the history frame's visibility; the history frame's number key is 7.
     pub fn toggle_history_frame(&mut self) {
         self.history_visible = !self.history_visible;
+    }
+
+    /// Flips the run cost frame's visibility; the run cost frame's number key is 8.
+    pub fn toggle_run_cost_frame(&mut self) {
+        self.run_cost_visible = !self.run_cost_visible;
     }
 
     pub fn cycle_regatta_layout_preset(&mut self) {
@@ -824,6 +836,18 @@ mod tests {
             app.cycle_focus_next();
         }
         app
+    }
+
+    #[test]
+    fn toggle_run_cost_frame_flips_only_the_run_cost_flag() {
+        let mut app = App::default();
+        assert!(app.regatta_run_cost_visible());
+        app.toggle_run_cost_frame();
+        assert!(!app.regatta_run_cost_visible());
+        assert!(app.regatta_history_visible());
+        assert_eq!(app.regatta_frames_visible(), [true; 6]);
+        app.toggle_run_cost_frame();
+        assert!(app.regatta_run_cost_visible());
     }
 
     #[test]
