@@ -1,0 +1,15 @@
+---
+source: src/ui/palette_frame.rs
+assertion_line: 195
+expression: "draw(ThemeId::Regatta, &state).backend().to_string()"
+---
+" ┌cox─────────────────────────────────┐ "
+" │alpha                               │ "
+" │bravo                               │ "
+" │charlie                             │ "
+" │delta                               │ "
+" │echo                                │ "
+" │foxtrot                             │ "
+" │Up Down scroll    Esc close         │ "
+" └────────────────────────────────────┘ "
+"                                        "
