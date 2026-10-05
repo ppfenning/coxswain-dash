@@ -24,8 +24,8 @@ use crate::form::{KEY_ADD_MACHINE, KEY_EDIT, KEY_NEW, KEY_REMOVE};
 use crate::theme::Theme;
 
 use super::chair_card::{Freshness, TICK_INTERVAL_S, beat_freshness, short_age};
-use super::local_time;
 use super::run_cost::{chart_bounds, dollar_labels, drawable};
+use super::{CollapsedRun, collapse_runs, count_suffix, end_chip, local_time};
 
 /// Cells in a spend meter, and the least one shrinks to in a narrow frame.
 const METER_WIDTH: usize = 26;
@@ -97,7 +97,7 @@ pub fn row_at(area: Rect, app: &App, x: u16, y: u16) -> Option<(Focus, usize)> {
     let (rects, _) = layout_rects(area, app);
     let candidates = [
         (2, Focus::Machines, snapshot.machines.len()),
-        (4, Focus::Runs, snapshot.runs.len()),
+        (4, Focus::Runs, collapse_runs(&snapshot.runs).len()),
         (5, Focus::Queue, snapshot.queue.len()),
     ];
     for (idx, focus, len) in candidates {
@@ -939,19 +939,6 @@ fn render_lane_runs(f: &mut Frame, area: Rect, runs: &[Run], theme: &Theme) {
     f.render_widget(Paragraph::new(lines).style(base_style(theme)), area);
 }
 
-/// A run's status word's color. The four terminal-ish statuses have their own roles; anything
-/// else is waiting.
-fn status_color(theme: &Theme, status: &str) -> Color {
-    match status {
-        "running" => theme.status_running,
-        "approved" => theme.approved,
-        "landed" => theme.landed,
-        "quarantined" => theme.quarantined,
-        "failed" => theme.status_failed,
-        _ => theme.status_waiting,
-    }
-}
-
 /// Widths of the runs columns, left to right: run, machine, phase, node. The runs frame joins
 /// phase and node into one stage column of `STAGE_WIDTH`. ATT and COST are right-aligned in
 /// `ATT_WIDTH` and `COST_WIDTH`.
@@ -1037,19 +1024,23 @@ fn run_header(theme: &Theme) -> Line<'static> {
     Line::styled(line, Style::default().fg(theme.dim))
 }
 
-/// One run's row. A selected row is prefixed `▶` and sits on `theme.selected_row`.
-fn run_row(r: &Run, selected: bool, theme: &Theme) -> Line<'static> {
+/// One initiative's row: its newest run, the run's end chip, and a dim `×N` when the initiative
+/// had more than one run. A selected row is prefixed `▶` and sits on `theme.selected_row`.
+fn run_row(row: &CollapsedRun, selected: bool, theme: &Theme) -> Line<'static> {
+    let r = row.run;
     let prefix = if selected { "\u{25b6} " } else { "  " };
-    let status = Span::styled(
-        format!("\u{25cf} {}", r.status),
-        Style::default().fg(status_color(theme, &r.status)),
-    );
-    let line = Line::from(vec![
+    let lead = [
         Span::raw(run_lead(prefix, &r.run, &r.machine)),
         stage_span(r, STAGE_WIDTH, theme),
         Span::raw(run_tail(&r.attempt.to_string(), &cost_text(r.cost))),
-        status,
-    ]);
+    ];
+    let chip = end_chip(r.end.as_ref(), &r.status, theme).spans;
+    let line = Line::from(
+        lead.into_iter()
+            .chain(chip)
+            .chain(count_suffix(row.count, theme))
+            .collect::<Vec<_>>(),
+    );
     if selected {
         line.style(Style::default().fg(theme.accent).bg(theme.selected_row))
     } else {
@@ -1067,17 +1058,30 @@ fn render_runs(
     let block = numbered_block(5, FRAME_NAMES[4], theme, selected.is_some());
     let inner = block.inner(rect);
     let header = std::iter::once(run_header(theme));
-    let rows = snapshot
-        .runs
+    let collapsed = collapse_runs(&snapshot.runs);
+    let shown = selected_run_row(&snapshot.runs, selected);
+    let rows = collapsed
         .iter()
         .enumerate()
-        .map(|(i, r)| run_row(r, selected == Some(i), theme));
+        .map(|(i, row)| run_row(row, shown == Some(i), theme));
     let paragraph = Paragraph::new(header.chain(rows).collect::<Vec<_>>())
         .block(block)
         .style(base_style(theme));
     f.render_widget(paragraph, rect);
     // The header takes the first inner row.
-    paint_selected_row(f, inner, selected.map(|i| i + 1), theme);
+    paint_selected_row(f, inner, shown.map(|i| i + 1), theme);
+}
+
+/// The collapsed row that holds `runs[selected]`. `selected` indexes the uncollapsed list. Rows keep
+/// first-seen order, so the row is the one whose count grows when `runs[selected]` joins the runs
+/// before it, or the new last row when its initiative has not appeared yet.
+fn selected_run_row(runs: &[Run], selected: Option<usize>) -> Option<usize> {
+    let sel = selected?;
+    let with = collapse_runs(runs.get(..=sel)?);
+    let without = collapse_runs(&runs[..sel]);
+    with.iter()
+        .enumerate()
+        .position(|(i, w)| without.get(i).is_none_or(|o| o.count != w.count))
 }
 
 /// Fills row `row` of `inner` with `theme.selected_row`, keeping what is drawn on it. A line's own
@@ -2261,16 +2265,6 @@ mod tests {
     }
 
     #[test]
-    fn the_waiting_and_failed_statuses_take_their_own_colors() {
-        let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
-        assert_eq!(status_color(&theme, "failed"), Color::Rgb(0xff, 0x7b, 0x72));
-        assert_eq!(
-            status_color(&theme, "pending"),
-            Color::Rgb(0x8b, 0x94, 0x9e)
-        );
-    }
-
-    #[test]
     fn the_selected_runs_row_is_on_the_selected_row_background_across_its_width() {
         let app = feed_app(
             &format!("{},{}", run_json("r0", "running"), run_json("r1", "landed")),
@@ -2315,6 +2309,64 @@ mod tests {
                 .map(|b| row[..b].chars().count() as u16)
                 .expect("dot")
         );
+    }
+
+    /// The runs frame alone, 120 wide, with nothing selected.
+    fn draw_runs_frame(runs: &[String], theme_id: ThemeId, height: u16) -> Terminal<TestBackend> {
+        let app = feed_app(&runs.join(","), "", "");
+        let theme = crate::theme::resolve_for(theme_id, Some("truecolor"));
+        let mut terminal = Terminal::new(TestBackend::new(120, height)).expect("terminal");
+        terminal
+            .draw(|f| render_runs(f, f.area(), app.snapshot().expect("feed"), None, &theme))
+            .expect("draw should not fail");
+        terminal
+    }
+
+    fn ended_run(name: &str, status: &str, end: &str) -> String {
+        run_json(name, status).replace(r#""status""#, &format!(r#""end":{end},"status""#))
+    }
+
+    /// One run of each end kind, each its own initiative.
+    fn one_run_of_each_end_kind() -> Vec<String> {
+        vec![
+            ended_run("a-1", "running", r#""running""#),
+            ended_run("b-1", "landed", r#""landed""#),
+            ended_run("c-1", "approved", r#""approved""#),
+            ended_run(
+                "d-1",
+                "quarantined",
+                r#"{"kind":"quarantined","cause":"tests failed"}"#,
+            ),
+            ended_run("e-1", "idle", r#""idle""#),
+            ended_run("f-1", "failed", r#"{"kind":"died","cause":"oom"}"#),
+            ended_run("g-1", "stopped", r#""stopped""#),
+        ]
+    }
+
+    #[test]
+    fn runs_end_kinds_in_the_regatta_theme() {
+        let terminal = draw_runs_frame(&one_run_of_each_end_kind(), ThemeId::Regatta, 10);
+        insta::assert_snapshot!("runs_end_kinds_regatta", terminal.backend().to_string());
+    }
+
+    #[test]
+    fn runs_end_kinds_in_the_harbor_light_theme() {
+        let terminal = draw_runs_frame(&one_run_of_each_end_kind(), ThemeId::HarborLight, 10);
+        insta::assert_snapshot!(
+            "runs_end_kinds_harbor_light",
+            terminal.backend().to_string()
+        );
+    }
+
+    #[test]
+    fn three_runs_of_one_initiative_draw_one_row_with_a_count_of_three() {
+        let runs = ["x-1", "x-2", "x-3"].map(|id| ended_run(id, "landed", r#""landed""#));
+        let terminal = draw_runs_frame(&runs, ThemeId::Regatta, 6);
+        let rows: Vec<String> = (2..5).map(|y| row_text(&terminal, y)).collect();
+        let hits: Vec<&String> = rows.iter().filter(|r| r.contains("x-")).collect();
+        assert_eq!(hits.len(), 1, "rows: {rows:?}");
+        assert!(hits[0].contains("x-3"), "row: {:?}", hits[0]);
+        assert!(hits[0].contains("\u{d7}3"), "row: {:?}", hits[0]);
     }
 
     #[test]
