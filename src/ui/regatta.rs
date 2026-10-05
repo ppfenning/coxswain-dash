@@ -4,25 +4,26 @@
 //! [`frame_rects`] is the pure layout core; [`render`] calls it so the rects it draws into and
 //! the rects a mouse click is tested against never disagree.
 
-use std::iter::once;
-
-use chrono::{DateTime, FixedOffset};
+use chrono::{DateTime, FixedOffset, Timelike};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Gauge, Paragraph, Sparkline},
+    widgets::{Block, BorderType, Borders, Paragraph, Sparkline},
 };
 
 use crate::app::{App, Focus};
 use crate::feed::{Chair, FeedSnapshot, Run};
 use crate::theme::Theme;
 
-use super::chair_card::{
-    CountRole, Freshness, TICK_INTERVAL_S, beat_freshness, counts_parts, doing_line, idle_line,
-    last_tick_line, wrap_status,
-};
+use super::chair_card::{Freshness, TICK_INTERVAL_S, beat_freshness};
+
+/// Cells in a spend meter, and the least one shrinks to in a narrow frame.
+const METER_WIDTH: usize = 26;
+const METER_MIN: usize = 4;
+/// Width of the spend row labels, `5 hour` being the longest.
+const SPEND_LABEL_WIDTH: usize = 6;
 
 /// Titles for numbered frames 1-6, in slot order.
 const FRAME_NAMES: [&str; 6] = [
@@ -327,7 +328,7 @@ fn render_frame(
     theme: &Theme,
 ) {
     match idx {
-        0 => render_chair(f, rect, snapshot, app, theme),
+        0 => render_chair(f, rect, snapshot, theme),
         1 => render_spend(f, rect, snapshot, app, theme),
         2 => render_machines(
             f,
@@ -343,14 +344,6 @@ fn render_frame(
     }
 }
 
-/// Whole seconds from `since` to `at`, both RFC 3339. `None` when either does not parse;
-/// a `since` after `at` counts as zero.
-fn seconds_between(at: &str, since: &str) -> Option<u64> {
-    let at = DateTime::parse_from_rfc3339(at).ok()?;
-    let since = DateTime::parse_from_rfc3339(since).ok()?;
-    Some((at - since).num_seconds().max(0) as u64)
-}
-
 /// The liveness word's colour: `live` is done-green, anything else is failed-red.
 fn liveness_color(liveness: &str, theme: &Theme) -> Color {
     if liveness == "live" {
@@ -360,139 +353,188 @@ fn liveness_color(liveness: &str, theme: &Theme) -> Color {
     }
 }
 
-fn count_style(role: CountRole, theme: &Theme) -> Style {
-    match role {
-        CountRole::Plain => base_style(theme),
-        CountRole::Failure => base_style(theme).fg(theme.status_failed),
-        CountRole::NeedsChair => base_style(theme).fg(theme.status_waiting),
-    }
+/// `n`, or `-` when the feed does not carry the field.
+fn or_dash<T: std::fmt::Display>(n: Option<T>) -> String {
+    n.map_or_else(|| "-".to_string(), |n| n.to_string())
 }
 
-/// The chair card, top to bottom. `at` is the feed's own RFC 3339 timestamp: every age is
-/// measured from it, so no clock is read. The theme has no warning role, so a stale beat age
-/// is drawn in `meter_high`.
-fn chair_lines(
-    chair: &Chair,
-    at: &str,
-    offset: FixedOffset,
-    inner_width: usize,
-    theme: &Theme,
-) -> Vec<Line<'static>> {
+/// Line two of the chair frame. `None` is a field the feed does not carry yet.
+fn chair_counts_text(
+    lands: u32,
+    phases: Option<u32>,
+    needs_you: u32,
+    drafts: Option<u32>,
+    housekeeping_h: Option<u64>,
+) -> String {
+    let housekeeping = housekeeping_h.map_or_else(|| "-".to_string(), |h| format!("{h}h ago"));
+    format!(
+        "lands today {lands} ({} phases) \u{b7} needs you {needs_you} \u{b7} drafts {} \u{b7} housekeeping {housekeeping}",
+        or_dash(phases),
+        or_dash(drafts),
+    )
+}
+
+/// The chair card's two canvas lines. A stale beat is drawn in `meter_high`: the theme has no
+/// warning role.
+fn chair_lines(chair: &Chair, theme: &Theme) -> Vec<Line<'static>> {
+    let beat_style = match beat_freshness(chair.beat_age_s, TICK_INTERVAL_S) {
+        Freshness::Stale => Style::default().fg(theme.meter_high),
+        Freshness::Fresh => Style::default(),
+    };
     let holder_line = Line::from(vec![
-        Span::raw(format!("{} {} ", chair.holder, chair.host)),
+        Span::styled("\u{25cf} ", Style::default().fg(theme.live_dot)),
+        Span::raw(format!("{} @ ", chair.holder)),
+        Span::styled(chair.host.clone(), Style::default().fg(theme.accent)),
+        Span::raw(format!(" \u{b7} epoch {} \u{b7} ", chair.epoch)),
+        Span::styled(format!("beat {}s", chair.beat_age_s), beat_style),
+        Span::raw(" \u{b7} "),
         Span::styled(
             chair.liveness.clone(),
             Style::default().fg(liveness_color(&chair.liveness, theme)),
         ),
     ]);
-    let beat_style = match beat_freshness(chair.beat_age_s, TICK_INTERVAL_S) {
-        Freshness::Stale => Style::default().fg(theme.meter_high),
-        Freshness::Fresh => Style::default(),
-    };
-    let beat_line = Line::from(Span::styled(
-        format!("beat age: {}s", chair.beat_age_s),
-        beat_style,
+    // The feed carries no phases, drafts or housekeeping age yet, so those draw `-`.
+    let counts_line = Line::from(chair_counts_text(
+        chair.today.lands,
+        None,
+        chair.today.needs_chair_open,
+        None,
+        None,
     ));
-    let action_line = Line::from(match &chair.current_action {
-        Some(a) => doing_line(
-            &a.kind,
-            &a.target,
-            seconds_between(at, &a.since).unwrap_or(0),
-        ),
-        None => idle_line(),
-    });
-    let tick_line = chair.last_tick_at.as_deref().map(|t| {
-        let shown = super::local_time(t, offset);
-        Line::from(match seconds_between(at, t) {
-            Some(age) => last_tick_line(&shown, age),
-            None => format!("last tick {shown}"),
-        })
-    });
-    let today = &chair.today;
-    let counts_line = Line::from(
-        counts_parts(
-            today.lands,
-            today.launches,
-            today.refused_or_failed,
-            today.needs_chair_open,
-        )
-        .into_iter()
-        .enumerate()
-        .flat_map(|(i, (text, role))| {
-            let sep = (i > 0).then(|| Span::raw("  "));
-            sep.into_iter()
-                .chain(once(Span::styled(text, count_style(role, theme))))
-        })
-        .collect::<Vec<Span<'static>>>(),
-    );
-    let status_lines = wrap_status(chair.last_status.as_deref().unwrap_or(""), inner_width)
-        .into_iter()
-        .map(Line::from);
-    [holder_line, beat_line, action_line]
-        .into_iter()
-        .chain(tick_line)
-        .chain(once(counts_line))
-        .chain(status_lines)
-        .collect()
+    vec![holder_line, counts_line]
 }
 
-fn render_chair(f: &mut Frame, rect: Rect, snapshot: &FeedSnapshot, app: &App, theme: &Theme) {
+fn render_chair(f: &mut Frame, rect: Rect, snapshot: &FeedSnapshot, theme: &Theme) {
     let block = numbered_block(1, FRAME_NAMES[0], theme, false);
-    let inner_width = usize::from(block.inner(rect).width);
-    let lines = chair_lines(
-        &snapshot.chair,
-        &snapshot.at,
-        app.utc_offset(),
-        inner_width,
-        theme,
-    );
-    let paragraph = Paragraph::new(lines).block(block).style(base_style(theme));
+    let paragraph = Paragraph::new(chair_lines(&snapshot.chair, theme))
+        .block(block)
+        .style(base_style(theme));
     f.render_widget(paragraph, rect);
 }
 
-fn meter_color(theme: &Theme, fraction: f64) -> Color {
-    if fraction < 0.6 {
+/// The meter colour at `position`, a fraction of the meter's width: low below 60%, mid from
+/// 60%, high from 85%.
+fn gradient_color(theme: &Theme, position: f64) -> Color {
+    if position < 0.6 {
         theme.meter_low
-    } else if fraction < 0.85 {
+    } else if position < 0.85 {
         theme.meter_mid
     } else {
         theme.meter_high
     }
 }
 
+/// A meter `width` cells wide. The first `round(fraction * width)` cells are filled, each in the
+/// gradient colour of its own position; the rest are track. `tick` draws the stop tick over
+/// that cell.
+fn meter_cells(
+    fraction: f64,
+    width: usize,
+    tick: Option<usize>,
+    theme: &Theme,
+) -> Vec<Span<'static>> {
+    let filled = (fraction.clamp(0.0, 1.0) * width as f64).round() as usize;
+    (0..width)
+        .map(|i| match (tick == Some(i), i < filled) {
+            (true, _) => Span::styled("\u{2502}", Style::default().fg(theme.stop_tick)),
+            (false, true) => Span::styled(
+                "\u{2588}",
+                Style::default().fg(gradient_color(theme, i as f64 / width as f64)),
+            ),
+            (false, false) => Span::styled("\u{2591}", Style::default().fg(theme.track)),
+        })
+        .collect()
+}
+
+/// The meter cell the stop tick sits on, clamped into the meter.
+fn stop_tick_index(hard_stop_fraction: f64, width: usize) -> usize {
+    ((hard_stop_fraction.clamp(0.0, 1.0) * width as f64) as usize).min(width.saturating_sub(1))
+}
+
+/// The meter width: `METER_WIDTH`, or less when `room` cannot hold the label, the text and a
+/// space either side of the meter. Never below `METER_MIN`.
+fn meter_width(room: usize, label: usize, text: usize) -> usize {
+    room.saturating_sub(label + text + 2)
+        .clamp(METER_MIN, METER_WIDTH)
+}
+
+/// A 12-hour clock in `offset`, with minutes only when they are not zero: `12:20 AM`, `4 AM`.
+/// An unparseable string comes back unchanged. `weekday` puts the day before it: `Sun 4 AM`.
+fn reset_text(utc: &str, offset: FixedOffset, weekday: bool) -> String {
+    let Ok(at) = DateTime::parse_from_rfc3339(utc) else {
+        return utc.to_string();
+    };
+    let at = at.with_timezone(&offset);
+    let clock = if at.minute() == 0 {
+        at.format("%-I %p")
+    } else {
+        at.format("%-I:%M %p")
+    };
+    if weekday {
+        format!("{} {clock}", at.format("%a"))
+    } else {
+        clock.to_string()
+    }
+}
+
+/// One spend row: the label, the meter, then `text` beside it.
+fn spend_row(
+    label: &str,
+    fraction: f64,
+    tick: Option<f64>,
+    text: String,
+    width: usize,
+    theme: &Theme,
+) -> Line<'static> {
+    let tick = tick.map(|stop| stop_tick_index(stop, width));
+    let mut spans = vec![Span::raw(format!("{label:<SPEND_LABEL_WIDTH$} "))];
+    spans.extend(meter_cells(fraction, width, tick, theme));
+    spans.push(Span::raw(format!(" {text}")));
+    Line::from(spans)
+}
+
 fn render_spend(f: &mut Frame, rect: Rect, snapshot: &FeedSnapshot, app: &App, theme: &Theme) {
     let spend = &snapshot.spend;
     let block = numbered_block(2, FRAME_NAMES[1], theme, false);
-    let inner = block.inner(rect);
-    f.render_widget(block, rect);
-    // Three one-line rows from the top; a row past the frame's height is empty, so a short
-    // frame clips the last row instead of letting the solver overdraw an earlier one.
-    let rows: [Rect; 3] = std::array::from_fn(|i| {
-        let i = i as u16;
-        Rect {
-            y: inner.y + i,
-            height: inner.height.saturating_sub(i).min(1),
-            ..inner
-        }
-    });
-    let five_hour_reset = super::local_time(&spend.five_hour_resets_at, app.utc_offset());
-    let five_hour_pct = spend.five_hour_fraction * 100.0;
-    let five_hour = Gauge::default()
-        .label(format!("5h {five_hour_pct:.0}% (resets {five_hour_reset})"))
-        .ratio(spend.five_hour_fraction.clamp(0.0, 1.0))
-        .gauge_style(Style::default().fg(meter_color(theme, spend.five_hour_fraction)));
-    f.render_widget(five_hour, rows[0]);
-    let weekly_reset = super::local_time(&spend.weekly_resets_at, app.utc_offset());
-    let weekly_pct = spend.weekly_fraction * 100.0;
-    let weekly = Gauge::default()
-        .label(format!("wk {weekly_pct:.0}% (resets {weekly_reset})"))
-        .ratio(spend.weekly_fraction.clamp(0.0, 1.0))
-        .gauge_style(Style::default().fg(meter_color(theme, spend.weekly_fraction)));
-    f.render_widget(weekly, rows[1]);
-    let hard_stop_pct = spend.hard_stop_fraction * 100.0;
-    let hard_stop =
-        Paragraph::new(format!("hard stop marked at {hard_stop_pct:.0}%")).style(base_style(theme));
-    f.render_widget(hard_stop, rows[2]);
+    let room = usize::from(block.inner(rect).width);
+    let offset = app.utc_offset();
+    let five_hour_text = format!(
+        "{:.0}% \u{b7} resets {}",
+        spend.five_hour_fraction * 100.0,
+        reset_text(&spend.five_hour_resets_at, offset, false)
+    );
+    let week_text = format!(
+        "{:.0}% of {:.0}% stop \u{b7} {}",
+        spend.weekly_fraction * 100.0,
+        spend.hard_stop_fraction * 100.0,
+        reset_text(&spend.weekly_resets_at, offset, true)
+    );
+    // Both meters share one width, so the text columns line up.
+    let longest = five_hour_text
+        .chars()
+        .count()
+        .max(week_text.chars().count());
+    let width = meter_width(room, SPEND_LABEL_WIDTH, longest);
+    let five_hour = spend_row(
+        "5 hour",
+        spend.five_hour_fraction,
+        None,
+        five_hour_text,
+        width,
+        theme,
+    );
+    let week = spend_row(
+        "week",
+        spend.weekly_fraction,
+        Some(spend.hard_stop_fraction),
+        week_text,
+        width,
+        theme,
+    );
+    let paragraph = Paragraph::new(vec![five_hour, week])
+        .block(block)
+        .style(base_style(theme));
+    f.render_widget(paragraph, rect);
 }
 
 fn render_machines(
@@ -695,11 +737,47 @@ mod tests {
     fn draw_chair(chair: &str) -> Terminal<TestBackend> {
         let snapshot =
             crate::feed::parse_snapshot(&chair_feed(chair)).expect("literal feed should parse");
-        let app = App::new(AppPage::Regatta, ThemeId::Regatta);
         let theme = crate::theme::resolve(ThemeId::Regatta);
-        let mut terminal = Terminal::new(TestBackend::new(50, 12)).expect("terminal");
+        let mut terminal = Terminal::new(TestBackend::new(80, 4)).expect("terminal");
         terminal
-            .draw(|f| render_chair(f, f.area(), &snapshot, &app, &theme))
+            .draw(|f| render_chair(f, f.area(), &snapshot, &theme))
+            .expect("draw should not fail");
+        terminal
+    }
+
+    /// The text of buffer row `y`. Every cell holds one char, so a char index is a column.
+    fn row_text(terminal: &Terminal<TestBackend>, y: u16) -> String {
+        let buffer = terminal.backend().buffer();
+        (0..buffer.area.width)
+            .map(|x| buffer[(x, y)].symbol())
+            .collect()
+    }
+
+    /// The column of the first `needle` on row `y`.
+    fn col_of(terminal: &Terminal<TestBackend>, y: u16, needle: &str) -> u16 {
+        let row = row_text(terminal, y);
+        let byte = row
+            .find(needle)
+            .unwrap_or_else(|| panic!("{needle:?} is not on row {y}: {row:?}"));
+        row[..byte].chars().count() as u16
+    }
+
+    const LOW: Color = Color::Rgb(0x56, 0xd3, 0x64);
+    const MID: Color = Color::Rgb(0xe3, 0xb3, 0x41);
+    const HIGH: Color = Color::Rgb(0xff, 0x7b, 0x72);
+    const TRACK: Color = Color::Rgb(0x21, 0x26, 0x2d);
+    const TICK: Color = Color::Rgb(0xc9, 0xd1, 0xd9);
+
+    fn cell_colors(cells: &[Span<'static>]) -> Vec<Option<Color>> {
+        cells.iter().map(|c| c.style.fg).collect()
+    }
+
+    fn draw_spend(width: u16, height: u16) -> Terminal<TestBackend> {
+        let app = app_with_fixture();
+        let theme = crate::theme::resolve(ThemeId::Regatta);
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
+        terminal
+            .draw(|f| render_spend(f, f.area(), app.snapshot().expect("snapshot"), &app, &theme))
             .expect("draw should not fail");
         terminal
     }
@@ -726,18 +804,148 @@ mod tests {
     fn chair_card_stale_beat() {
         let terminal = draw_chair(STALE);
         insta::assert_snapshot!(terminal.backend().to_string());
-        let warning = crate::theme::resolve(ThemeId::Regatta).meter_high;
+        let beat = col_of(&terminal, 1, "beat 130s");
         let buffer = terminal.backend().buffer();
-        assert_eq!(buffer[(1, 2)].symbol(), "b");
-        assert_eq!(buffer[(1, 2)].fg, warning);
-        assert_eq!(buffer[(10, 2)].fg, warning);
+        assert_eq!(buffer[(beat, 1)].fg, HIGH);
+        assert_eq!(buffer[(beat + 8, 1)].fg, HIGH);
     }
 
     #[test]
-    fn a_fresh_beat_age_is_not_drawn_in_the_warning_colour() {
+    fn a_fresh_beat_is_not_drawn_in_the_warning_colour() {
         let terminal = draw_chair(MID_LAND);
-        let warning = crate::theme::resolve(ThemeId::Regatta).meter_high;
-        assert_ne!(terminal.backend().buffer()[(1, 2)].fg, warning);
+        let beat = col_of(&terminal, 1, "beat 4s");
+        assert_ne!(terminal.backend().buffer()[(beat, 1)].fg, HIGH);
+    }
+
+    #[test]
+    fn the_chair_dot_is_the_live_color_and_the_host_the_accent() {
+        let terminal = draw_chair(MID_LAND);
+        assert!(row_text(&terminal, 1).contains(
+            "\u{25cf} chair@omarchy:12345 @ omarchy \u{b7} epoch 7 \u{b7} beat 4s \u{b7} live"
+        ));
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(1, 1)].symbol(), "\u{25cf}");
+        assert_eq!(buffer[(1, 1)].fg, LOW);
+        let host = col_of(&terminal, 1, " @ ") + 3;
+        assert_eq!(buffer[(host, 1)].fg, Color::Rgb(0x79, 0xc0, 0xff));
+        assert_eq!(buffer[(host + 6, 1)].fg, Color::Rgb(0x79, 0xc0, 0xff));
+        assert_ne!(buffer[(host + 7, 1)].fg, Color::Rgb(0x79, 0xc0, 0xff));
+    }
+
+    #[test]
+    fn the_chair_counts_line_dashes_the_fields_the_feed_lacks() {
+        let terminal = draw_chair(IDLE);
+        assert!(row_text(&terminal, 2).contains(
+            "lands today 1 (- phases) \u{b7} needs you 1 \u{b7} drafts - \u{b7} housekeeping -"
+        ));
+    }
+
+    #[test]
+    fn chair_counts_text_fills_every_field_when_present() {
+        assert_eq!(
+            chair_counts_text(2, Some(3), 1, Some(4), Some(5)),
+            "lands today 2 (3 phases) \u{b7} needs you 1 \u{b7} drafts 4 \u{b7} housekeeping 5h ago"
+        );
+    }
+
+    #[test]
+    fn gradient_color_is_low_below_sixty_mid_below_eighty_five_then_high() {
+        let theme = crate::theme::resolve(ThemeId::Regatta);
+        assert_eq!(gradient_color(&theme, 0.2), LOW);
+        assert_eq!(gradient_color(&theme, 0.6), MID);
+        assert_eq!(gradient_color(&theme, 0.7), MID);
+        assert_eq!(gradient_color(&theme, 0.85), HIGH);
+        assert_eq!(gradient_color(&theme, 0.95), HIGH);
+    }
+
+    #[test]
+    fn a_meter_at_20_percent_fills_five_low_cells_then_track() {
+        let theme = crate::theme::resolve(ThemeId::Regatta);
+        let colors = cell_colors(&meter_cells(0.20, 26, None, &theme));
+        assert_eq!(colors[..5], [Some(LOW); 5]);
+        assert_eq!(colors[5..], [Some(TRACK); 21]);
+    }
+
+    #[test]
+    fn a_meter_at_70_percent_runs_low_then_mid_to_cell_17() {
+        let theme = crate::theme::resolve(ThemeId::Regatta);
+        let colors = cell_colors(&meter_cells(0.70, 26, None, &theme));
+        assert_eq!(colors[..16], [Some(LOW); 16]);
+        assert_eq!(colors[16..18], [Some(MID); 2]);
+        assert_eq!(colors[18..], [Some(TRACK); 8]);
+    }
+
+    #[test]
+    fn a_meter_at_95_percent_runs_low_mid_then_high_to_cell_24() {
+        let theme = crate::theme::resolve(ThemeId::Regatta);
+        let colors = cell_colors(&meter_cells(0.95, 26, None, &theme));
+        assert_eq!(colors[..16], [Some(LOW); 16]);
+        assert_eq!(colors[16..23], [Some(MID); 7]);
+        assert_eq!(colors[23..25], [Some(HIGH); 2]);
+        assert_eq!(colors[25], Some(TRACK));
+    }
+
+    #[test]
+    fn the_stop_tick_index_is_the_hard_stop_cell_clamped_into_the_meter() {
+        assert_eq!(stop_tick_index(0.93, 26), 24);
+        assert_eq!(stop_tick_index(0.98, 26), 25);
+        assert_eq!(stop_tick_index(1.5, 26), 25);
+        assert_eq!(stop_tick_index(-0.2, 26), 0);
+        assert_eq!(stop_tick_index(0.5, 0), 0);
+    }
+
+    #[test]
+    fn the_stop_tick_replaces_one_cell_in_the_stop_tick_color() {
+        let theme = crate::theme::resolve(ThemeId::Regatta);
+        let cells = meter_cells(0.95, 26, Some(24), &theme);
+        assert_eq!(cells[24].content, "\u{2502}");
+        assert_eq!(cells[24].style.fg, Some(TICK));
+        assert_eq!(cells[23].content, "\u{2588}");
+        assert_eq!(cells.iter().filter(|c| c.content == "\u{2502}").count(), 1);
+    }
+
+    #[test]
+    fn meter_width_shrinks_to_fit_the_text_and_stays_between_four_and_26() {
+        assert_eq!(meter_width(58, 6, 26), 24);
+        assert_eq!(meter_width(200, 6, 26), 26);
+        assert_eq!(meter_width(10, 6, 26), 4);
+    }
+
+    #[test]
+    fn reset_text_formats_a_twelve_hour_clock_in_the_given_offset() {
+        let utc = FixedOffset::east_opt(0).unwrap();
+        let et = FixedOffset::west_opt(4 * 3600).unwrap();
+        assert_eq!(reset_text("2026-09-29T00:20:00Z", utc, false), "12:20 AM");
+        assert_eq!(reset_text("2026-09-29T13:05:00Z", utc, false), "1:05 PM");
+        assert_eq!(reset_text("2026-10-04T04:00:00Z", utc, true), "Sun 4 AM");
+        assert_eq!(reset_text("2026-10-04T08:00:00Z", et, true), "Sun 4 AM");
+        assert_eq!(reset_text("soon", utc, true), "soon");
+    }
+
+    #[test]
+    fn the_spend_rows_put_text_beside_the_meter_and_the_tick_on_the_week_meter() {
+        let terminal = draw_spend(60, 4);
+        let five = row_text(&terminal, 1);
+        let week = row_text(&terminal, 2);
+        assert!(five.contains("5 hour"), "{five:?}");
+        assert!(five.contains("16% \u{b7} resets 2 AM"), "{five:?}");
+        assert!(week.contains("week"), "{week:?}");
+        assert!(week.contains("35% of 93% stop \u{b7} Sun 4 AM"), "{week:?}");
+        // Inner width 58: label 7 cells, a 24-cell meter from column 8, tick at 8 + 22.
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(30, 2)].symbol(), "\u{2502}");
+        assert_eq!(buffer[(30, 2)].fg, TICK);
+        assert_eq!(buffer[(32, 2)].symbol(), " ");
+        assert_eq!(buffer[(8, 1)].fg, LOW);
+        assert_eq!(buffer[(8 + 4, 1)].fg, TRACK);
+        assert!((8..32).all(|x| buffer[(x, 1)].symbol() != "\u{2502}"));
+        assert_eq!(col_of(&terminal, 1, "16%"), 33);
+    }
+
+    #[test]
+    fn a_narrow_or_short_spend_frame_clips_without_panicking() {
+        let _ = draw_spend(20, 3);
+        let _ = draw_spend(3, 2);
     }
 
     #[test]

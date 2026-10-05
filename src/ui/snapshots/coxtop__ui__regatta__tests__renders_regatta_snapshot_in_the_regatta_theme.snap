@@ -1,10 +1,11 @@
 ---
 source: src/ui/regatta.rs
+assertion_line: 971
 expression: terminal.backend().to_string()
 ---
 "╭ 1 chair ─────────────────────────────────────────────────╮╭ 2 spend ─────────────────────────────────────────────────╮"
-"│chair@omarchy:12345 omarchy live                          ││█████████         5h 16% (resets 02:00)                   │"
-"│beat age: 4s                                              ││██████████████████wk 35% (resets 04:00)                   │"
+"│● chair@omarchy:12345 @ omarchy · epoch 7 · beat 4s · live││5 hour ████░░░░░░░░░░░░░░░░░░░░ 16% · resets 2 AM         │"
+"│lands today 2 (- phases) · needs you 1 · drafts - · housek││week   ████████░░░░░░░░░░░░░░│░ 35% of 93% stop · Sun 4 AM│"
 "╰──────────────────────────────────────────────────────────╯╰──────────────────────────────────────────────────────────╯"
 "╭ 3 machines ──────────────────────────────────╮╭ 4 lanes over 24h ────────────────────────────────────────────────────╮"
 "│  omarchy 2/3 login ok                        ││                       █                                              │"
