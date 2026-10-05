@@ -165,6 +165,8 @@ pub struct App {
     history_visible: bool,
     /// The run cost frame's visibility, apart from the six numbered frames for the same reason.
     run_cost_visible: bool,
+    /// The inbox frame's visibility; its number key is 9. A hidden inbox is not a focus stop.
+    inbox_visible: bool,
     regatta_layout_preset: usize,
     lanes_history: Vec<(String, u32)>,
     utc_offset: FixedOffset,
@@ -244,6 +246,7 @@ impl Default for App {
             regatta_frames_visible: [true; 6],
             history_visible: true,
             run_cost_visible: true,
+            inbox_visible: true,
             regatta_layout_preset: 0,
             lanes_history: Vec::new(),
             utc_offset: FixedOffset::east_opt(0).expect("zero is a valid UTC offset"),
@@ -422,6 +425,10 @@ impl App {
         self.run_cost_visible
     }
 
+    pub fn regatta_inbox_visible(&self) -> bool {
+        self.inbox_visible
+    }
+
     pub fn regatta_layout_preset(&self) -> usize {
         self.regatta_layout_preset
     }
@@ -526,6 +533,15 @@ impl App {
         self.run_cost_visible = !self.run_cost_visible;
     }
 
+    /// Flips the inbox frame's visibility; the inbox frame's number key is 9. Hiding it while
+    /// it holds focus moves focus to the runs list, so a hidden inbox never keeps focus.
+    pub fn toggle_inbox_frame(&mut self) {
+        self.inbox_visible = !self.inbox_visible;
+        if !self.inbox_visible && self.focus == Focus::Inbox {
+            self.focus = Focus::Runs;
+        }
+    }
+
     pub fn cycle_regatta_layout_preset(&mut self) {
         self.regatta_layout_preset = (self.regatta_layout_preset + 1) % REGATTA_LAYOUT_PRESET_COUNT;
     }
@@ -586,7 +602,8 @@ impl App {
                 Focus::Runs => Focus::Queue,
                 Focus::Queue => Focus::Machines,
                 Focus::Machines => Focus::History,
-                Focus::History => Focus::Inbox,
+                Focus::History if self.inbox_visible => Focus::Inbox,
+                Focus::History => Focus::Runs,
                 Focus::Inbox => Focus::Runs,
             };
         }
@@ -596,7 +613,8 @@ impl App {
     pub fn cycle_focus_prev(&mut self) {
         if self.page == AppPage::Regatta {
             self.focus = match self.focus {
-                Focus::Runs => Focus::Inbox,
+                Focus::Runs if self.inbox_visible => Focus::Inbox,
+                Focus::Runs => Focus::History,
                 Focus::Queue => Focus::Runs,
                 Focus::Machines => Focus::Queue,
                 Focus::History => Focus::Machines,
@@ -1493,6 +1511,43 @@ mod tests {
         assert_eq!(app.focus(), Focus::Inbox);
         app.cycle_focus_prev();
         assert_eq!(app.focus(), Focus::History);
+    }
+
+    #[test]
+    fn toggle_inbox_frame_flips_only_the_inbox_flag() {
+        let mut app = App::default();
+        assert!(app.regatta_inbox_visible());
+        app.toggle_inbox_frame();
+        assert!(!app.regatta_inbox_visible());
+        assert!(app.regatta_history_visible());
+        assert!(app.regatta_run_cost_visible());
+        assert_eq!(app.regatta_frames_visible(), [true; 6]);
+        app.toggle_inbox_frame();
+        assert!(app.regatta_inbox_visible());
+    }
+
+    #[test]
+    fn a_hidden_inbox_is_skipped_by_focus_cycling_in_both_directions() {
+        let mut app = App::new(AppPage::Regatta, ThemeId::Regatta);
+        app.toggle_inbox_frame();
+        for _ in 0..8 {
+            app.cycle_focus_next();
+            assert_ne!(app.focus(), Focus::Inbox);
+        }
+        assert_eq!(app.focus(), Focus::Runs);
+        app.cycle_focus_prev();
+        assert_eq!(app.focus(), Focus::History);
+        app.cycle_focus_next();
+        assert_eq!(app.focus(), Focus::Runs);
+    }
+
+    #[test]
+    fn hiding_the_focused_inbox_returns_focus_to_runs() {
+        let mut app = App::new(AppPage::Regatta, ThemeId::Regatta);
+        app.cycle_focus_prev();
+        assert_eq!(app.focus(), Focus::Inbox);
+        app.toggle_inbox_frame();
+        assert_eq!(app.focus(), Focus::Runs);
     }
 
     /// A snapshot whose inbox has `targets.len()` rows, one per target.

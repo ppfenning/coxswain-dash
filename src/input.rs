@@ -128,6 +128,7 @@ pub fn handle_key(app: &mut App, key: KeyCode) {
         KeyCode::Char('v') => app.cycle_regatta_layout_preset(),
         KeyCode::Char('7') => app.toggle_history_frame(),
         KeyCode::Char('8') => app.toggle_run_cost_frame(),
+        KeyCode::Char('9') => app.toggle_inbox_frame(),
         KeyCode::Char(c) if c.is_ascii_digit() && c != '0' => {
             app.toggle_regatta_frame(c.to_digit(10).unwrap() as usize)
         }
@@ -877,6 +878,26 @@ mod tests {
         assert_eq!(app.regatta_frames_visible(), [true; 6]);
         handle_key(&mut app, KeyCode::Char('8'));
         assert!(app.regatta_run_cost_visible());
+    }
+
+    #[test]
+    fn char_nine_toggles_the_inbox_frame_and_nothing_else() {
+        let mut app = App::default();
+        handle_key(&mut app, KeyCode::Char('9'));
+        assert!(!app.regatta_inbox_visible());
+        assert!(app.regatta_history_visible());
+        assert!(app.regatta_run_cost_visible());
+        assert_eq!(app.regatta_frames_visible(), [true; 6]);
+        handle_key(&mut app, KeyCode::Char('9'));
+        assert!(app.regatta_inbox_visible());
+    }
+
+    #[test]
+    fn a_hidden_inbox_is_not_focusable_through_the_arrow_keys() {
+        let mut app = App::new(AppPage::Regatta, ThemeId::Regatta);
+        handle_key(&mut app, KeyCode::Char('9'));
+        handle_key(&mut app, KeyCode::Left);
+        assert_eq!(app.focus(), Focus::History);
     }
 
     #[test]
