@@ -21,6 +21,9 @@ use crate::exec::{ExecResult, StatusLevel, frame_lines, status_summary};
 use crate::feed::{Chair, FeedSnapshot};
 use crate::palette::{PaletteEvent, PaletteState};
 use crate::pty::{PtySession, RealPty};
+use crate::settings;
+use crate::settings_screen::{ScreenEvent, SettingsScreen};
+use crate::settings_stage::{StagedEdit, argv as set_argv, command_string};
 
 /// The pty size the panel opens at. The rendering task sizes it from the layout; until then a
 /// resize event from `main` is the only thing that changes it.
@@ -74,11 +77,15 @@ pub enum Modal {
     Palette(PaletteState),
 }
 
-/// Where a pending command came from, so its result goes to the status line or the palette.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Where a pending command came from, so its result goes to the status line, the palette or the
+/// settings screen. The settings origins name the field their `cox settings set` was for.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Origin {
     Action,
     Palette,
+    SettingsLoad,
+    SettingsDryRun { scope: String, key: String },
+    SettingsApply { scope: String, key: String },
 }
 
 /// A command the app wants run. The loop in `main` takes it, runs it and reports back.
@@ -160,7 +167,25 @@ pub struct App {
     modal: Option<Modal>,
     /// Set by a confirmed action or a submitted palette line; emptied by `take_pending`.
     pending: Option<Pending>,
+    /// The origin a Yes on the open confirm queues. Set with the confirm, cleared on No.
+    confirm_origin: Option<Origin>,
     status: Option<(StatusLevel, String)>,
+    settings: Option<SettingsScreen>,
+}
+
+/// The `cox settings get --json` command that fills the settings screen.
+fn load_pending() -> Pending {
+    Pending {
+        argv: ["cox", "settings", "get", "--json"]
+            .map(str::to_string)
+            .to_vec(),
+        origin: Origin::SettingsLoad,
+    }
+}
+
+/// True for a palette line that is exactly `settings` or `cox settings`; the verb has no bare form.
+fn is_settings_argv(argv: &[String]) -> bool {
+    matches!(argv, [cox, settings] if cox == "cox" && settings == "settings")
 }
 
 /// The chair's session id, or None when the feed carries an empty one.
@@ -191,7 +216,9 @@ impl Default for App {
             bells: 0,
             modal: None,
             pending: None,
+            confirm_origin: None,
             status: None,
+            settings: None,
         }
     }
 }
@@ -624,8 +651,15 @@ impl App {
         let opened = modal.is_some();
         if opened {
             self.modal = modal;
+            self.confirm_origin = Some(Origin::Action);
         }
         opened
+    }
+
+    /// Opens a confirm showing `display`; a Yes queues `argv` with `origin`.
+    fn open_confirm(&mut self, title: String, argv: Vec<String>, display: String, origin: Origin) {
+        self.modal = Some(Modal::Confirm(ConfirmState::new(title, argv, display)));
+        self.confirm_origin = Some(origin);
     }
 
     fn modal_for(&self, key: char) -> Option<Modal> {
@@ -656,16 +690,23 @@ impl App {
                     self.modal = None;
                     Some(Pending {
                         argv,
-                        origin: Origin::Action,
+                        origin: self.confirm_origin.take().unwrap_or(Origin::Action),
                     })
                 }
                 ConfirmAnswer::No => {
                     self.modal = None;
+                    self.confirm_origin = None;
                     None
                 }
                 ConfirmAnswer::Pending => None,
             },
             Some(Modal::Palette(palette)) => match palette.handle_key(key.code) {
+                // The palette reaches the settings screen; bare `cox settings` runs nothing.
+                PaletteEvent::Submit(argv) if is_settings_argv(&argv) => free.then(|| {
+                    self.modal = None;
+                    self.settings = Some(SettingsScreen::open());
+                    load_pending()
+                }),
                 PaletteEvent::Submit(argv) => Some(Pending {
                     argv,
                     origin: Origin::Palette,
@@ -687,12 +728,125 @@ impl App {
         self.pending.take()
     }
 
-    /// Records a finished command: the status line for both origins, and the output lines on the
-    /// open palette for a palette command.
+    /// Records a finished command: the status line for an action or palette command, the output
+    /// lines on the open palette for a palette command, and the settings screen for its own.
     pub fn apply_exec_result(&mut self, result: ExecResult, origin: Origin) {
-        self.status = Some(status_summary(&result));
-        if let (Origin::Palette, Some(Modal::Palette(palette))) = (origin, &mut self.modal) {
-            palette.set_output(frame_lines(&result));
+        match origin {
+            Origin::Action => self.status = Some(status_summary(&result)),
+            Origin::Palette => {
+                self.status = Some(status_summary(&result));
+                if let Some(Modal::Palette(palette)) = &mut self.modal {
+                    palette.set_output(frame_lines(&result));
+                }
+            }
+            Origin::SettingsLoad => self.settings_loaded(&result),
+            Origin::SettingsDryRun { scope, key } => {
+                if let Some(screen) = self.settings.as_mut() {
+                    screen
+                        .staged_mut()
+                        .record_dry_run(&scope, &key, result.code, &result.output);
+                }
+            }
+            Origin::SettingsApply { scope, key } => {
+                self.status = Some(status_summary(&result));
+                if let Some(screen) = self.settings.as_mut() {
+                    // A nonzero exit records its last line as the refusal and keeps the edit staged.
+                    match result.code {
+                        Some(0) => screen.staged_mut().record_applied(&scope, &key),
+                        code => {
+                            screen
+                                .staged_mut()
+                                .record_dry_run(&scope, &key, code, &result.output)
+                        }
+                    }
+                }
+                if result.code == Some(0) {
+                    self.queue(load_pending());
+                }
+            }
+        }
+    }
+
+    /// Loads the rows of a `cox settings get --json` result, or sets a Failed status.
+    fn settings_loaded(&mut self, result: &ExecResult) {
+        let parsed = match result.code {
+            Some(0) => settings::parse(&result.output)
+                .map_err(|e| (StatusLevel::Failed, format!("settings: {e}"))),
+            _ => Err(status_summary(result)),
+        };
+        match (parsed, self.settings.as_mut()) {
+            (Ok(snapshot), Some(screen)) => screen.load(snapshot),
+            (Ok(_), None) => {}
+            (Err(status), _) => self.status = Some(status),
+        }
+    }
+
+    /// Queues a command only while none is pending, so one event runs one command.
+    fn queue(&mut self, pending: Pending) {
+        if self.pending.is_none() {
+            self.pending = Some(pending);
+        }
+    }
+
+    /// The staged edit at `index` or for the field, copied out so the caller may borrow `self`.
+    fn staged_edit(&self, find: impl Fn(usize, &StagedEdit) -> bool) -> Option<StagedEdit> {
+        self.settings
+            .as_ref()?
+            .staged()
+            .edits()
+            .iter()
+            .enumerate()
+            .find(|(i, e)| find(*i, e))
+            .map(|(_, e)| e.clone())
+    }
+
+    // The three settings methods are not routed from `main` or `input` yet.
+    #[allow(dead_code)]
+    pub fn settings(&self) -> Option<&SettingsScreen> {
+        self.settings.as_ref()
+    }
+
+    /// Opens the settings screen and asks for its rows.
+    #[allow(dead_code)]
+    pub fn open_settings(&mut self) {
+        self.settings = Some(SettingsScreen::open());
+        self.queue(load_pending());
+    }
+
+    /// Routes a key to the open settings screen and acts on the event it returns.
+    #[allow(dead_code)]
+    pub fn settings_key(&mut self, key: KeyEvent) {
+        let Some(screen) = self.settings.as_mut() else {
+            return;
+        };
+        match screen.handle_key(key) {
+            ScreenEvent::None => {}
+            ScreenEvent::Close => self.settings = None,
+            ScreenEvent::Reload => self.queue(load_pending()),
+            ScreenEvent::Stage {
+                scope, key: field, ..
+            } => {
+                if let Some(edit) = self.staged_edit(|_, e| e.scope == scope && e.key == field) {
+                    self.queue(Pending {
+                        argv: set_argv(&edit, true),
+                        origin: Origin::SettingsDryRun { scope, key: field },
+                    });
+                }
+            }
+            ScreenEvent::Apply(index) => {
+                if let Some(edit) = self.staged_edit(|i, _| i == index) {
+                    let argv = set_argv(&edit, false);
+                    self.open_confirm(
+                        format!("Apply {} {}", edit.scope, edit.key),
+                        argv.clone(),
+                        command_string(&argv),
+                        Origin::SettingsApply {
+                            scope: edit.scope,
+                            key: edit.key,
+                        },
+                    );
+                }
+            }
         }
     }
 }
@@ -1533,5 +1687,199 @@ mod tests {
             Some(&argv(&["$ cox runs stop r0", "stopped r0", "exit 0"])[..])
         );
         assert_eq!(app.status().map(|s| s.0), Some(StatusLevel::Ok));
+    }
+
+    const ROWS: &str = r#"{"sections":[{"id":"budgets","rows":[{"section":"budgets","scope":"budgets","key":"max_usd","value":"20","file":"f.toml","tracked":true,"pat_only":false}]}]}"#;
+
+    fn settings_result(argv_words: &[&str], code: Option<i32>, output: &str) -> ExecResult {
+        ExecResult {
+            argv: argv(argv_words),
+            code,
+            output: output.to_string(),
+        }
+    }
+
+    fn settings_press(app: &mut App, code: crossterm::event::KeyCode) {
+        app.settings_key(press(code));
+    }
+
+    /// An app whose screen holds the loaded rows and has `budgets max_usd` staged at 40.
+    fn app_with_staged_edit() -> App {
+        use crossterm::event::KeyCode;
+        let mut app = App::default();
+        app.open_settings();
+        app.take_pending();
+        app.apply_exec_result(
+            settings_result(&["cox", "settings", "get", "--json"], Some(0), ROWS),
+            Origin::SettingsLoad,
+        );
+        settings_press(&mut app, KeyCode::Tab);
+        settings_press(&mut app, KeyCode::Enter);
+        settings_press(&mut app, KeyCode::Backspace);
+        settings_press(&mut app, KeyCode::Backspace);
+        settings_press(&mut app, KeyCode::Char('4'));
+        settings_press(&mut app, KeyCode::Char('0'));
+        settings_press(&mut app, KeyCode::Enter);
+        app
+    }
+
+    fn dry_run_origin() -> Origin {
+        Origin::SettingsDryRun {
+            scope: "budgets".into(),
+            key: "max_usd".into(),
+        }
+    }
+
+    fn apply_origin() -> Origin {
+        Origin::SettingsApply {
+            scope: "budgets".into(),
+            key: "max_usd".into(),
+        }
+    }
+
+    #[test]
+    fn open_settings_sets_the_load_pending() {
+        let mut app = App::default();
+        app.open_settings();
+        assert!(app.settings().is_some());
+        assert_eq!(
+            app.take_pending(),
+            Some(Pending {
+                argv: argv(&["cox", "settings", "get", "--json"]),
+                origin: Origin::SettingsLoad,
+            })
+        );
+    }
+
+    #[test]
+    fn a_load_result_fills_the_rows_and_a_failed_one_sets_a_failed_status() {
+        let mut app = App::default();
+        app.open_settings();
+        app.apply_exec_result(settings_result(&[], Some(0), ROWS), Origin::SettingsLoad);
+        let rows = app.settings().map(|s| s.current_rows().len());
+        assert_eq!(rows, Some(1));
+        app.apply_exec_result(
+            settings_result(&[], Some(1), "boom\n"),
+            Origin::SettingsLoad,
+        );
+        assert_eq!(app.status().map(|s| s.0), Some(StatusLevel::Failed));
+    }
+
+    #[test]
+    fn stage_sets_the_dry_run_pending() {
+        let mut app = app_with_staged_edit();
+        assert_eq!(
+            app.take_pending(),
+            Some(Pending {
+                argv: argv(&[
+                    "cox",
+                    "settings",
+                    "set",
+                    "budgets",
+                    "max_usd",
+                    "40",
+                    "--dry-run"
+                ]),
+                origin: dry_run_origin(),
+            })
+        );
+    }
+
+    #[test]
+    fn a_refused_dry_run_stores_the_refusal_and_keeps_the_edit_staged() {
+        let mut app = app_with_staged_edit();
+        app.apply_exec_result(
+            settings_result(&[], Some(1), "max_usd must be below 30\n"),
+            dry_run_origin(),
+        );
+        let staged = app
+            .settings()
+            .map(|s| s.staged().clone())
+            .unwrap_or_default();
+        assert_eq!(staged.edits().len(), 1);
+        assert_eq!(
+            staged.refusal_for("budgets", "max_usd"),
+            Some("max_usd must be below 30")
+        );
+    }
+
+    #[test]
+    fn apply_opens_a_confirm_showing_the_exact_set_command() {
+        use crossterm::event::KeyCode;
+        let mut app = app_with_staged_edit();
+        app.take_pending();
+        settings_press(&mut app, KeyCode::Tab);
+        settings_press(&mut app, KeyCode::Char('a'));
+        let Some(Modal::Confirm(confirm)) = app.modal() else {
+            panic!("expected a confirm, got {:?}", app.modal());
+        };
+        assert_eq!(confirm.command, "cox settings set budgets max_usd 40");
+    }
+
+    #[test]
+    fn y_on_the_apply_confirm_sets_the_apply_pending_and_n_sets_nothing() {
+        use crossterm::event::KeyCode;
+        let mut app = app_with_staged_edit();
+        app.take_pending();
+        settings_press(&mut app, KeyCode::Tab);
+        settings_press(&mut app, KeyCode::Char('a'));
+        app.modal_key(press(KeyCode::Char('y')));
+        assert_eq!(
+            app.take_pending(),
+            Some(Pending {
+                argv: argv(&["cox", "settings", "set", "budgets", "max_usd", "40"]),
+                origin: apply_origin(),
+            })
+        );
+        settings_press(&mut app, KeyCode::Char('a'));
+        app.modal_key(press(KeyCode::Char('n')));
+        assert_eq!(app.take_pending(), None);
+        assert_eq!(app.modal(), None);
+    }
+
+    #[test]
+    fn an_applied_result_removes_the_edit_and_queues_a_reload() {
+        let mut app = app_with_staged_edit();
+        app.take_pending();
+        app.apply_exec_result(settings_result(&[], Some(0), "set\n"), apply_origin());
+        let edits = app.settings().map(|s| s.staged().edits().len());
+        assert_eq!(edits, Some(0));
+        assert_eq!(app.status().map(|s| s.0), Some(StatusLevel::Ok));
+        assert_eq!(
+            app.take_pending().map(|p| (p.argv, p.origin)),
+            Some((
+                argv(&["cox", "settings", "get", "--json"]),
+                Origin::SettingsLoad
+            ))
+        );
+    }
+
+    #[test]
+    fn a_refused_apply_keeps_the_edit_staged_with_its_refusal() {
+        let mut app = app_with_staged_edit();
+        app.take_pending();
+        app.apply_exec_result(settings_result(&[], Some(1), "locked\n"), apply_origin());
+        let staged = app
+            .settings()
+            .map(|s| s.staged().clone())
+            .unwrap_or_default();
+        assert_eq!(staged.refusal_for("budgets", "max_usd"), Some("locked"));
+        assert_eq!(app.take_pending(), None);
+    }
+
+    #[test]
+    fn palette_settings_opens_the_screen_and_runs_no_command() {
+        for line in ["settings", "cox settings"] {
+            let mut app = App::default();
+            app.open_palette();
+            chars(&mut app, line);
+            app.modal_key(press(crossterm::event::KeyCode::Enter));
+            assert!(app.settings().is_some());
+            assert_eq!(app.modal(), None);
+            assert_eq!(
+                app.take_pending().map(|p| p.origin),
+                Some(Origin::SettingsLoad)
+            );
+        }
     }
 }
