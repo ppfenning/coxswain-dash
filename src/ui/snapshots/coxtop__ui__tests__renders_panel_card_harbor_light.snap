@@ -1,6 +1,6 @@
 ---
 source: src/ui/mod.rs
-assertion_line: 1202
+assertion_line: 1208
 expression: screen(&buffer)
 ---
 ╭ 1 chair ────────────────────────────╮╭ 2 spend ────────────────────────────╮╭decision────────────────────────────────╮
@@ -42,4 +42,4 @@ expression: screen(&buffer)
 │today  0 lands  0 quarantines  $0.00  0 runs                                ││                                        │
 │no runs ended yet                                                           ││                                        │
 ╰────────────────────────────────────────────────────────────────────────────╯│                                        │
-1-9 frames · ←→ focus · ↑↓ select │ p pause  k kill  m move · : palette       └────────────────────────────────────────┘
+1-9 frames │ p pause  k kill  m move · : palette  w watch  $ spend  h health  └────────────────────────────────────────┘
