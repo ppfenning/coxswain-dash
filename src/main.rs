@@ -13,6 +13,12 @@ mod decision_card;
 mod detail;
 mod exec;
 mod feed;
+#[allow(dead_code)]
+mod form;
+#[allow(dead_code)]
+mod form_initiative;
+#[allow(dead_code)]
+mod form_machine;
 mod input;
 mod palette;
 // Only `RealPty` is used outside tests; `FakePty` is the test seam.
