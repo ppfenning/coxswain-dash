@@ -9,6 +9,8 @@
 // flag them as dead code.
 #![allow(dead_code)]
 
+use std::path::PathBuf;
+
 use chrono::{DateTime, FixedOffset};
 use crossterm::event::KeyEvent;
 
@@ -16,10 +18,11 @@ use crate::actions::{Target, action_for, move_prefill};
 use crate::chair_panel::ChairPanel;
 use crate::confirm::{ConfirmAnswer, ConfirmState};
 use crate::decision_card::DecisionCard;
-use crate::detail::DetailSnapshot;
+use crate::detail::{DetailSnapshot, InitiativeDetail};
 use crate::exec::{ExecResult, StatusLevel, frame_lines, status_summary};
-use crate::feed::{Chair, FeedSnapshot};
+use crate::feed::{Chair, FeedSnapshot, queue_repos};
 use crate::form::{Form, FormAnswer, shell_join};
+use crate::form_initiative::{self, Prefill};
 use crate::form_machine;
 use crate::palette::{PaletteEvent, PaletteState};
 use crate::pty::{PtySession, RealPty};
@@ -189,6 +192,20 @@ pub struct App {
     form_steps: Vec<Vec<String>>,
     /// The body field a form asked an editor for. Emptied by `take_editor_request`.
     editor_request: Option<usize>,
+    /// The initiative whose detail the edge must fetch before its edit form can open.
+    detail_request: Option<String>,
+}
+
+/// The edit form for an initiative, prefilled from its parsed detail.
+fn edit_form_of(detail: &InitiativeDetail) -> Form {
+    form_initiative::edit_form(
+        &detail.initiative,
+        Prefill {
+            repo: detail.repo.clone(),
+            title: detail.title.clone(),
+            body: detail.body.clone(),
+        },
+    )
 }
 
 /// The `cox settings get --json` command that fills the settings screen.
@@ -240,6 +257,7 @@ impl Default for App {
             form: None,
             form_steps: Vec::new(),
             editor_request: None,
+            detail_request: None,
         }
     }
 }
@@ -708,9 +726,57 @@ impl App {
         self.form = Some(form_machine::form());
     }
 
+    pub fn open_new_initiative(&mut self) {
+        let repos = self.snapshot.as_ref().map(queue_repos).unwrap_or_default();
+        self.form = Some(form_initiative::new_form(repos));
+    }
+
+    /// Opens the edit form from the open initiative detail when it is for `id` and loaded.
+    /// Otherwise asks the edge for that detail; it answers with `open_edit_initiative`.
+    pub fn begin_edit(&mut self, id: &str) {
+        let loaded = match &self.detail {
+            Some((DetailKind::Initiative, open, Some(DetailSnapshot::Initiative(detail))))
+                if open == id =>
+            {
+                Some(edit_form_of(detail))
+            }
+            _ => None,
+        };
+        match loaded {
+            Some(form) => self.form = Some(form),
+            None => self.detail_request = Some(id.to_string()),
+        }
+    }
+
+    pub fn open_edit_initiative(&mut self, detail: &InitiativeDetail) {
+        self.form = Some(edit_form_of(detail));
+    }
+
+    pub fn open_remove_initiative(&mut self, id: &str) {
+        self.form = Some(form_initiative::remove_form(id));
+    }
+
+    /// The initiative id an edit has to fetch the detail of, once.
+    pub fn take_detail_request(&mut self) -> Option<String> {
+        self.detail_request.take()
+    }
+
     /// The body field index a form asked an editor for, once.
     pub fn take_editor_request(&mut self) -> Option<usize> {
         self.editor_request.take()
+    }
+
+    /// Takes what the editor returned for body field `idx`. An editor that failed to run
+    /// leaves the body as it was and sets a Failed status with its message.
+    pub fn editor_done(&mut self, idx: usize, path: Option<PathBuf>, text: Result<String, String>) {
+        match text {
+            Ok(text) => {
+                if let Some(form) = self.form.as_mut() {
+                    form.set_body(idx, path, text);
+                }
+            }
+            Err(message) => self.status = Some((StatusLevel::Failed, message)),
+        }
     }
 
     /// Sends a key to the open form. A confirm over the form takes keys through `modal_key`.
@@ -2175,5 +2241,153 @@ mod tests {
         let mut app = App::default();
         app.open_add_machine();
         assert_eq!(app.take_editor_request(), None);
+    }
+
+    fn initiative_detail() -> InitiativeDetail {
+        let json = r#"{"schema":1,"kind":"initiative","at":"2026-09-29T00:00:00Z","initiative":"i0","title":"Old title","repo":"coxtop","body":"old body","phases":[],"history":[]}"#;
+        match crate::detail::parse_detail(json).expect("literal detail should parse") {
+            DetailSnapshot::Initiative(detail) => detail,
+            other => panic!("expected an initiative detail, got {other:?}"),
+        }
+    }
+
+    fn field_values(app: &App) -> Vec<(String, String)> {
+        app.form()
+            .map(|f| {
+                f.fields
+                    .iter()
+                    .map(|field| (field.label.clone(), field.value.clone()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn begin_edit_with_a_loaded_matching_detail_opens_the_prefilled_form() {
+        let mut app = app_with_runs();
+        app.cycle_focus_next();
+        app.open_detail();
+        app.apply_detail_snapshot(DetailSnapshot::Initiative(initiative_detail()));
+        app.begin_edit("i0");
+        let form = app.form().expect("the edit form opens");
+        assert_eq!(form.title, "Edit initiative i0");
+        assert_eq!(form.value_of("title"), "Old title");
+        assert_eq!(app.take_detail_request(), None);
+    }
+
+    #[test]
+    fn begin_edit_without_a_detail_requests_it_and_opens_no_form() {
+        let mut app = app_with_runs();
+        app.begin_edit("i0");
+        assert!(app.form().is_none());
+        assert_eq!(app.take_detail_request(), Some("i0".to_string()));
+        assert_eq!(app.take_detail_request(), None);
+    }
+
+    #[test]
+    fn begin_edit_for_another_initiative_requests_its_detail() {
+        let mut app = app_with_runs();
+        app.cycle_focus_next();
+        app.open_detail();
+        app.apply_detail_snapshot(DetailSnapshot::Initiative(initiative_detail()));
+        app.begin_edit("i9");
+        assert!(app.form().is_none());
+        assert_eq!(app.take_detail_request(), Some("i9".to_string()));
+    }
+
+    #[test]
+    fn open_edit_initiative_prefills_repo_title_and_body() {
+        let mut app = App::default();
+        app.open_edit_initiative(&initiative_detail());
+        let form = app.form().expect("the edit form opens");
+        assert_eq!(form.value_of("repo"), "coxtop");
+        assert_eq!(form.value_of("title"), "Old title");
+        let body = form.fields.iter().find(|f| f.label == "body");
+        assert_eq!(body.map(|f| f.text.as_str()), Some("old body"));
+    }
+
+    #[test]
+    fn open_new_initiative_offers_the_queues_distinct_repos() {
+        let json = r#"{"schema":1,"at":"2026-09-29T00:00:00Z","chair":{"holder":"h","host":"h","epoch":1,"liveness":"live","beat_age_s":0},"spend":{"five_hour_fraction":0.0,"five_hour_source":"meter","weekly_fraction":0.0,"weekly_source":"meter","hard_stop_fraction":0.0,"five_hour_resets_at":"2026-09-29T00:00:00Z","weekly_resets_at":"2026-09-29T00:00:00Z"},"machines":[],"runs":[],"queue":[{"initiative":"a","priority":1,"phases_landed":0,"phases_total":1,"current_phase":"p","repo":"coxtop"},{"initiative":"b","priority":1,"phases_landed":0,"phases_total":1,"current_phase":"p","repo":"pat-skills"},{"initiative":"c","priority":1,"phases_landed":0,"phases_total":1,"current_phase":"p","repo":"coxtop"}],"inbox":[],"watch":[]}"#;
+        let mut app = App::default();
+        app.apply_snapshot(crate::feed::parse_snapshot(json).expect("literal snapshot"));
+        app.open_new_initiative();
+        let kind = app.form().map(|f| f.fields[0].kind.clone());
+        assert_eq!(
+            kind,
+            Some(crate::form::FieldKind::Choice(argv(&[
+                "coxtop",
+                "pat-skills"
+            ])))
+        );
+    }
+
+    #[test]
+    fn editor_done_replaces_the_body_and_marks_the_field_changed() {
+        let mut app = App::default();
+        app.open_edit_initiative(&initiative_detail());
+        app.editor_done(
+            2,
+            Some(PathBuf::from("/tmp/body.md")),
+            Ok("new body".to_string()),
+        );
+        let body = app.form().and_then(|f| f.fields.get(2)).cloned();
+        let body = body.expect("the body field exists");
+        assert_eq!(body.text, "new body");
+        assert_eq!(body.path, Some(PathBuf::from("/tmp/body.md")));
+        assert!(body.changed());
+    }
+
+    #[test]
+    fn a_failed_editor_leaves_the_body_and_sets_a_failed_status() {
+        let mut app = App::default();
+        app.open_edit_initiative(&initiative_detail());
+        app.editor_done(2, None, Err("editor: not found".to_string()));
+        let body = app.form().and_then(|f| f.fields.get(2)).cloned();
+        assert_eq!(body.map(|f| f.text), Some("old body".to_string()));
+        assert_eq!(
+            app.status(),
+            Some(&(StatusLevel::Failed, "editor: not found".to_string()))
+        );
+    }
+
+    #[test]
+    fn a_remove_form_with_a_reason_confirms_the_exact_remove_command() {
+        let mut app = App::default();
+        app.open_remove_initiative("ID");
+        assert_eq!(
+            field_values(&app),
+            vec![("reason".to_string(), String::new())]
+        );
+        type_into_form(&mut app, "dup");
+        form_keys(&mut app, &[crossterm::event::KeyCode::Enter]);
+        let Some(Modal::Confirm(confirm)) = app.modal() else {
+            panic!("expected a confirm, got {:?}", app.modal());
+        };
+        assert_eq!(confirm.command, "cox route remove ID --reason dup");
+    }
+
+    #[test]
+    fn an_edit_that_exits_2_keeps_the_form_open_with_the_refusal() {
+        let mut app = App::default();
+        app.open_edit_initiative(&initiative_detail());
+        form_keys(&mut app, &[crossterm::event::KeyCode::Enter]);
+        type_into_form(&mut app, "!");
+        app.submit_form();
+        assert!(matches!(app.modal(), Some(Modal::Confirm(_))));
+        app.modal_key(press(crossterm::event::KeyCode::Char('y')));
+        let pending = app.take_pending().expect("a Yes queues the edit");
+        assert_eq!(pending.origin, Origin::Form { step: 0 });
+        let refused = form_result_of(&["cox", "route", "edit", "i0"], Some(2), "no such repo");
+        app.apply_exec_result(refused, Origin::Form { step: 0 });
+        assert!(app.form().is_some());
+        assert_eq!(app.modal(), None);
+        assert_eq!(
+            app.status(),
+            Some(&(
+                StatusLevel::Failed,
+                "failed (exit 2): no such repo".to_string()
+            ))
+        );
     }
 }
