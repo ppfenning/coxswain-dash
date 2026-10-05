@@ -1,0 +1,19 @@
+---
+source: src/ui/settings_frame.rs
+assertion_line: 680
+expression: terminal.backend().to_string()
+---
+"  lanes and machines   models and tiers                                                             "
+"> models and tiers     > models.tier.fast  haiku   .cox/models.toml   git-tracked    Pat-only       "
+"  crew seats             models.default    sonnet  ~/.cox/local.toml  machine-local                 "
+"                                                                                                    "
+"                       staged                                                                       "
+"                         nothing staged                                                             "
+"                                                                                                    "
+"                                                                                                    "
+"                                                                                                    "
+"                                                                                                    "
+"                                                                                                    "
+"                                                                                                    "
+"                                                                                                    "
+"Up/Down field   Enter edit   Tab next pane   r reload   Esc close                                   "
