@@ -1,13 +1,75 @@
 //! Pure keyboard dispatch: turns one crossterm `KeyCode` into the single `App` mutation it
 //! maps to. No I/O and no rendering; `src/main.rs`'s event loop is the only caller.
 
-use crossterm::event::{KeyCode, MouseButton, MouseEvent, MouseEventKind};
+use std::process::{Command, Stdio};
+
+use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
 
 use crate::app::{App, Focus};
+use crate::decision_card::KeyOutcome;
+
+/// Runs the card's answer argv without waiting on it. A failed spawn has nowhere to report to
+/// and the decision stays open in the feed, so the error is dropped here at the edge.
+fn run_answer(argv: &[String]) {
+    let Some((program, args)) = argv.split_first() else {
+        return;
+    };
+    let spawned = Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
+    if let Ok(mut child) = spawned {
+        // Reaps the child off the UI thread so it does not linger as a zombie.
+        std::thread::spawn(move || {
+            let _ = child.wait();
+        });
+    }
+}
+
+/// Routes one key press: a focused panel takes every key, then a showing decision card takes its
+/// keys, and anything left goes to `handle_key`.
+pub fn handle_event(app: &mut App, key: KeyEvent) {
+    handle_event_with(app, key, &mut run_answer);
+}
+
+/// `handle_event` with the answer runner passed in, so a test runs no process.
+pub fn handle_event_with(app: &mut App, key: KeyEvent, run: &mut dyn FnMut(&[String])) {
+    if app.chair_panel().focused() {
+        // `Ctrl-]` makes the panel clear its own focus; either way the key is spent.
+        app.chair_panel_mut().handle_key(key);
+        return;
+    }
+    if app.card_visible() {
+        match app.decision_card_mut().on_key(key.code) {
+            KeyOutcome::Selected(_) => return,
+            KeyOutcome::Answer(argv) => {
+                run(&argv);
+                app.hide_card();
+                return;
+            }
+            KeyOutcome::Cancelled => {
+                app.hide_card();
+                return;
+            }
+            KeyOutcome::FocusSession if app.chair_panel().is_open() => {
+                app.chair_panel_mut().set_focus(true);
+                return;
+            }
+            // An option number past the last option must not toggle a frame behind the card.
+            KeyOutcome::Ignored if matches!(key.code, KeyCode::Char('1'..='9')) => return,
+            KeyOutcome::FocusSession | KeyOutcome::Ignored => {}
+        }
+    }
+    handle_key(app, key.code);
+}
 
 pub fn handle_key(app: &mut App, key: KeyCode) {
     match key {
+        KeyCode::Char('`') => app.toggle_chair_panel(),
+        KeyCode::Char('~') => app.chair_panel_mut().cycle_width(),
         KeyCode::Tab => app.next_page(),
         KeyCode::BackTab => app.prev_page(),
         KeyCode::Char('t') => app.toggle_theme(),
@@ -183,6 +245,125 @@ mod tests {
         assert_eq!(app.selected(), before_selected);
         assert!(app.detail().is_none());
         assert_eq!(app.regatta_frames_visible(), before_visible);
+    }
+
+    fn press(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    /// A snapshot naming chair session `s1` with open decisions `d1` (options a, b) and, when
+    /// `second` is set, `d2`.
+    fn snapshot_with_decisions(second: bool) -> crate::feed::FeedSnapshot {
+        let extra = if second {
+            r#",{"id":"d2","question":"q2","options":["x","y"],"context":"c","asked_at":"2026-09-29T00:00:00Z"}"#
+        } else {
+            ""
+        };
+        let json = format!(
+            r#"{{"schema":1,"at":"2026-09-29T00:00:00Z","chair":{{"holder":"h","host":"h","epoch":1,"liveness":"live","beat_age_s":0,"session":"s1"}},"spend":{{"five_hour_fraction":0.0,"five_hour_source":"meter","weekly_fraction":0.0,"weekly_source":"meter","hard_stop_fraction":0.0,"five_hour_resets_at":"2026-09-29T00:00:00Z","weekly_resets_at":"2026-09-29T00:00:00Z"}},"machines":[],"runs":[],"queue":[],"inbox":[],"watch":[],"decisions":[{{"id":"d1","question":"q","options":["a","b"],"context":"c","asked_at":"2026-09-29T00:00:00Z"}}{extra}]}}"#
+        );
+        crate::feed::parse_snapshot(&json).expect("literal snapshot should parse")
+    }
+
+    /// An app on a shared fake pty that has seen `d1` and then `d2`, so the panel is open
+    /// unfocused and the card shows `d1`.
+    fn app_with_card() -> (App, crate::pty::SharedFakePty) {
+        let fake = crate::pty::SharedFakePty::default();
+        let mut app = App::default().with_pty(Box::new(fake.clone()));
+        app.apply_snapshot(snapshot_with_decisions(false));
+        app.apply_snapshot(snapshot_with_decisions(true));
+        (app, fake)
+    }
+
+    #[test]
+    fn backtick_toggles_the_panel_open_and_closed_on_either_page() {
+        for page in [AppPage::Regatta, AppPage::Slipstream] {
+            let fake = crate::pty::SharedFakePty::default();
+            let mut app = App::new(page, ThemeId::Regatta).with_pty(Box::new(fake.clone()));
+            app.apply_snapshot(snapshot_with_decisions(false));
+            handle_event_with(&mut app, press(KeyCode::Char('`')), &mut |_| {});
+            assert!(app.chair_panel().is_open());
+            handle_event_with(&mut app, press(KeyCode::Esc), &mut |_| {});
+            assert!(app.chair_panel().is_open(), "a focused panel keeps Esc");
+            let ctrl_close = KeyEvent::new(KeyCode::Char(']'), KeyModifiers::CONTROL);
+            handle_event_with(&mut app, ctrl_close, &mut |_| {});
+            handle_event_with(&mut app, press(KeyCode::Char('`')), &mut |_| {});
+            assert!(!app.chair_panel().is_open());
+            assert!(fake.0.borrow().calls().contains(&crate::pty::PtyCall::Kill));
+        }
+    }
+
+    #[test]
+    fn tilde_cycles_the_panel_width_through_all_three_modes() {
+        use crate::chair_panel::WidthMode;
+        let mut app = App::default();
+        let widths: Vec<WidthMode> = (0..3)
+            .map(|_| {
+                handle_key(&mut app, KeyCode::Char('~'));
+                app.chair_panel().width()
+            })
+            .collect();
+        assert_eq!(
+            widths,
+            [WidthMode::Wide, WidthMode::Full, WidthMode::Narrow]
+        );
+    }
+
+    #[test]
+    fn ctrl_right_bracket_returns_focus_and_other_keys_go_to_the_pty() {
+        let (mut app, fake) = app_with_card();
+        app.hide_card();
+        app.chair_panel_mut().set_focus(true);
+        handle_event_with(&mut app, press(KeyCode::Char('q')), &mut |_| {});
+        assert!(app.chair_panel().focused());
+        assert!(
+            fake.0
+                .borrow()
+                .calls()
+                .contains(&crate::pty::PtyCall::Write(b"q".to_vec()))
+        );
+        let release = KeyEvent::new(KeyCode::Char(']'), KeyModifiers::CONTROL);
+        handle_event_with(&mut app, release, &mut |_| {});
+        assert!(!app.chair_panel().focused());
+        assert!(app.chair_panel().is_open());
+    }
+
+    #[test]
+    fn y_runs_the_built_argv_through_the_seam_and_hides_the_card() {
+        let (mut app, _fake) = app_with_card();
+        let mut ran: Vec<Vec<String>> = Vec::new();
+        let mut record = |argv: &[String]| ran.push(argv.to_vec());
+        handle_event_with(&mut app, press(KeyCode::Char('y')), &mut record);
+        handle_event_with(&mut app, press(KeyCode::Char('2')), &mut record);
+        handle_event_with(&mut app, press(KeyCode::Char('y')), &mut record);
+        assert_eq!(
+            ran,
+            [["cox", "chair", "answer", "d1", "b"].map(String::from)]
+        );
+        assert!(!app.card_visible());
+    }
+
+    #[test]
+    fn esc_closes_the_card_without_answering_and_tab_focuses_the_panel() {
+        let (mut app, _fake) = app_with_card();
+        let mut ran = 0;
+        let mut count = |_: &[String]| ran += 1;
+        handle_event_with(&mut app, press(KeyCode::Tab), &mut count);
+        assert!(app.chair_panel().focused());
+        assert_eq!(app.page(), AppPage::Regatta);
+        let release = KeyEvent::new(KeyCode::Char(']'), KeyModifiers::CONTROL);
+        handle_event_with(&mut app, release, &mut count);
+        handle_event_with(&mut app, press(KeyCode::Esc), &mut count);
+        assert!(!app.card_visible());
+        assert_eq!(ran, 0);
+    }
+
+    #[test]
+    fn a_digit_past_the_last_option_does_not_toggle_a_frame_behind_the_card() {
+        let (mut app, _fake) = app_with_card();
+        let before = app.regatta_frames_visible();
+        handle_event_with(&mut app, press(KeyCode::Char('5')), &mut |_| {});
+        assert_eq!(app.regatta_frames_visible(), before);
     }
 
     #[test]

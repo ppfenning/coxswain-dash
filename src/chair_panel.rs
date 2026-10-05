@@ -71,6 +71,15 @@ pub struct ChairPanel<P: PtySession> {
     confirming_close: bool,
 }
 
+impl<P: PtySession> std::fmt::Debug for ChairPanel<P> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ChairPanel")
+            .field("open", &self.open)
+            .field("focused", &self.focused)
+            .finish()
+    }
+}
+
 impl<P: PtySession> ChairPanel<P> {
     pub fn new(pty: P) -> Self {
         Self {

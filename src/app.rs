@@ -11,8 +11,16 @@
 
 use chrono::{DateTime, FixedOffset};
 
+use crate::chair_panel::ChairPanel;
+use crate::decision_card::DecisionCard;
 use crate::detail::DetailSnapshot;
-use crate::feed::FeedSnapshot;
+use crate::feed::{Chair, FeedSnapshot};
+use crate::pty::{PtySession, RealPty};
+
+/// The pty size the panel opens at. The rendering task sizes it from the layout; until then a
+/// resize event from `main` is the only thing that changes it.
+const PANEL_ROWS: u16 = 24;
+const PANEL_COLS: u16 = 80;
 
 /// How many layout presets the regatta page cycles through.
 const REGATTA_LAYOUT_PRESET_COUNT: usize = 4;
@@ -116,6 +124,16 @@ pub struct App {
     /// (`Focus::Runs`, `Focus::Queue`, `Focus::Machines`, `Focus::History` in that order).
     selected: [[usize; 4]; 2],
     detail: Option<(DetailKind, String, Option<DetailSnapshot>)>,
+    chair_panel: ChairPanel<Box<dyn PtySession>>,
+    decision_card: DecisionCard,
+    card_visible: bool,
+    /// How many times a new decision asked for the bell. `main` rings once per increment.
+    bells: u32,
+}
+
+/// The chair's session id, or None when the feed carries an empty one.
+fn session_id(chair: &Chair) -> Option<&str> {
+    (!chair.session.is_empty()).then_some(chair.session.as_str())
 }
 
 impl Default for App {
@@ -135,6 +153,10 @@ impl Default for App {
             focus: Focus::Runs,
             selected: [[0; 4]; 2],
             detail: None,
+            chair_panel: ChairPanel::new(Box::new(RealPty::new())),
+            decision_card: DecisionCard::new(),
+            card_visible: false,
+            bells: 0,
         }
     }
 }
@@ -148,8 +170,55 @@ impl App {
         }
     }
 
+    /// Swaps the panel's pty, so a test can record what the panel spawns.
+    #[cfg(test)]
+    pub fn with_pty(self, pty: Box<dyn PtySession>) -> Self {
+        App {
+            chair_panel: ChairPanel::new(pty),
+            ..self
+        }
+    }
+
     pub fn snapshot(&self) -> Option<&FeedSnapshot> {
         self.snapshot.as_ref()
+    }
+
+    pub fn chair_panel(&self) -> &ChairPanel<Box<dyn PtySession>> {
+        &self.chair_panel
+    }
+
+    pub fn chair_panel_mut(&mut self) -> &mut ChairPanel<Box<dyn PtySession>> {
+        &mut self.chair_panel
+    }
+
+    pub fn decision_card_mut(&mut self) -> &mut DecisionCard {
+        &mut self.decision_card
+    }
+
+    pub fn card_visible(&self) -> bool {
+        self.card_visible
+    }
+
+    /// Hides the decision card without answering. The decision stays open in the feed.
+    pub fn hide_card(&mut self) {
+        self.card_visible = false;
+    }
+
+    /// How many bells new decisions have asked for so far.
+    pub fn bells(&self) -> u32 {
+        self.bells
+    }
+
+    /// Closes an open panel, killing only the local attach process. A closed panel attaches to
+    /// the chair's session, if the feed names one, and takes focus.
+    pub fn toggle_chair_panel(&mut self) {
+        if self.chair_panel.is_open() {
+            self.chair_panel.close();
+        } else {
+            let id = self.snapshot.as_ref().and_then(|s| session_id(&s.chair));
+            self.chair_panel.open(id, PANEL_ROWS, PANEL_COLS);
+            self.chair_panel.set_focus(true);
+        }
     }
 
     /// The last feed error line, or `None` once a good snapshot has cleared it.
@@ -219,6 +288,18 @@ impl App {
     /// lanes-in-use to the history, dropping samples more than 24h older than the newest.
     /// No I/O: the caller already read and parsed the feed line.
     pub fn apply_snapshot(&mut self, snap: FeedSnapshot) {
+        // The first snapshot only records its decisions as seen. A later new one opens the
+        // panel on the chair's session, shows the card and asks for one bell.
+        let first = !self.feed.has_snapshot;
+        let has_new = self.decision_card.note_decisions(&snap.decisions);
+        if has_new && !first {
+            self.chair_panel
+                .open(session_id(&snap.chair), PANEL_ROWS, PANEL_COLS);
+            self.card_visible = true;
+            self.bells += 1;
+        } else if self.decision_card.decision().is_none() {
+            self.card_visible = false;
+        }
         let lanes_in_use: u32 = snap.machines.iter().map(|m| m.lanes_in_use).sum();
         self.lanes_history.push((snap.at.clone(), lanes_in_use));
         if let Some(newest) = self
@@ -474,6 +555,65 @@ mod tests {
     fn make_rich_snapshot() -> FeedSnapshot {
         let json = r#"{"schema":1,"at":"2026-09-29T00:00:00Z","chair":{"holder":"h","host":"h","epoch":1,"liveness":"live","beat_age_s":0},"spend":{"five_hour_fraction":0.0,"five_hour_source":"meter","weekly_fraction":0.0,"weekly_source":"meter","hard_stop_fraction":0.0,"five_hour_resets_at":"2026-09-29T00:00:00Z","weekly_resets_at":"2026-09-29T00:00:00Z"},"machines":[{"name":"m0","state":"active","lanes_in_use":0,"capacity":3,"login_ok":true,"login_checked_at":"2026-09-29T00:00:00Z","beat_age_s":0,"checkouts":{}},{"name":"m1","state":"active","lanes_in_use":0,"capacity":3,"login_ok":true,"login_checked_at":"2026-09-29T00:00:00Z","beat_age_s":0,"checkouts":{}}],"runs":[{"run":"r0","machine":"m0","phase":"p","node":"n","attempt":1,"turns":1,"cost":0.0,"verdict":"ok","status":"running"},{"run":"r1","machine":"m0","phase":"p","node":"n","attempt":1,"turns":1,"cost":0.0,"verdict":"ok","status":"running"},{"run":"r2","machine":"m0","phase":"p","node":"n","attempt":1,"turns":1,"cost":0.0,"verdict":"ok","status":"running"}],"queue":[{"initiative":"i0","priority":1,"phases_landed":0,"phases_total":1,"current_phase":"p"}],"inbox":[],"watch":[]}"#;
         crate::feed::parse_snapshot(json).expect("literal snapshot should parse")
+    }
+
+    /// A snapshot whose chair session is `s1` and whose open decisions have the given ids.
+    fn snapshot_with_decisions(ids: &[&str]) -> FeedSnapshot {
+        let decisions = ids
+            .iter()
+            .map(|id| {
+                format!(
+                    r#"{{"id":"{id}","question":"q","options":["a","b"],"context":"c","asked_at":"2026-09-29T00:00:00Z"}}"#
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        let json = format!(
+            r#"{{"schema":1,"at":"2026-09-29T00:00:00Z","chair":{{"holder":"h","host":"h","epoch":1,"liveness":"live","beat_age_s":0,"session":"s1"}},"spend":{{"five_hour_fraction":0.0,"five_hour_source":"meter","weekly_fraction":0.0,"weekly_source":"meter","hard_stop_fraction":0.0,"five_hour_resets_at":"2026-09-29T00:00:00Z","weekly_resets_at":"2026-09-29T00:00:00Z"}},"machines":[],"runs":[],"queue":[],"inbox":[],"watch":[],"decisions":[{decisions}]}}"#
+        );
+        crate::feed::parse_snapshot(&json).expect("literal snapshot should parse")
+    }
+
+    #[test]
+    fn a_decision_in_the_first_snapshot_opens_nothing() {
+        let fake = crate::pty::SharedFakePty::default();
+        let mut app = App::default().with_pty(Box::new(fake.clone()));
+        app.apply_snapshot(snapshot_with_decisions(&["d1"]));
+        assert!(!app.chair_panel().is_open());
+        assert!(!app.card_visible());
+        assert_eq!(app.bells(), 0);
+        assert!(fake.0.borrow().calls().is_empty());
+    }
+
+    #[test]
+    fn a_new_decision_in_a_later_snapshot_opens_the_panel_and_rings_once() {
+        let fake = crate::pty::SharedFakePty::default();
+        let mut app = App::default().with_pty(Box::new(fake.clone()));
+        app.apply_snapshot(snapshot_with_decisions(&["d1"]));
+        app.apply_snapshot(snapshot_with_decisions(&["d1", "d2"]));
+        app.apply_snapshot(snapshot_with_decisions(&["d1", "d2"]));
+        assert!(app.chair_panel().is_open());
+        assert!(app.card_visible());
+        assert_eq!(app.bells(), 1);
+        let argv = ["claude", "attach", "s1"].map(String::from).to_vec();
+        assert_eq!(
+            fake.0.borrow().calls(),
+            [crate::pty::PtyCall::Spawn {
+                argv,
+                rows: PANEL_ROWS,
+                cols: PANEL_COLS
+            }]
+        );
+    }
+
+    #[test]
+    fn the_card_hides_once_the_feed_drops_every_decision() {
+        let mut app = App::default().with_pty(Box::new(crate::pty::SharedFakePty::default()));
+        app.apply_snapshot(snapshot_with_decisions(&[]));
+        app.apply_snapshot(snapshot_with_decisions(&["d1"]));
+        assert!(app.card_visible());
+        app.apply_snapshot(snapshot_with_decisions(&[]));
+        assert!(!app.card_visible());
     }
 
     #[test]
