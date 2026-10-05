@@ -88,20 +88,81 @@ fn render_base(f: &mut Frame, app: &App, theme: &Theme) {
     }
 }
 
+/// The page and, when the chair panel is open, the panel on its right. The page gets the width
+/// the panel leaves; a panel at full width leaves it none.
+fn render_page(f: &mut Frame, app: &App, theme: &Theme) {
+    let panel = app.chair_panel();
+    let (page, side) = split_panel(f.area(), panel.is_open().then(|| panel.width().percent()));
+    if page.width > 0 {
+        render_page_in(f, page, app, theme);
+    }
+    if let Some(side) = side {
+        render_panel(f, side, app, theme);
+    }
+}
+
+/// The page's area, then the panel's when `percent` is the panel's share of the width. Without
+/// a panel the page keeps `area` whole.
+fn split_panel(area: Rect, percent: Option<u16>) -> (Rect, Option<Rect>) {
+    let Some(percent) = percent else {
+        return (area, None);
+    };
+    let width = u16::try_from(u32::from(area.width) * u32::from(percent.min(100)) / 100)
+        .unwrap_or(area.width);
+    let page = Rect {
+        width: area.width - width,
+        ..area
+    };
+    let side = Rect {
+        x: area.x + page.width,
+        width,
+        ..area
+    };
+    (page, Some(side))
+}
+
+/// Rows the decision card takes above the terminal: its text, its borders and room for a
+/// wrapped line, never more than half the panel.
+fn card_height(options: usize, panel_height: u16) -> u16 {
+    let wanted = u16::try_from(options)
+        .unwrap_or(u16::MAX)
+        .saturating_add(10);
+    wanted.min(panel_height / 2)
+}
+
+/// The chair panel in `area`, with the decision card above its terminal while the card shows.
+fn render_panel(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
+    let card = app.decision_card();
+    let Some(decision) = card.decision().filter(|_| app.card_visible()) else {
+        return app.chair_panel().render(f, area, theme);
+    };
+    let top = Rect {
+        height: card_height(decision.options.len(), area.height),
+        ..area
+    };
+    let rest = Rect {
+        y: area.y + top.height,
+        height: area.height - top.height,
+        ..area
+    };
+    card.render(f, top, theme, app.utc_offset());
+    app.chair_panel().render(f, rest, theme);
+}
+
 /// The page behind any detail view. A feed error with no snapshot yet replaces the waiting
 /// text; an error beside a held snapshot is drawn over the finished page.
-fn render_page(f: &mut Frame, app: &App, theme: &Theme) {
+fn render_page_in(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     match (app.snapshot(), app.feed_error()) {
-        (None, Some(err)) => render_feed_failed(f, app, err, theme),
+        (None, Some(err)) => render_feed_failed(f, area, app, err, theme),
         (_, err) => match app.page() {
             AppPage::Regatta => {
-                regatta::render(f, app, theme);
+                regatta::render(f, area, app, theme);
                 if let Some(err) = err {
-                    render_error_line(f, last_row(chair_inner(f.area(), app)), err, theme);
+                    render_error_line(f, last_row(chair_inner(area, app)), err, theme);
                 }
             }
             // Slipstream draws its own error line, in its own palette.
-            AppPage::Slipstream => slipstream::render(f, app),
+            AppPage::Slipstream => slipstream::render(f, area, app),
         },
     }
 }
@@ -158,8 +219,7 @@ fn render_error_line(f: &mut Frame, row: Rect, err: &str, theme: &Theme) {
 
 /// The feed failed before any snapshot: the Regatta frame layout, the chair frame carrying the
 /// error line and every other frame saying there is no feed. The word "waiting" is never drawn.
-fn render_feed_failed(f: &mut Frame, app: &App, err: &str, theme: &Theme) {
-    let area = f.area();
+fn render_feed_failed(f: &mut Frame, area: Rect, app: &App, err: &str, theme: &Theme) {
     let style = Style::default().fg(theme.fg).bg(theme.bg);
     let chair = regatta_chair(area, app);
     f.render_widget(Block::default().style(style), area);
@@ -1040,5 +1100,125 @@ mod tests {
         let footer = with_status.lines().last().unwrap_or("");
         assert!(footer.contains("locked"));
         assert!(!footer.contains("Tab next pane"));
+    }
+
+    fn rect(x: u16, width: u16) -> Rect {
+        Rect::new(x, 0, width, 10)
+    }
+
+    #[test]
+    fn split_panel_gives_the_panel_its_share_of_the_width_on_the_right() {
+        let area = Rect::new(0, 0, 100, 10);
+        assert_eq!(split_panel(area, None), (area, None));
+        assert_eq!(
+            split_panel(area, Some(35)),
+            (rect(0, 65), Some(rect(65, 35)))
+        );
+        assert_eq!(
+            split_panel(area, Some(60)),
+            (rect(0, 40), Some(rect(40, 60)))
+        );
+        assert_eq!(
+            split_panel(area, Some(100)),
+            (rect(0, 0), Some(rect(0, 100)))
+        );
+    }
+
+    #[test]
+    fn card_height_is_its_text_and_never_over_half_the_panel() {
+        assert_eq!(card_height(2, 40), 12);
+        assert_eq!(card_height(2, 16), 8);
+    }
+
+    /// A feed whose chair session is `s1`, with one open decision when `decided`.
+    fn panel_snapshot(decided: bool) -> crate::feed::FeedSnapshot {
+        let decisions = if decided {
+            r#"[{"id":"d1","question":"Ship the preview?","options":["ship","hold"],"context":"Spend is under the stop.","asked_at":"2026-09-29T00:00:00Z"}]"#
+        } else {
+            "[]"
+        };
+        let json = format!(
+            r#"{{"schema":1,"at":"2026-09-29T00:00:00Z","chair":{{"holder":"chair@omarchy:1","host":"omarchy","epoch":1,"liveness":"live","beat_age_s":4,"session":"s1"}},"spend":{{"five_hour_fraction":0.1,"five_hour_source":"meter","weekly_fraction":0.2,"weekly_source":"meter","hard_stop_fraction":0.9,"five_hour_resets_at":"2026-09-29T02:00:00Z","weekly_resets_at":"2026-10-04T04:00:00Z"}},"machines":[{{"name":"omarchy","state":"active","lanes_in_use":1,"capacity":3,"login_ok":true,"login_checked_at":"2026-09-29T00:00:00Z","beat_age_s":12,"checkouts":{{}}}}],"runs":[{{"run":"alpha-1","machine":"omarchy","phase":"p1","node":"build","attempt":1,"turns":3,"cost":0.5,"verdict":"none","status":"running"}}],"queue":[],"inbox":[],"watch":[],"decisions":{decisions}}}"#
+        );
+        crate::feed::parse_snapshot(&json).expect("literal snapshot should parse")
+    }
+
+    /// An app on `page` whose fake terminal has printed a line; the panel is open when `open`
+    /// and the card shows when `decided`.
+    fn panel_app(page: AppPage, theme: ThemeId, open: bool, decided: bool) -> App {
+        let fake = crate::pty::FakePty::with_output(b"chair> waiting for you\r\n");
+        let mut app = App::new(page, theme).with_pty(Box::new(fake));
+        app.apply_snapshot(panel_snapshot(false));
+        if decided {
+            app.apply_snapshot(panel_snapshot(true));
+        } else if open {
+            app.toggle_chair_panel();
+        }
+        app.chair_panel_mut().poll();
+        app
+    }
+
+    fn panel_text(app: &App, theme: ThemeId) -> String {
+        let theme = crate::theme::resolve_for(theme, Some("truecolor"));
+        screen(&draw(app, &theme))
+    }
+
+    const PANEL_THEMES: [(ThemeId, &str); 2] = [
+        (ThemeId::Regatta, "regatta"),
+        (ThemeId::HarborLight, "harbor_light"),
+    ];
+
+    #[test]
+    fn renders_panel_closed() {
+        for (id, name) in PANEL_THEMES {
+            let app = panel_app(AppPage::Regatta, id, false, false);
+            assert!(!app.chair_panel().is_open());
+            let text = panel_text(&app, id);
+            assert!(!text.contains("chair> waiting"));
+            insta::assert_snapshot!(format!("renders_panel_closed_{name}"), text);
+        }
+    }
+
+    #[test]
+    fn renders_panel_open() {
+        for (id, name) in PANEL_THEMES {
+            let app = panel_app(AppPage::Regatta, id, true, false);
+            let text = panel_text(&app, id);
+            assert!(text.contains("chair> waiting for you"));
+            assert!(!text.contains("decision"));
+            insta::assert_snapshot!(format!("renders_panel_open_{name}"), text);
+        }
+    }
+
+    #[test]
+    fn renders_panel_card() {
+        for (id, name) in PANEL_THEMES {
+            let app = panel_app(AppPage::Regatta, id, true, true);
+            assert!(app.card_visible());
+            let buffer = draw(&app, &crate::theme::resolve_for(id, Some("truecolor")));
+            let card = find(&buffer, "Ship the preview?").expect("card on screen");
+            let terminal = find(&buffer, "chair> waiting for you").expect("terminal on screen");
+            assert!(card.1 < terminal.1);
+            insta::assert_snapshot!(format!("renders_panel_card_{name}"), screen(&buffer));
+        }
+    }
+
+    #[test]
+    fn an_open_panel_takes_the_right_of_either_page() {
+        for page in [AppPage::Regatta, AppPage::Slipstream] {
+            let closed = screen(&draw(
+                &panel_app(page, ThemeId::Regatta, false, false),
+                &crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor")),
+            ));
+            let open = panel_app(page, ThemeId::Regatta, true, false);
+            let buffer = draw(
+                &open,
+                &crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor")),
+            );
+            let (x, _) = find(&buffer, "chair> waiting for you").expect("terminal on screen");
+            assert!(x >= 120 * 65 / 100, "terminal starts at column {x}");
+            assert!(closed.contains("omarchy"));
+            assert!(screen(&buffer).contains("omarchy"));
+        }
     }
 }
