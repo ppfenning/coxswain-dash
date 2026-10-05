@@ -1,0 +1,8 @@
+---
+source: src/ui/mod.rs
+assertion_line: 525
+expression: "excerpt(&app, ThemeId::Regatta, &[37..40])"
+---
+│no runs ended yet                                                                                                     │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+:route list

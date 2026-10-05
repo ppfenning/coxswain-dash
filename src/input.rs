@@ -3,7 +3,7 @@
 
 use std::process::{Command, Stdio};
 
-use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
 
 use crate::app::{App, Focus};
@@ -42,6 +42,11 @@ pub fn handle_event_with(app: &mut App, key: KeyEvent, run: &mut dyn FnMut(&[Str
         app.chair_panel_mut().handle_key(key);
         return;
     }
+    // An open modal spends every key, so the confirm's `y` never reaches the decision card.
+    if app.modal().is_some() {
+        app.modal_key(key);
+        return;
+    }
     if app.card_visible() {
         match app.decision_card_mut().on_key(key.code) {
             KeyOutcome::Selected(_) => return,
@@ -67,6 +72,20 @@ pub fn handle_event_with(app: &mut App, key: KeyEvent, run: &mut dyn FnMut(&[Str
 }
 
 pub fn handle_key(app: &mut App, key: KeyCode) {
+    if app.modal().is_some() {
+        app.modal_key(KeyEvent::new(key, KeyModifiers::NONE));
+        return;
+    }
+    if key == KeyCode::Char(':') {
+        app.open_palette();
+        return;
+    }
+    // `p` is run pause on a run target and the layout toggle everywhere else.
+    if let KeyCode::Char(c) = key {
+        if app.begin_action(c) {
+            return;
+        }
+    }
     match key {
         KeyCode::Char('`') => app.toggle_chair_panel(),
         KeyCode::Char('~') => app.chair_panel_mut().cycle_width(),
@@ -163,7 +182,6 @@ pub fn handle_mouse(app: &mut App, event: MouseEvent, rects: &[Option<Rect>; 6])
 mod tests {
     use super::*;
     use crate::app::{AppPage, Focus, ThemeId};
-    use crossterm::event::KeyModifiers;
 
     /// A snapshot with two runs (`r0`, `r1`), for the selection-key tests below.
     fn snapshot_with_two_runs() -> crate::feed::FeedSnapshot {
@@ -425,13 +443,113 @@ mod tests {
     }
 
     #[test]
-    fn up_and_char_k_both_select_the_previous_row() {
+    fn up_selects_the_previous_row() {
         let mut app = App::default();
         app.apply_snapshot(snapshot_with_two_runs());
         handle_key(&mut app, KeyCode::Up);
         assert_eq!(app.selected(), 1);
-        handle_key(&mut app, KeyCode::Char('k'));
+        handle_key(&mut app, KeyCode::Up);
         assert_eq!(app.selected(), 0);
+    }
+
+    fn app_on_runs() -> App {
+        let mut app = App::new(AppPage::Regatta, ThemeId::Regatta);
+        app.apply_snapshot(snapshot_with_two_runs());
+        app
+    }
+
+    fn confirm_command(app: &App) -> Option<&str> {
+        match app.modal() {
+            Some(crate::app::Modal::Confirm(confirm)) => Some(confirm.command.as_str()),
+            _ => None,
+        }
+    }
+
+    fn stop_argv() -> Vec<String> {
+        ["cox", "runs", "stop", "r0"].map(String::from).to_vec()
+    }
+
+    #[test]
+    fn colon_opens_the_palette() {
+        let mut app = App::default();
+        handle_key(&mut app, KeyCode::Char(':'));
+        assert!(matches!(app.modal(), Some(crate::app::Modal::Palette(_))));
+    }
+
+    #[test]
+    fn k_on_a_run_opens_the_stop_confirm() {
+        let mut app = app_on_runs();
+        handle_key(&mut app, KeyCode::Char('k'));
+        assert_eq!(confirm_command(&app), Some("cox runs stop r0"));
+        assert_eq!(app.selected(), 0);
+    }
+
+    #[test]
+    fn k_with_a_modal_open_goes_to_the_modal() {
+        let mut app = app_on_runs();
+        app.open_palette();
+        handle_key(&mut app, KeyCode::Char('k'));
+        assert!(matches!(app.modal(), Some(crate::app::Modal::Palette(_))));
+        assert_eq!(app.selected(), 0);
+        let mut app = app_on_runs();
+        handle_key(&mut app, KeyCode::Char('k'));
+        handle_key(&mut app, KeyCode::Char('k'));
+        assert_eq!(confirm_command(&app), Some("cox runs stop r0"));
+        assert!(app.take_pending().is_none());
+    }
+
+    #[test]
+    fn p_on_a_run_opens_pause_and_on_machines_cycles_the_layout() {
+        let mut app = app_on_runs();
+        handle_key(&mut app, KeyCode::Char('p'));
+        assert_eq!(confirm_command(&app), Some("cox runs pause r0"));
+        assert_eq!(app.regatta_layout_preset(), 0);
+
+        let mut app = app_on_runs();
+        handle_key(&mut app, KeyCode::Right);
+        handle_key(&mut app, KeyCode::Right);
+        assert_eq!(app.focus(), Focus::Machines);
+        handle_key(&mut app, KeyCode::Char('p'));
+        assert!(app.modal().is_none());
+        assert_eq!(app.regatta_layout_preset(), 1);
+    }
+
+    #[test]
+    fn y_confirms_and_queues_the_stop_argv() {
+        let mut app = app_on_runs();
+        handle_key(&mut app, KeyCode::Char('k'));
+        handle_key(&mut app, KeyCode::Char('y'));
+        assert!(app.modal().is_none());
+        let pending = app.take_pending().expect("a pending command");
+        assert_eq!(pending.argv, stop_argv());
+    }
+
+    #[test]
+    fn y_with_a_decision_card_showing_goes_to_the_confirm_not_the_card() {
+        let (mut app, _fake) = app_with_card();
+        assert!(app.card_visible());
+        app.open_palette();
+        let mut ran = 0;
+        handle_event_with(&mut app, press(KeyCode::Char('y')), &mut |_| ran += 1);
+        assert_eq!(ran, 0);
+        assert!(app.card_visible());
+    }
+
+    #[test]
+    fn n_leaves_nothing_pending() {
+        let mut app = app_on_runs();
+        handle_key(&mut app, KeyCode::Char('k'));
+        handle_key(&mut app, KeyCode::Char('n'));
+        assert!(app.modal().is_none());
+        assert!(app.take_pending().is_none());
+    }
+
+    #[test]
+    fn esc_closes_the_palette() {
+        let mut app = App::default();
+        handle_key(&mut app, KeyCode::Char(':'));
+        handle_key(&mut app, KeyCode::Esc);
+        assert!(app.modal().is_none());
     }
 
     #[test]
