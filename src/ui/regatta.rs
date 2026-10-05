@@ -1578,6 +1578,9 @@ const KEY_BAR: [(&str, &str); 7] = [
     ("q", "quit"),
 ];
 
+/// The view keys, after the palette. Fixed by the initiative, not read from the keymap.
+const KEY_VIEWS: [(&str, &str); 3] = [("w", "watch"), ("$", "spend"), ("h", "health")];
+
 /// The action keys of the list in `focus`, from `actions::bindings`. History has no actions.
 /// The placeholder id is never read: `bindings` keys on the kind of target alone.
 pub(super) fn action_hints(focus: Focus) -> Vec<(char, &'static str)> {
@@ -1595,13 +1598,14 @@ pub(super) fn action_hints(focus: Focus) -> Vec<(char, &'static str)> {
 }
 
 /// The key bar for a `width`-column row: the fixed keys, a `│`, the focused list's action keys,
-/// then `:` for the palette. The part after the `│` always shows. When the row is too narrow
-/// for everything, fixed keys are dropped whole from the end instead of the row being cut mid-word.
+/// `:` for the palette, then the view keys. The part after the `│` shows before the fixed keys do.
+/// When the row is too narrow, fixed keys are dropped whole from the end. Only if the tail alone is
+/// still too wide are action hints dropped whole from the end. A hint is never cut mid-word.
 fn key_bar_line(focus: Focus, width: u16, theme: &Theme) -> Line<'static> {
     let key = Style::default().fg(theme.border_focus);
     let label = Style::default().fg(theme.dim);
     let pair = |k: String, l: &str| [Span::styled(k, key), Span::styled(format!(" {l}"), label)];
-    let actions = action_hints(focus)
+    let hints: Vec<Vec<Span<'static>>> = action_hints(focus)
         .into_iter()
         .chain((focus == Focus::Machines).then_some((KEY_ADD_MACHINE, "add machine")))
         .chain(
@@ -1610,20 +1614,28 @@ fn key_bar_line(focus: Focus, width: u16, theme: &Theme) -> Line<'static> {
                 .into_iter()
                 .flatten(),
         )
-        .enumerate()
-        .flat_map(|(i, (k, l))| {
-            (i > 0)
-                .then(|| Span::styled("  ", label))
-                .into_iter()
-                .chain(pair(k.to_string(), l))
-        })
-        .collect::<Vec<_>>();
-    let palette_sep = (!actions.is_empty()).then(|| Span::styled(" \u{b7} ", label));
-    let tail: Vec<Span<'static>> = std::iter::once(Span::styled(" \u{2502} ", label))
-        .chain(actions)
-        .chain(palette_sep)
-        .chain(pair(":".to_string(), "palette"))
+        .map(|(k, l)| pair(k.to_string(), l).to_vec())
         .collect();
+    let tail_for = |n: usize| -> Vec<Span<'static>> {
+        std::iter::once(Span::styled(" \u{2502} ", label))
+            .chain(hints[..n].iter().enumerate().flat_map(|(i, hint)| {
+                (i > 0)
+                    .then(|| Span::styled("  ", label))
+                    .into_iter()
+                    .chain(hint.clone())
+            }))
+            .chain((n > 0).then(|| Span::styled(" \u{b7} ", label)))
+            .chain(pair(":".to_string(), "palette"))
+            .chain(KEY_VIEWS.iter().flat_map(|(k, l)| {
+                std::iter::once(Span::styled("  ", label)).chain(pair((*k).to_string(), l))
+            }))
+            .collect()
+    };
+    let kept = (0..=hints.len())
+        .rev()
+        .find(|&n| Line::from(tail_for(n)).width() <= usize::from(width))
+        .unwrap_or(0);
+    let tail = tail_for(kept);
     let fixed: Vec<Vec<Span<'static>>> = KEY_BAR
         .iter()
         .enumerate()
@@ -2831,11 +2843,19 @@ mod tests {
     #[test]
     fn the_key_bar_is_the_last_row_with_keys_in_the_title_color_and_labels_dim() {
         let app = app_with_fixture();
-        let terminal = draw_page(&app, ThemeId::Regatta, 120, 40);
+        let terminal = draw_page(&app, ThemeId::Regatta, 200, 40);
         let row = row_text(&terminal, 39);
         assert_eq!(
             row.trim_end(),
-            "1-9 frames \u{b7} \u{2190}\u{2192} focus \u{b7} \u{2191}\u{2193} select \u{b7} \u{23ce} drill down \u{b7} t theme \u{b7} v layout \u{b7} q quit \u{2502} p pause  k kill  m move \u{b7} : palette"
+            "1-9 frames \u{b7} \u{2190}\u{2192} focus \u{b7} \u{2191}\u{2193} select \u{b7} \u{23ce} drill down \u{b7} t theme \u{b7} v layout \u{b7} q quit \u{2502} p pause  k kill  m move \u{b7} : palette  w watch  $ spend  h health"
+        );
+        assert_eq!(
+            fg_at(&terminal, 39, "$ spend"),
+            Some(Color::Rgb(0x79, 0xc0, 0xff))
+        );
+        assert_eq!(
+            fg_at(&terminal, 39, "spend"),
+            Some(Color::Rgb(0x8b, 0x94, 0x9e))
         );
         assert_eq!(
             fg_at(&terminal, 39, "1-9"),
@@ -2901,12 +2921,16 @@ mod tests {
         (Focus::Inbox, "a accept  x deny"),
     ];
 
+    const VIEW_KEYS: &str = "w watch  $ spend  h health";
+
     #[test]
-    fn at_120_columns_every_focus_shows_all_its_actions_and_the_palette() {
+    fn at_120_columns_every_focus_shows_its_actions_the_palette_and_the_view_keys() {
         for (focus, actions) in FOCUS_ACTIONS {
             let row = key_bar_row(focus, 120);
             assert!(
-                row.ends_with(&format!(" \u{2502} {actions} \u{b7} : palette")),
+                row.ends_with(&format!(
+                    " \u{2502} {actions} \u{b7} : palette  {VIEW_KEYS}"
+                )),
                 "{row}"
             );
             assert!(row.starts_with("1-9 frames"), "{row}");
@@ -2917,22 +2941,31 @@ mod tests {
     fn a_fixed_key_that_does_not_fit_is_dropped_whole_from_the_end() {
         assert_eq!(
             key_bar_row(Focus::Machines, 120),
-            "1-9 frames \u{b7} \u{2190}\u{2192} focus \u{b7} \u{2191}\u{2193} select \u{2502} + lanes up  - lanes down  d drain  a activate  A add machine \u{b7} : palette"
+            "1-9 frames \u{2502} + lanes up  - lanes down  d drain  a activate  A add machine \u{b7} : palette  w watch  $ spend  h health"
         );
         assert_eq!(
-            key_bar_row(Focus::Queue, 120),
-            "1-9 frames \u{b7} \u{2190}\u{2192} focus \u{b7} \u{2191}\u{2193} select \u{b7} \u{23ce} drill down \u{2502} ] priority up  [ priority down  n new  e edit  x remove \u{b7} : palette"
+            key_bar_row(Focus::Queue, 160),
+            "1-9 frames \u{b7} \u{2190}\u{2192} focus \u{b7} \u{2191}\u{2193} select \u{b7} \u{23ce} drill down \u{b7} t theme \u{2502} ] priority up  [ priority down  n new  e edit  x remove \u{b7} : palette  w watch  $ spend  h health"
         );
     }
 
     #[test]
-    fn the_queue_key_bar_fits_in_80_columns_and_keeps_its_actions() {
+    fn the_queue_key_bar_at_80_columns_drops_actions_from_the_end_and_keeps_the_view_keys() {
         let row = key_bar_row(Focus::Queue, 80);
         assert!(row.chars().count() <= 80, "{row}");
-        assert!(
-            row.ends_with("n new  e edit  x remove \u{b7} : palette"),
-            "{row}"
-        );
+        assert!(row.ends_with(&format!(" : palette  {VIEW_KEYS}")), "{row}");
+        assert!(row.contains("] priority up"), "{row}");
+    }
+
+    #[test]
+    fn every_key_bar_at_80_columns_is_one_row_with_the_view_keys() {
+        for (focus, _) in FOCUS_ACTIONS.into_iter().chain([(Focus::History, "")]) {
+            let row = key_bar_row(focus, 80);
+            assert!(row.chars().count() <= 80, "{row}");
+            ["w watch", "$ spend", "h health"]
+                .iter()
+                .for_each(|hint| assert!(row.contains(hint), "{hint} missing from {row}"));
+        }
     }
 
     #[test]
@@ -2962,13 +2995,13 @@ mod tests {
     fn the_key_bar_keeps_its_fixed_keys_and_adds_the_focused_lists_actions() {
         for (focus, actions) in FOCUS_ACTIONS {
             assert_eq!(
-                key_bar_row(focus, 160),
-                format!("{FIXED_KEYS} \u{2502} {actions} \u{b7} : palette")
+                key_bar_row(focus, 200),
+                format!("{FIXED_KEYS} \u{2502} {actions} \u{b7} : palette  {VIEW_KEYS}")
             );
         }
         assert_eq!(
-            key_bar_row(Focus::History, 160),
-            format!("{FIXED_KEYS} \u{2502} : palette")
+            key_bar_row(Focus::History, 200),
+            format!("{FIXED_KEYS} \u{2502} : palette  {VIEW_KEYS}")
         );
     }
 

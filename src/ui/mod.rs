@@ -77,6 +77,17 @@ fn render_base(f: &mut Frame, app: &App, theme: &Theme) {
     }
     match (app.detail(), app.detail_error()) {
         (Some((kind, id, _)), Some(err)) => render_detail_error(f, *kind, id, err, theme),
+        // Watch holds no snapshot: it reads the feed's list, empty before the first snapshot.
+        (Some((DetailKind::Watch, _, _)), None) => {
+            let items = app.snapshot().map_or(&[][..], |s| s.watch.as_slice());
+            watch_drill::render(f, items, theme, app.utc_offset())
+        }
+        (Some((_, _, Some(DetailSnapshot::Spend(detail)))), None) => {
+            spend_drill::render(f, detail, theme, app.utc_offset())
+        }
+        (Some((_, _, Some(DetailSnapshot::Health(detail)))), None) => {
+            health_drill::render(f, detail, theme, app.utc_offset())
+        }
         (Some((_, _, Some(DetailSnapshot::Run(detail)))), None) => {
             run_drill::render(f, detail, theme, app.utc_offset())
         }
@@ -248,7 +259,7 @@ fn render_feed_failed(f: &mut Frame, area: Rect, app: &App, err: &str, theme: &T
 fn render_detail_error(f: &mut Frame, kind: DetailKind, id: &str, err: &str, theme: &Theme) {
     let area = f.area();
     let block = Block::default()
-        .title(format!("{} {}", kind_label(kind), id))
+        .title(kind_and_id(kind, id))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .style(Style::default().fg(theme.fg).bg(theme.bg));
@@ -258,12 +269,24 @@ fn render_detail_error(f: &mut Frame, kind: DetailKind, id: &str, err: &str, the
 }
 
 /// The lowercase noun a loading paragraph names a [`DetailKind`] with. `src/main.rs`'s
-/// `kind_arg` picks the same three strings for the `cox dash --detail` argument.
+/// `kind_arg` picks the same strings for the `cox dash --detail` argument.
 fn kind_label(kind: DetailKind) -> &'static str {
     match kind {
         DetailKind::Run => "run",
         DetailKind::Initiative => "initiative",
         DetailKind::Machine => "machine",
+        DetailKind::Watch => "watch",
+        DetailKind::Spend => "spend",
+        DetailKind::Health => "health",
+    }
+}
+
+/// The kind's noun and its id. The watch, spend and health views use the noun as their id, so
+/// it is not said twice.
+fn kind_and_id(kind: DetailKind, id: &str) -> String {
+    match (kind_label(kind), id) {
+        (label, id) if label == id => label.to_string(),
+        (label, id) => format!("{label} {id}"),
     }
 }
 
@@ -273,7 +296,7 @@ fn render_loading(f: &mut Frame, kind: DetailKind, id: &str, theme: &Theme) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded);
-    let paragraph = Paragraph::new(format!("loading {} {}", kind_label(kind), id))
+    let paragraph = Paragraph::new(format!("loading {}", kind_and_id(kind, id)))
         .block(block)
         .style(Style::default().fg(theme.fg).bg(theme.bg));
     f.render_widget(paragraph, area);
@@ -687,6 +710,62 @@ mod tests {
             .draw(|f| render(f, &app, &theme))
             .expect("draw should not fail");
         insta::assert_snapshot!(terminal.backend().to_string());
+    }
+
+    const WATCH_FEED_FIXTURE: &str = include_str!("../../tests/fixtures/dash_feed_watch_v1.json");
+    const SPEND_FIXTURE: &str = include_str!("../../tests/fixtures/dash_detail_spend_v1.json");
+    const HEALTH_FIXTURE: &str = include_str!("../../tests/fixtures/dash_detail_health_v1.json");
+
+    #[test]
+    fn the_watch_view_draws_the_feeds_first_watch_id() {
+        let snapshot = crate::feed::parse_snapshot(WATCH_FEED_FIXTURE.trim()).expect("feed parses");
+        let mut app = App::new(AppPage::Regatta, ThemeId::Regatta);
+        app.apply_snapshot(snapshot);
+        app.open_watch();
+        let text = screen(&draw(&app, &crate::theme::resolve(ThemeId::Regatta)));
+        assert!(text.contains("coxswain-tools#41"), "{text}");
+    }
+
+    #[test]
+    fn the_watch_view_opens_and_draws_before_any_feed_snapshot() {
+        let mut app = App::new(AppPage::Slipstream, ThemeId::Regatta);
+        app.open_watch();
+        let text = screen(&draw(&app, &crate::theme::resolve(ThemeId::Regatta)));
+        assert!(text.contains("Watch"), "{text}");
+    }
+
+    #[test]
+    fn the_spend_view_draws_its_board_once_its_snapshot_has_arrived() {
+        let mut app = App::new(AppPage::Regatta, ThemeId::Regatta);
+        app.open_spend();
+        app.apply_detail_snapshot(detail::parse_detail(SPEND_FIXTURE.trim()).expect("spend"));
+        let text = screen(&draw(&app, &crate::theme::resolve(ThemeId::Regatta)));
+        assert!(text.contains("2026-10-03"), "{text}");
+        assert!(!text.contains("loading"), "{text}");
+    }
+
+    #[test]
+    fn the_health_view_draws_its_board_once_its_snapshot_has_arrived() {
+        let mut app = App::new(AppPage::Regatta, ThemeId::Regatta);
+        app.open_health();
+        app.apply_detail_snapshot(detail::parse_detail(HEALTH_FIXTURE.trim()).expect("health"));
+        let text = screen(&draw(&app, &crate::theme::resolve(ThemeId::Regatta)));
+        assert!(text.contains("chair-loop@omarchy"), "{text}");
+        assert!(!text.contains("loading"), "{text}");
+    }
+
+    #[test]
+    fn spend_and_health_say_loading_once_and_without_an_id_until_their_snapshot_arrives() {
+        for (kind, word) in [("spend", "loading spend"), ("health", "loading health")] {
+            let mut app = App::new(AppPage::Regatta, ThemeId::Regatta);
+            match kind {
+                "spend" => app.open_spend(),
+                _ => app.open_health(),
+            }
+            let text = screen(&draw(&app, &crate::theme::resolve(ThemeId::Regatta)));
+            assert!(text.contains(word), "{text}");
+            assert!(!text.contains(&format!("{word} {kind}")), "{text}");
+        }
     }
 
     #[test]

@@ -1,6 +1,6 @@
 ---
 source: src/ui/regatta.rs
-assertion_line: 2992
+assertion_line: 3025
 expression: "key_bar_row(Focus::Inbox, 120)"
 ---
-1-9 frames · ←→ focus · ↑↓ select · ⏎ drill down · t theme · v layout · q quit │ a accept  x deny · : palette
+1-9 frames · ←→ focus · ↑↓ select · ⏎ drill down · t theme │ a accept  x deny · : palette  w watch  $ spend  h health

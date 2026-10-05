@@ -1,7 +1,6 @@
 //! Rendering for the spend board (`cox dash --detail spend`): both usage meters as gauges,
 //! their history as block-character rows, and one bar row per day of cost. Nothing calls
 //! `render` yet, so unused-code warnings are silenced until the wiring phase.
-#![allow(dead_code)]
 
 use ratatui::{
     Frame,

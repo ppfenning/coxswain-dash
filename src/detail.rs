@@ -17,6 +17,8 @@ pub enum DetailSnapshot {
     Run(RunDetail),
     Initiative(InitiativeDetail),
     Machine(MachineDetail),
+    Spend(SpendDetail),
+    Health(HealthDetail),
 }
 
 #[derive(Debug, Deserialize)]
@@ -233,11 +235,22 @@ pub fn classify(stdout: String, stderr_line: Option<String>, code: Option<i32>) 
     }
 }
 
+/// The argv of `cox dash --detail <kind> [<id>]`. Spend and health take no id, so an empty one
+/// is left off rather than passed as an empty argument.
+pub fn detail_argv(kind: &str, id: &str) -> Vec<String> {
+    ["cox", "dash", "--detail", kind]
+        .into_iter()
+        .chain((!id.is_empty()).then_some(id))
+        .map(str::to_string)
+        .collect()
+}
+
 // edge
-/// Builds `cox dash --detail <kind> <id>`. `spawn_piped` sets the pipes.
+/// Builds the command for `detail_argv(kind, id)`. `spawn_piped` sets the pipes.
 fn detail_command(kind: &str, id: &str) -> std::process::Command {
-    let mut cmd = std::process::Command::new("cox");
-    cmd.arg("dash").arg("--detail").arg(kind).arg(id);
+    let argv = detail_argv(kind, id);
+    let mut cmd = std::process::Command::new(&argv[0]);
+    cmd.args(&argv[1..]);
     cmd
 }
 
@@ -405,6 +418,34 @@ mod tests {
             Some("chair-loop@omarchy")
         );
         assert_eq!(health.housekeeping.age_hours, Some(3.5));
+    }
+
+    #[test]
+    fn parse_detail_reads_the_spend_and_health_fixtures() {
+        match parse_detail(SPEND_FIXTURE.trim()).expect("spend should parse") {
+            DetailSnapshot::Spend(spend) => assert_eq!(spend.weekly.fraction, 0.61),
+            other => panic!("expected DetailSnapshot::Spend, got {other:?}"),
+        }
+        match parse_detail(HEALTH_FIXTURE.trim()).expect("health should parse") {
+            DetailSnapshot::Health(health) => assert_eq!(health.hosts[1].state, "down"),
+            other => panic!("expected DetailSnapshot::Health, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn detail_argv_leaves_an_empty_id_off() {
+        assert_eq!(
+            detail_argv("spend", ""),
+            ["cox", "dash", "--detail", "spend"]
+        );
+    }
+
+    #[test]
+    fn detail_argv_appends_a_present_id_last() {
+        assert_eq!(
+            detail_argv("run", "r1"),
+            ["cox", "dash", "--detail", "run", "r1"]
+        );
     }
 
     fn fails<T: serde::de::DeserializeOwned>() -> bool {

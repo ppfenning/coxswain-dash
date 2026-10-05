@@ -1,7 +1,6 @@
 //! Rendering for the health board (`cox dash --detail health`): one bordered block titled
 //! `Health` with five labelled sections. Nothing calls `render` yet, so unused-code warnings
 //! are silenced until the wiring phase.
-#![allow(dead_code)]
 
 use chrono::FixedOffset;
 use ratatui::{

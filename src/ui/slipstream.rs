@@ -35,21 +35,45 @@ const MACHINE_HEIGHT: u16 = 4;
 const STEP_NAMES: [&str; 6] = ["plan", "build", "handoff", "review", "arbitrate", "land"];
 
 /// The keys `input::handle_key` and `main` bind that act on this page.
-const KEYS: &str = "\u{2191}\u{2193} select   enter open   esc close   tab page   t theme   q quit";
+const KEYS: [&str; 6] = [
+    "\u{2191}\u{2193} select",
+    "enter open",
+    "esc close",
+    "tab page",
+    "t theme",
+    "q quit",
+];
 
-/// The key row: `KEYS`, then the focused list's action keys, then `:` for the palette.
-fn keys_text(focus: Focus) -> String {
-    let hints = action_hints(focus)
+/// The view keys, after the palette. Fixed by the initiative, not read from the keymap.
+const KEY_VIEWS: &str = "w watch  $ spend  h health";
+
+/// The key row for a `width`-column row: `KEYS`, the focused list's action keys, `:` for the
+/// palette, then `KEY_VIEWS`. Over width, `KEYS` hints are dropped whole from the end, then action
+/// hints whole from the end. The palette and view keys always stay.
+fn keys_text(focus: Focus, width: usize) -> String {
+    let hints: Vec<String> = action_hints(focus)
         .iter()
         .map(|(k, l)| format!("{k} {l}"))
-        .collect::<Vec<_>>()
-        .join("  ");
-    [KEYS, hints.as_str(), ": palette"]
-        .iter()
-        .filter(|part| !part.is_empty())
-        .copied()
-        .collect::<Vec<_>>()
-        .join("   ")
+        .collect();
+    let row = |keys: usize, actions: usize| -> String {
+        let actions = hints[..actions].join("  ");
+        KEYS[..keys]
+            .iter()
+            .copied()
+            .chain([actions.as_str(), ": palette", KEY_VIEWS])
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>()
+            .join("   ")
+    };
+    let actions = (0..=hints.len())
+        .rev()
+        .find(|&n| row(0, n).chars().count() <= width)
+        .unwrap_or(0);
+    let keys = (0..=KEYS.len())
+        .rev()
+        .find(|&k| row(k, actions).chars().count() <= width)
+        .unwrap_or(0);
+    row(keys, actions)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -310,7 +334,10 @@ fn render_with(f: &mut Frame, area: Rect, app: &App, p: SlipstreamPalette, versi
     );
     render_rail(f, r.rail, snapshot, &p);
     f.render_widget(
-        Paragraph::new(Span::styled(keys_text(app.focus()), dim_style(&p))),
+        Paragraph::new(Span::styled(
+            keys_text(app.focus(), usize::from(r.keys.width)),
+            dim_style(&p),
+        )),
         r.keys,
     );
     if let Some(err) = app.feed_error() {
@@ -710,15 +737,31 @@ mod tests {
 
     #[test]
     fn the_key_row_keeps_its_keys_and_adds_the_runs_actions_and_the_palette() {
+        let keys = KEYS.join("   ");
         assert_eq!(
-            keys_text(Focus::Runs),
-            format!("{KEYS}   p pause  k kill  m move   : palette")
+            keys_text(Focus::Runs, 200),
+            format!("{keys}   p pause  k kill  m move   : palette   {KEY_VIEWS}")
         );
         assert_eq!(
-            keys_text(Focus::Inbox),
-            format!("{KEYS}   a accept  x deny   : palette")
+            keys_text(Focus::Inbox, 200),
+            format!("{keys}   a accept  x deny   : palette   {KEY_VIEWS}")
         );
-        assert_eq!(keys_text(Focus::History), format!("{KEYS}   : palette"));
+        assert_eq!(
+            keys_text(Focus::History, 200),
+            format!("{keys}   : palette   {KEY_VIEWS}")
+        );
+    }
+
+    #[test]
+    fn the_key_row_at_80_columns_is_one_row_with_the_view_keys() {
+        let terminal = draw(&app_from(FIXTURE, ThemeId::Regatta), 80, 40);
+        let buffer = terminal.backend().buffer();
+        let row: String = (0..buffer.area.width)
+            .map(|x| buffer[(x, 39)].symbol())
+            .collect();
+        assert!(row.contains("w watch  $ spend  h health"), "{row}");
+        assert!(row.contains("p pause  k kill  m move   : palette"), "{row}");
+        assert!(keys_text(Focus::Runs, 80).chars().count() <= 80);
     }
 
     /// Slipstream lists only runs, so `app.focus()` reads Runs there. A Regatta focus left on
@@ -738,7 +781,7 @@ mod tests {
         let row: String = (0..buffer.area.width)
             .map(|x| buffer[(x, 45)].symbol())
             .collect();
-        assert_eq!(row.trim_end(), keys_text(Focus::Runs));
+        assert_eq!(row.trim_end(), keys_text(Focus::Runs, 160));
     }
 
     #[test]
