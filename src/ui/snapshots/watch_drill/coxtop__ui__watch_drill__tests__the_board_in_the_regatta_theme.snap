@@ -1,0 +1,25 @@
+---
+source: src/ui/watch_drill.rs
+assertion_line: 210
+expression: terminal.backend().to_string()
+---
+"┌Watch─────────────────────────────────────────────────────────────────────────────────────────────┐"
+"│pr  #41  Add the watch board                                                        open     14:05│"
+"│pr  #38  Fix the lane meter                                                         merged   13:10│"
+"│run r-7  Nightly build                                                              failed   12:30│"
+"│run r-9  Docs refresh                                                               done     11:45│"
+"│pr  #44  Rework the settings screen so that its staged changes, refusals and diffs… closed   10:00│"
+"│run r-12 Queued rebase                                                              queued   09:15│"
+"│                                                                                                  │"
+"│                                                                                                  │"
+"│                                                                                                  │"
+"│                                                                                                  │"
+"│                                                                                                  │"
+"│                                                                                                  │"
+"│                                                                                                  │"
+"│                                                                                                  │"
+"│                                                                                                  │"
+"│                                                                                                  │"
+"│                                                                                                  │"
+"│                                                                                                  │"
+"└Esc back──────────────────────────────────────────────────────────────────────────────────────────┘"
