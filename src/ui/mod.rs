@@ -28,7 +28,9 @@ use ratatui::{
 
 use crate::actions::{Target, bindings};
 use crate::app::{App, AppPage, DetailKind, Modal};
+use crate::chair_panel;
 use crate::detail::DetailSnapshot;
+use crate::exec::StatusLevel;
 use crate::feed::{Run, RunEnd};
 use crate::theme::Theme;
 
@@ -53,12 +55,20 @@ fn render_form(f: &mut Frame, app: &App, theme: &Theme) {
     }
 }
 
-/// While a status shows it replaces the footer row; the page body is never resized.
+/// While a status shows it replaces the footer row; the page body is never resized. With no
+/// status, a focused chair panel's release hint takes only the page's share of that row, so the
+/// panel keeps its bottom border; a full-width panel leaves no share and its title carries it.
 fn render_status(f: &mut Frame, app: &App, theme: &Theme) {
-    if app.status().is_some() {
-        let row = last_row(f.area());
+    let hint = chair_panel::release_hint(app.chair_focused())
+        .map(|text| (StatusLevel::Ok, text.to_string()));
+    let shown = match (app.status(), hint.as_ref()) {
+        (Some(status), _) => Some((last_row(f.area()), status)),
+        (None, Some(hint)) => Some((last_row(split_page(f.area(), app).0), hint)),
+        (None, None) => None,
+    };
+    if let Some((row, status)) = shown.filter(|(row, _)| row.width > 0) {
         f.render_widget(Clear, row);
-        status_line::render(f, row, theme, app.status());
+        status_line::render(f, row, theme, Some(status));
     }
 }
 
@@ -105,17 +115,22 @@ fn render_base(f: &mut Frame, app: &App, theme: &Theme) {
 /// The page and, when the chair panel is open, the panel on its right. The page gets the width
 /// the panel leaves; a panel at full width leaves it none.
 fn render_page(f: &mut Frame, app: &App, theme: &Theme) {
-    let panel = app.chair_panel();
-    // A shown panel is drawn even with no session, so its prompt (Enter starts a session) or the
-    // last line of an ended session is visible.
-    let shown = panel.is_open() || app.chair_panel_shown();
-    let (page, side) = split_panel(f.area(), shown.then(|| panel.width().percent()));
+    let (page, side) = split_page(f.area(), app);
     if page.width > 0 {
         render_page_in(f, page, app, theme);
     }
     if let Some(side) = side {
         render_panel(f, side, app, theme);
     }
+}
+
+/// The page's area on a screen of `area`, then the chair panel's while it is shown. A shown
+/// panel is drawn even with no session, so its prompt (Enter starts a session) or the last line
+/// of an ended session is visible. Drawing and mouse hit-testing both split here.
+pub fn split_page(area: Rect, app: &App) -> (Rect, Option<Rect>) {
+    let panel = app.chair_panel();
+    let percent = (panel.is_open() || app.chair_panel_shown()).then(|| panel.width().percent());
+    split_panel(area, percent)
 }
 
 /// The page's area, then the panel's when `percent` is the panel's share of the width. Without
@@ -213,9 +228,9 @@ fn last_row(rect: Rect) -> Rect {
     }
 }
 
-/// Regatta's chair frame, or the first visible frame when frame 1 is hidden.
+/// Regatta's chair frame, or the first visible frame when frame 1 is hidden. `area` is the page.
 fn regatta_chair(area: Rect, app: &App) -> Option<Rect> {
-    let rects = regatta_frame_rects(area, app);
+    let rects = regatta::page_frame_rects(area, app);
     rects[0].or_else(|| rects.into_iter().flatten().next())
 }
 
@@ -240,7 +255,7 @@ fn render_feed_failed(f: &mut Frame, area: Rect, app: &App, err: &str, theme: &T
     let style = Style::default().fg(theme.fg).bg(theme.bg);
     let chair = regatta_chair(area, app);
     f.render_widget(Block::default().style(style), area);
-    for rect in regatta_frame_rects(area, app).into_iter().flatten() {
+    for rect in regatta::page_frame_rects(area, app).into_iter().flatten() {
         let block = Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)

@@ -80,10 +80,20 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     render_key_bar(f, split_key_bar(area).1, app.focus(), theme);
 }
 
-/// The rects frames 1-6 render into (`None` for a hidden frame), exactly as `render` lays
-/// them out. A mouse handler can use this without touching the render path itself.
+/// The rects frames 1-6 render into (`None` for a hidden frame) on a screen of `area`. The page
+/// gets only what a shown chair panel leaves, as `ui::render_page` draws it, so a mouse handler
+/// hit-tests the frames that are on screen and no rect overlaps the panel.
 pub fn frame_rects(area: Rect, app: &App) -> [Option<Rect>; 6] {
-    layout_rects(area, app).0
+    page_frame_rects(super::split_page(area, app).0, app)
+}
+
+/// The rects frames 1-6 render into when the page itself is `page`; none on an empty page.
+pub fn page_frame_rects(page: Rect, app: &App) -> [Option<Rect>; 6] {
+    if page.width == 0 {
+        [None; 6]
+    } else {
+        layout_rects(page, app).0
+    }
 }
 
 /// The list and row `(x, y)` falls on, using the same layout `render` draws with: the runs
