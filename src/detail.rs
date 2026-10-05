@@ -110,6 +110,87 @@ pub struct Checkout {
     pub branch: String,
 }
 
+/// The `cox dash --detail spend` payload. A later task wraps it into [`DetailSnapshot`].
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct SpendDetail {
+    pub schema: u32,
+    pub at: String,
+    pub five_hour: Meter,
+    pub weekly: Meter,
+    pub history: Vec<MeterPoint>,
+    pub daily: Vec<DayCost>,
+}
+
+/// One usage meter. `fraction` is used over ceiling, in `0.0..=1.0`.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Meter {
+    pub fraction: f64,
+    pub used_usd: f64,
+    pub ceiling_usd: f64,
+    pub resets_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct MeterPoint {
+    pub at: String,
+    pub five_hour: f64,
+    pub weekly: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct DayCost {
+    pub day: String,
+    pub cost: f64,
+}
+
+/// The `cox dash --detail health` payload. A later task wraps it into [`DetailSnapshot`].
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct HealthDetail {
+    pub schema: u32,
+    pub at: String,
+    pub hosts: Vec<HostHealth>,
+    pub logins: Vec<LoginHealth>,
+    pub store: StoreHealth,
+    pub chair_lease: ChairLease,
+    pub housekeeping: Housekeeping,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct HostHealth {
+    pub name: String,
+    pub state: String,
+    pub lanes_in_use: u32,
+    pub capacity: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct LoginHealth {
+    pub provider: String,
+    pub host: String,
+    pub ok: bool,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct StoreHealth {
+    pub ok: bool,
+    pub detail: String,
+    pub latency_ms: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct ChairLease {
+    pub holder: Option<String>,
+    pub expires_at: Option<String>,
+    pub ok: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Housekeeping {
+    pub last_run_at: Option<String>,
+    pub age_hours: Option<f64>,
+}
+
 /// Deserializes one detail line into a [`DetailSnapshot`]. Does nothing but deserialize.
 pub fn parse_detail(line: &str) -> Result<DetailSnapshot, serde_json::Error> {
     serde_json::from_str(line)
@@ -211,6 +292,8 @@ mod tests {
     const INITIATIVE_FIXTURE: &str =
         include_str!("../tests/fixtures/dash_detail_initiative_v1.json");
     const MACHINE_FIXTURE: &str = include_str!("../tests/fixtures/dash_detail_machine_v1.json");
+    const SPEND_FIXTURE: &str = include_str!("../tests/fixtures/dash_detail_spend_v1.json");
+    const HEALTH_FIXTURE: &str = include_str!("../tests/fixtures/dash_detail_health_v1.json");
 
     #[test]
     fn parse_detail_reads_the_run_v1_fixture() {
@@ -274,6 +357,50 @@ mod tests {
     #[test]
     fn parse_detail_rejects_malformed_json() {
         assert!(parse_detail("{ not json").is_err());
+    }
+
+    #[test]
+    fn spend_fixture_parses_into_spend_detail() {
+        let spend: SpendDetail = serde_json::from_str(SPEND_FIXTURE).expect("fixture should parse");
+        assert_eq!(spend.schema, 1);
+        assert_eq!(spend.weekly.fraction, 0.61);
+        assert_eq!(spend.five_hour.ceiling_usd, 50.0);
+        assert_eq!(spend.history.len(), 3);
+        assert_eq!(spend.daily.len(), 3);
+        assert_eq!(spend.daily[0].day, "2026-10-03");
+    }
+
+    #[test]
+    fn health_fixture_parses_into_health_detail() {
+        let health: HealthDetail =
+            serde_json::from_str(HEALTH_FIXTURE).expect("fixture should parse");
+        assert_eq!(health.hosts[0].lanes_in_use, 2);
+        assert_eq!(health.hosts[1].state, "down");
+        assert!(!health.logins[1].ok);
+        assert_eq!(health.store.latency_ms, Some(42));
+        assert_eq!(
+            health.chair_lease.holder.as_deref(),
+            Some("chair-loop@omarchy")
+        );
+        assert_eq!(health.housekeeping.age_hours, Some(3.5));
+    }
+
+    fn fails<T: serde::de::DeserializeOwned>() -> bool {
+        serde_json::from_str::<T>("{ not json").is_err()
+    }
+
+    #[test]
+    fn each_spend_and_health_struct_rejects_malformed_json() {
+        assert!(fails::<SpendDetail>());
+        assert!(fails::<Meter>());
+        assert!(fails::<MeterPoint>());
+        assert!(fails::<DayCost>());
+        assert!(fails::<HealthDetail>());
+        assert!(fails::<HostHealth>());
+        assert!(fails::<LoginHealth>());
+        assert!(fails::<StoreHealth>());
+        assert!(fails::<ChairLease>());
+        assert!(fails::<Housekeeping>());
     }
 
     fn sh(script: &str) -> std::process::Command {

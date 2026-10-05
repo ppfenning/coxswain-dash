@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "kind": "spend",
+  "at": "2026-10-05T12:00:00Z",
+  "five_hour": {"fraction": 0.42, "used_usd": 21.0, "ceiling_usd": 50.0, "resets_at": "2026-10-05T15:00:00Z"},
+  "weekly": {"fraction": 0.61, "used_usd": 183.0, "ceiling_usd": 300.0, "resets_at": "2026-10-11T04:00:00Z"},
+  "history": [
+    {"at": "2026-10-05T10:00:00Z", "five_hour": 0.18, "weekly": 0.58},
+    {"at": "2026-10-05T11:00:00Z", "five_hour": 0.31, "weekly": 0.60},
+    {"at": "2026-10-05T12:00:00Z", "five_hour": 0.42, "weekly": 0.61}
+  ],
+  "daily": [
+    {"day": "2026-10-03", "cost": 38.5},
+    {"day": "2026-10-04", "cost": 52.25},
+    {"day": "2026-10-05", "cost": 21.0}
+  ]
+}

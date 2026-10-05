@@ -20,7 +20,8 @@ pub struct FeedSnapshot {
     pub runs: Vec<Run>,
     pub queue: Vec<QueueEntry>,
     pub inbox: Vec<InboxEntry>,
-    pub watch: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub watch: Vec<WatchItem>,
     #[serde(default)]
     pub decisions: Vec<Decision>,
     #[serde(default)]
@@ -283,6 +284,19 @@ pub struct InboxEntry {
     pub reason: String,
 }
 
+/// One watched item. `kind` is "pr" or "run"; `id` is a pull request reference or a run id.
+#[derive(Debug, Deserialize)]
+pub struct WatchItem {
+    pub kind: String,
+    pub id: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub state: String,
+    #[serde(default)]
+    pub at: String,
+}
+
 /// Deserializes one feed line into a [`FeedSnapshot`]. Does nothing but deserialize.
 pub fn parse_snapshot(line: &str) -> Result<FeedSnapshot, serde_json::Error> {
     serde_json::from_str(line)
@@ -404,6 +418,24 @@ mod tests {
         assert_eq!(snapshot.chair.host, "omarchy");
         assert_eq!(snapshot.runs[0].node, "build");
         assert_eq!(snapshot.inbox[0].kind, "needs_chair");
+    }
+
+    const WATCH_FIXTURE: &str = include_str!("../tests/fixtures/dash_feed_watch_v1.json");
+
+    #[test]
+    fn parse_snapshot_reads_typed_watch_rows() {
+        let snapshot = parse_snapshot(WATCH_FIXTURE).expect("fixture should parse");
+        assert_eq!(snapshot.watch.len(), 3);
+        assert_eq!(snapshot.watch[0].kind, "pr");
+        assert_eq!(snapshot.watch[0].id, "coxswain-tools#41");
+        assert_eq!(snapshot.watch[0].state, "open");
+        assert_eq!(snapshot.watch[2].kind, "run");
+    }
+
+    #[test]
+    fn parse_snapshot_leaves_watch_empty_for_the_existing_fixture() {
+        let snapshot = parse_snapshot(FIXTURE).expect("fixture should parse");
+        assert!(snapshot.watch.is_empty());
     }
 
     #[test]
