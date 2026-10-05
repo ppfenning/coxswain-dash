@@ -2,12 +2,21 @@
 //! module owns its own `render`.
 
 mod chair_card;
+// A later task wires the confirm dialog into the app.
+#[allow(dead_code)]
+pub mod confirm_dialog;
 pub mod initiative_drill;
 pub mod machine_drill;
+// A later task wires the palette frame into the app.
+#[allow(dead_code)]
+pub mod palette_frame;
 mod regatta;
 mod run_cost;
 pub mod run_drill;
 mod slipstream;
+// A later task wires the status line into the app.
+#[allow(dead_code)]
+pub mod status_line;
 
 use chrono::{DateTime, FixedOffset};
 use ratatui::{
