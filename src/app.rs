@@ -34,13 +34,14 @@ pub enum ThemeId {
     HarborLight,
 }
 
-/// Which of the Regatta page's three row lists Up/Down/Enter act on. The Slipstream page has
+/// Which of the Regatta page's four row lists Up/Down/Enter act on. The Slipstream page has
 /// only a runs list, so its focus never leaves `Focus::Runs`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
     Runs,
     Queue,
     Machines,
+    History,
 }
 
 /// Which kind of entity an open detail request names, matching the id field the detail
@@ -102,13 +103,16 @@ pub struct App {
     page: AppPage,
     theme: ThemeId,
     regatta_frames_visible: [bool; 6],
+    /// The history frame's visibility, kept apart from the six numbered frames so their
+    /// fixed-size array and its consumers in `ui` stay as they are.
+    history_visible: bool,
     regatta_layout_preset: usize,
     lanes_history: Vec<(String, u32)>,
     utc_offset: FixedOffset,
     focus: Focus,
     /// Selection index per page (`AppPage::Regatta` then `AppPage::Slipstream`) and per focus
-    /// (`Focus::Runs`, `Focus::Queue`, `Focus::Machines` in that order).
-    selected: [[usize; 3]; 2],
+    /// (`Focus::Runs`, `Focus::Queue`, `Focus::Machines`, `Focus::History` in that order).
+    selected: [[usize; 4]; 2],
     detail: Option<(DetailKind, String, Option<DetailSnapshot>)>,
 }
 
@@ -121,11 +125,12 @@ impl Default for App {
             page: AppPage::Regatta,
             theme: ThemeId::Regatta,
             regatta_frames_visible: [true; 6],
+            history_visible: true,
             regatta_layout_preset: 0,
             lanes_history: Vec::new(),
             utc_offset: FixedOffset::east_opt(0).expect("zero is a valid UTC offset"),
             focus: Focus::Runs,
-            selected: [[0; 3]; 2],
+            selected: [[0; 4]; 2],
             detail: None,
         }
     }
@@ -175,6 +180,10 @@ impl App {
 
     pub fn regatta_frames_visible(&self) -> [bool; 6] {
         self.regatta_frames_visible
+    }
+
+    pub fn regatta_history_visible(&self) -> bool {
+        self.history_visible
     }
 
     pub fn regatta_layout_preset(&self) -> usize {
@@ -259,6 +268,11 @@ impl App {
         }
     }
 
+    /// Flips the history frame's visibility; the history frame's number key is 7.
+    pub fn toggle_history_frame(&mut self) {
+        self.history_visible = !self.history_visible;
+    }
+
     pub fn cycle_regatta_layout_preset(&mut self) {
         self.regatta_layout_preset = (self.regatta_layout_preset + 1) % REGATTA_LAYOUT_PRESET_COUNT;
     }
@@ -285,37 +299,50 @@ impl App {
             Focus::Runs => 0,
             Focus::Queue => 1,
             Focus::Machines => 2,
+            Focus::History => 3,
         }
     }
 
-    /// The current page's, current focus's selection index.
+    /// The current page's, current focus's selection index. The history row is clamped to the
+    /// held history, so a feed refresh that shortens it never leaves the selection past the end.
     pub fn selected(&self) -> usize {
-        self.selected[self.page_index()][self.focus_index()]
+        let idx = self.selected[self.page_index()][self.focus_index()];
+        match self.focus() {
+            Focus::History => self.clamp_to_list(idx),
+            _ => idx,
+        }
+    }
+
+    /// `idx` limited to the focused list's last row; 0 when the list is empty.
+    fn clamp_to_list(&self, idx: usize) -> usize {
+        idx.min(self.focused_list_len().saturating_sub(1))
     }
 
     pub fn detail(&self) -> Option<&(DetailKind, String, Option<DetailSnapshot>)> {
         self.detail.as_ref()
     }
 
-    /// Right cycles focus Runs -> Queue -> Machines -> Runs on the Regatta page; a no-op on the
-    /// Slipstream page, which only ever has a runs list to focus.
+    /// Right cycles focus Runs -> Queue -> Machines -> History -> Runs on the Regatta page; a
+    /// no-op on the Slipstream page, which only ever has a runs list to focus.
     pub fn cycle_focus_next(&mut self) {
         if self.page == AppPage::Regatta {
             self.focus = match self.focus {
                 Focus::Runs => Focus::Queue,
                 Focus::Queue => Focus::Machines,
-                Focus::Machines => Focus::Runs,
+                Focus::Machines => Focus::History,
+                Focus::History => Focus::Runs,
             };
         }
     }
 
-    /// Left cycles focus the other way around the same three stops; a no-op on Slipstream.
+    /// Left cycles focus the other way around the same four stops; a no-op on Slipstream.
     pub fn cycle_focus_prev(&mut self) {
         if self.page == AppPage::Regatta {
             self.focus = match self.focus {
-                Focus::Runs => Focus::Machines,
+                Focus::Runs => Focus::History,
                 Focus::Queue => Focus::Runs,
                 Focus::Machines => Focus::Queue,
+                Focus::History => Focus::Machines,
             };
         }
     }
@@ -329,29 +356,34 @@ impl App {
             Focus::Runs => snap.runs.len(),
             Focus::Queue => snap.queue.len(),
             Focus::Machines => snap.machines.len(),
+            Focus::History => snap.history.len(),
         }
     }
 
-    /// Moves the focused list's selection index forward one row, wrapping past the end. A
-    /// no-op, staying at 0, when the focused list is empty or there is no snapshot yet.
+    /// Moves the focused list's selection index forward one row, wrapping past the end. The
+    /// history list stops at its last row instead of wrapping. A no-op, staying at 0, when the
+    /// focused list is empty or there is no snapshot yet.
     pub fn select_next(&mut self) {
         let len = self.focused_list_len();
         let (p, f) = (self.page_index(), self.focus_index());
-        self.selected[p][f] = if len == 0 {
-            0
-        } else {
-            (self.selected[p][f] + 1) % len
+        let current = self.selected();
+        self.selected[p][f] = match (len, self.focus()) {
+            (0, _) => 0,
+            (_, Focus::History) => (current + 1).min(len - 1),
+            _ => (current + 1) % len,
         };
     }
 
-    /// Moves the focused list's selection index back one row, wrapping before the start.
+    /// Moves the focused list's selection index back one row, wrapping before the start. The
+    /// history list stops at its first row instead of wrapping.
     pub fn select_prev(&mut self) {
         let len = self.focused_list_len();
         let (p, f) = (self.page_index(), self.focus_index());
-        self.selected[p][f] = if len == 0 {
-            0
-        } else {
-            (self.selected[p][f] + len - 1) % len
+        let current = self.selected();
+        self.selected[p][f] = match (len, self.focus()) {
+            (0, _) => 0,
+            (_, Focus::History) => current.saturating_sub(1),
+            _ => (current + len - 1) % len,
         };
     }
 
@@ -377,10 +409,15 @@ impl App {
                 .machines
                 .get(idx)
                 .map(|m| (DetailKind::Machine, m.name.clone())),
+            Focus::History => snap
+                .history
+                .get(idx)
+                .map(|h| (DetailKind::Run, h.run.clone())),
         }
     }
 
-    /// Opens the detail for the currently selected row; a no-op when nothing is selected.
+    /// Opens the detail for the currently selected row; a no-op when nothing is selected. On
+    /// the history list this is the run drill-down for the ended run's id.
     pub fn open_detail(&mut self) {
         if let Some((kind, id)) = self.selected_entity() {
             self.detail = Some((kind, id, None));
@@ -767,7 +804,79 @@ mod tests {
         app.cycle_focus_next();
         assert_eq!(app.focus(), Focus::Machines);
         app.cycle_focus_next();
+        assert_eq!(app.focus(), Focus::History);
+        app.cycle_focus_next();
         assert_eq!(app.focus(), Focus::Runs);
+        app.cycle_focus_prev();
+        assert_eq!(app.focus(), Focus::History);
+    }
+
+    /// A snapshot with two ended runs (`h0`, `h1`) in its history and nothing else of note.
+    fn make_history_snapshot() -> FeedSnapshot {
+        let json = r#"{"schema":1,"at":"2026-09-29T00:00:00Z","chair":{"holder":"h","host":"h","epoch":1,"liveness":"live","beat_age_s":0},"spend":{"five_hour_fraction":0.0,"five_hour_source":"meter","weekly_fraction":0.0,"weekly_source":"meter","hard_stop_fraction":0.0,"five_hour_resets_at":"2026-09-29T00:00:00Z","weekly_resets_at":"2026-09-29T00:00:00Z"},"machines":[],"runs":[],"queue":[],"inbox":[],"watch":[],"history":[{"run":"h0","machine":"m0","initiative":"i0","ended_at":"2026-09-29T00:00:00Z","outcome":"landed","cost_usd":1.0},{"run":"h1","machine":"m0","initiative":"i0","ended_at":"2026-09-29T00:00:00Z","outcome":"stopped","cost_usd":2.0}]}"#;
+        crate::feed::parse_snapshot(json).expect("literal snapshot should parse")
+    }
+
+    fn app_on_history(snap: FeedSnapshot) -> App {
+        let mut app = App::new(AppPage::Regatta, ThemeId::Regatta);
+        app.apply_snapshot(snap);
+        for _ in 0..3 {
+            app.cycle_focus_next();
+        }
+        app
+    }
+
+    #[test]
+    fn toggle_history_frame_flips_only_the_history_flag() {
+        let mut app = App::default();
+        assert!(app.regatta_history_visible());
+        app.toggle_history_frame();
+        assert!(!app.regatta_history_visible());
+        assert_eq!(app.regatta_frames_visible(), [true; 6]);
+        app.toggle_history_frame();
+        assert!(app.regatta_history_visible());
+    }
+
+    #[test]
+    fn history_selection_clamps_at_both_ends() {
+        let mut app = app_on_history(make_history_snapshot());
+        assert_eq!(app.focus(), Focus::History);
+        app.select_prev();
+        assert_eq!(app.selected(), 0);
+        app.select_next();
+        app.select_next();
+        assert_eq!(app.selected(), 1);
+        app.select_at(9);
+        assert_eq!(app.selected(), 1);
+    }
+
+    #[test]
+    fn history_selection_reads_clamped_after_the_history_shrinks() {
+        let mut app = app_on_history(make_history_snapshot());
+        app.select_next();
+        assert_eq!(app.selected(), 1);
+        app.apply_snapshot(make_snapshot("2026-09-29T00:01:00Z", 0));
+        assert_eq!(app.selected(), 0);
+    }
+
+    #[test]
+    fn open_detail_on_a_history_row_opens_that_rows_run() {
+        let mut app = app_on_history(make_history_snapshot());
+        app.select_next();
+        app.open_detail();
+        assert_eq!(
+            app.detail()
+                .map(|(kind, id, slot)| (*kind, id.as_str(), slot.is_some())),
+            Some((DetailKind::Run, "h1", false))
+        );
+    }
+
+    #[test]
+    fn open_detail_on_empty_history_changes_nothing() {
+        let mut app = app_on_history(make_snapshot("2026-09-29T00:00:00Z", 0));
+        app.open_detail();
+        assert!(app.detail().is_none());
+        assert_eq!(app.selected(), 0);
     }
 
     #[test]
