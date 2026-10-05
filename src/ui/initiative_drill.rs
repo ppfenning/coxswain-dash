@@ -13,6 +13,7 @@ use ratatui::{
 
 use crate::actions::Target;
 use crate::detail::{HistoryEntry, InitiativeDetail, PhaseDetail};
+use crate::form::{KEY_EDIT, KEY_REMOVE};
 use crate::theme::Theme;
 
 fn base_style(theme: &Theme) -> Style {
@@ -105,6 +106,15 @@ fn render_phases(
     }
 }
 
+/// The initiative drill's footer: the shared action keys, then edit and remove.
+fn footer_line(initiative: &str, theme: &Theme) -> Line<'static> {
+    let actions = super::footer_text(&Target::Initiative(initiative.to_string()));
+    Line::styled(
+        format!("{actions}  {KEY_EDIT} edit  {KEY_REMOVE} remove"),
+        Style::default().fg(theme.dim).bg(theme.bg),
+    )
+}
+
 fn render_history(
     f: &mut Frame,
     area: Rect,
@@ -114,10 +124,7 @@ fn render_history(
 ) {
     let block = Block::default()
         .title("history")
-        .title_bottom(super::footer_line(
-            &Target::Initiative(detail.initiative.clone()),
-            theme,
-        ))
+        .title_bottom(footer_line(&detail.initiative, theme))
         .borders(Borders::ALL);
     let history = &detail.history;
     let paragraph = Paragraph::new(history_lines(history, offset))

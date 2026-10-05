@@ -20,7 +20,7 @@ use crate::app::{App, Focus};
 use crate::feed::{
     Chair, FeedSnapshot, HistoryRow, HistoryToday, InboxEntry, Machine, Outcome, QueueEntry, Run,
 };
-use crate::form::KEY_ADD_MACHINE;
+use crate::form::{KEY_ADD_MACHINE, KEY_EDIT, KEY_NEW, KEY_REMOVE};
 use crate::theme::Theme;
 
 use super::chair_card::{Freshness, TICK_INTERVAL_S, beat_freshness, short_age};
@@ -1497,6 +1497,12 @@ fn key_bar_line(focus: Focus, width: u16, theme: &Theme) -> Line<'static> {
     let actions = action_hints(focus)
         .into_iter()
         .chain((focus == Focus::Machines).then_some((KEY_ADD_MACHINE, "add machine")))
+        .chain(
+            (focus == Focus::Queue)
+                .then_some([(KEY_NEW, "new"), (KEY_EDIT, "edit"), (KEY_REMOVE, "remove")])
+                .into_iter()
+                .flatten(),
+        )
         .enumerate()
         .flat_map(|(i, (k, l))| {
             (i > 0)
@@ -2578,7 +2584,10 @@ mod tests {
             Focus::Machines,
             "+ lanes up  - lanes down  d drain  a activate  A add machine",
         ),
-        (Focus::Queue, "] priority up  [ priority down"),
+        (
+            Focus::Queue,
+            "] priority up  [ priority down  n new  e edit  x remove",
+        ),
         (Focus::Inbox, "a accept  x deny"),
     ];
 
@@ -2602,7 +2611,17 @@ mod tests {
         );
         assert_eq!(
             key_bar_row(Focus::Queue, 120),
-            "1-6 frames \u{b7} \u{2190}\u{2192} focus \u{b7} \u{2191}\u{2193} select \u{b7} \u{23ce} drill down \u{b7} t theme \u{b7} p layout \u{2502} ] priority up  [ priority down \u{b7} : palette"
+            "1-6 frames \u{b7} \u{2190}\u{2192} focus \u{b7} \u{2191}\u{2193} select \u{b7} \u{23ce} drill down \u{2502} ] priority up  [ priority down  n new  e edit  x remove \u{b7} : palette"
+        );
+    }
+
+    #[test]
+    fn the_queue_key_bar_fits_in_80_columns_and_keeps_its_actions() {
+        let row = key_bar_row(Focus::Queue, 80);
+        assert!(row.chars().count() <= 80, "{row}");
+        assert!(
+            row.ends_with("n new  e edit  x remove \u{b7} : palette"),
+            "{row}"
         );
     }
 
