@@ -10,11 +10,16 @@
 #![allow(dead_code)]
 
 use chrono::{DateTime, FixedOffset};
+use crossterm::event::KeyEvent;
 
+use crate::actions::{Target, action_for, move_prefill};
 use crate::chair_panel::ChairPanel;
+use crate::confirm::{ConfirmAnswer, ConfirmState};
 use crate::decision_card::DecisionCard;
 use crate::detail::DetailSnapshot;
+use crate::exec::{ExecResult, StatusLevel, frame_lines, status_summary};
 use crate::feed::{Chair, FeedSnapshot};
+use crate::palette::{PaletteEvent, PaletteState};
 use crate::pty::{PtySession, RealPty};
 
 /// The pty size the panel opens at. The rendering task sizes it from the layout; until then a
@@ -60,6 +65,27 @@ pub enum DetailKind {
     Run,
     Initiative,
     Machine,
+}
+
+/// The open overlay: a confirm for a bound action, or the colon palette.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Modal {
+    Confirm(ConfirmState),
+    Palette(PaletteState),
+}
+
+/// Where a pending command came from, so its result goes to the status line or the palette.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Origin {
+    Action,
+    Palette,
+}
+
+/// A command the app wants run. The loop in `main` takes it, runs it and reports back.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Pending {
+    pub argv: Vec<String>,
+    pub origin: Origin,
 }
 
 /// The id a [`DetailSnapshot`] identifies itself with, whatever kind it is.
@@ -131,6 +157,10 @@ pub struct App {
     card_visible: bool,
     /// How many times a new decision asked for the bell. `main` rings once per increment.
     bells: u32,
+    modal: Option<Modal>,
+    /// Set by a confirmed action or a submitted palette line; emptied by `take_pending`.
+    pending: Option<Pending>,
+    status: Option<(StatusLevel, String)>,
 }
 
 /// The chair's session id, or None when the feed carries an empty one.
@@ -159,6 +189,9 @@ impl Default for App {
             decision_card: DecisionCard::new(),
             card_visible: false,
             bells: 0,
+            modal: None,
+            pending: None,
+            status: None,
         }
     }
 }
@@ -557,6 +590,109 @@ impl App {
                 *slot = Some(snap);
                 self.detail_error = None;
             }
+        }
+    }
+
+    pub fn modal(&self) -> Option<&Modal> {
+        self.modal.as_ref()
+    }
+
+    pub fn status(&self) -> Option<&(StatusLevel, String)> {
+        self.status.as_ref()
+    }
+
+    /// What an action key applies to: the open detail's entity, else the focused list's row.
+    pub fn target(&self) -> Option<Target> {
+        let of_entity = |kind: DetailKind, id: String| match kind {
+            DetailKind::Run => Target::Run(id),
+            DetailKind::Initiative => Target::Initiative(id),
+            DetailKind::Machine => Target::Machine(id),
+        };
+        match &self.detail {
+            Some((kind, id, _)) => Some(of_entity(*kind, id.clone())),
+            None => self
+                .selected_inbox_id()
+                .map(Target::InboxItem)
+                .or_else(|| self.selected_entity().map(|(k, id)| of_entity(k, id))),
+        }
+    }
+
+    /// Opens the confirm for the action `key` means on the target, or the move palette for `m`
+    /// on a run. False, with nothing opened, when the key means nothing here.
+    pub fn begin_action(&mut self, key: char) -> bool {
+        let modal = self.modal_for(key);
+        let opened = modal.is_some();
+        if opened {
+            self.modal = modal;
+        }
+        opened
+    }
+
+    fn modal_for(&self, key: char) -> Option<Modal> {
+        let target = self.target()?;
+        if let (Target::Run(run), 'm') = (&target, key) {
+            return Some(Modal::Palette(PaletteState::prefilled(&move_prefill(run))));
+        }
+        let action = action_for(key, &target, self.snapshot.as_ref()?)?;
+        Some(Modal::Confirm(ConfirmState::new(
+            action.title(),
+            action.argv(),
+            action.display(),
+        )))
+    }
+
+    pub fn open_palette(&mut self) {
+        self.modal = Some(Modal::Palette(PaletteState::open()));
+    }
+
+    /// Routes a key to the open modal. A command is queued only while none is pending, so one
+    /// confirm runs one command.
+    pub fn modal_key(&mut self, key: KeyEvent) {
+        let free = self.pending.is_none();
+        let queued = match &mut self.modal {
+            Some(Modal::Confirm(confirm)) => match confirm.handle_key(key) {
+                ConfirmAnswer::Yes => {
+                    let argv = confirm.argv.clone();
+                    self.modal = None;
+                    Some(Pending {
+                        argv,
+                        origin: Origin::Action,
+                    })
+                }
+                ConfirmAnswer::No => {
+                    self.modal = None;
+                    None
+                }
+                ConfirmAnswer::Pending => None,
+            },
+            Some(Modal::Palette(palette)) => match palette.handle_key(key.code) {
+                PaletteEvent::Submit(argv) => Some(Pending {
+                    argv,
+                    origin: Origin::Palette,
+                }),
+                PaletteEvent::Close => {
+                    self.modal = None;
+                    None
+                }
+                PaletteEvent::None => None,
+            },
+            None => None,
+        };
+        if free {
+            self.pending = queued;
+        }
+    }
+
+    pub fn take_pending(&mut self) -> Option<Pending> {
+        self.pending.take()
+    }
+
+    /// Records a finished command: the status line for both origins, and the output lines on the
+    /// open palette for a palette command.
+    pub fn apply_exec_result(&mut self, result: ExecResult, origin: Origin) {
+        self.status = Some(status_summary(&result));
+        if let (Origin::Palette, Some(Modal::Palette(palette))) = (origin, &mut self.modal) {
+            palette.set_output(frame_lines(&result));
         }
     }
 }
@@ -1214,5 +1350,188 @@ mod tests {
         app.next_page();
         app.next_page();
         assert_eq!(app.focus(), Focus::Queue);
+    }
+
+    fn press(code: crossterm::event::KeyCode) -> KeyEvent {
+        KeyEvent::new(code, crossterm::event::KeyModifiers::NONE)
+    }
+
+    fn chars(app: &mut App, text: &str) {
+        text.chars()
+            .for_each(|c| app.modal_key(press(crossterm::event::KeyCode::Char(c))));
+    }
+
+    fn app_with_runs() -> App {
+        let mut app = App::new(AppPage::Regatta, ThemeId::Regatta);
+        app.apply_snapshot(make_rich_snapshot());
+        app
+    }
+
+    fn argv(words: &[&str]) -> Vec<String> {
+        words.iter().map(|w| w.to_string()).collect()
+    }
+
+    fn result(code: Option<i32>, output: &str) -> ExecResult {
+        ExecResult {
+            argv: argv(&["cox", "runs", "stop", "r0"]),
+            code,
+            output: output.to_string(),
+        }
+    }
+
+    #[test]
+    fn a_new_app_has_no_modal_and_no_status() {
+        let app = App::default();
+        assert_eq!(app.modal(), None);
+        assert_eq!(app.status(), None);
+    }
+
+    #[test]
+    fn begin_action_k_on_the_selected_run_confirms_the_exact_stop_command() {
+        let mut app = app_with_runs();
+        assert!(app.begin_action('k'));
+        let Some(Modal::Confirm(confirm)) = app.modal() else {
+            panic!("expected a confirm, got {:?}", app.modal());
+        };
+        assert_eq!(confirm.command, "cox runs stop r0");
+    }
+
+    #[test]
+    fn begin_action_with_a_detail_open_targets_the_detail_run() {
+        let mut app = app_with_runs();
+        app.select_next();
+        app.open_detail();
+        app.select_prev();
+        assert_eq!(app.target(), Some(Target::Run("r1".to_string())));
+        assert!(app.begin_action('k'));
+        let Some(Modal::Confirm(confirm)) = app.modal() else {
+            panic!("expected a confirm, got {:?}", app.modal());
+        };
+        assert_eq!(confirm.command, "cox runs stop r1");
+    }
+
+    #[test]
+    fn target_follows_the_focused_list() {
+        let mut app = app_with_runs();
+        app.cycle_focus_next();
+        assert_eq!(app.target(), Some(Target::Initiative("i0".to_string())));
+        app.cycle_focus_next();
+        assert_eq!(app.target(), Some(Target::Machine("m0".to_string())));
+    }
+
+    #[test]
+    fn an_unbound_key_returns_false_and_opens_nothing() {
+        let mut app = app_with_runs();
+        assert!(!app.begin_action('z'));
+        assert_eq!(app.modal(), None);
+    }
+
+    #[test]
+    fn y_sets_pending_to_the_argv_and_take_pending_empties_it() {
+        let mut app = app_with_runs();
+        app.begin_action('k');
+        app.modal_key(press(crossterm::event::KeyCode::Char('y')));
+        assert_eq!(app.modal(), None);
+        let expected = Pending {
+            argv: argv(&["cox", "runs", "stop", "r0"]),
+            origin: Origin::Action,
+        };
+        assert_eq!(app.take_pending(), Some(expected));
+        assert_eq!(app.take_pending(), None);
+    }
+
+    #[test]
+    fn n_and_esc_close_the_confirm_and_set_nothing() {
+        for code in [
+            crossterm::event::KeyCode::Char('n'),
+            crossterm::event::KeyCode::Esc,
+        ] {
+            let mut app = app_with_runs();
+            app.begin_action('k');
+            app.modal_key(press(code));
+            assert_eq!(app.modal(), None);
+            assert_eq!(app.take_pending(), None);
+        }
+    }
+
+    #[test]
+    fn a_second_yes_while_a_command_is_pending_is_ignored() {
+        let mut app = app_with_runs();
+        app.begin_action('k');
+        app.modal_key(press(crossterm::event::KeyCode::Char('y')));
+        app.begin_action('p');
+        app.modal_key(press(crossterm::event::KeyCode::Char('y')));
+        assert_eq!(
+            app.take_pending().map(|p| p.argv),
+            Some(argv(&["cox", "runs", "stop", "r0"]))
+        );
+        assert_eq!(app.take_pending(), None);
+    }
+
+    #[test]
+    fn m_on_a_run_opens_the_palette_prefilled_with_the_move() {
+        let mut app = app_with_runs();
+        assert!(app.begin_action('m'));
+        let Some(Modal::Palette(palette)) = app.modal() else {
+            panic!("expected a palette, got {:?}", app.modal());
+        };
+        assert_eq!(palette.input(), move_prefill("r0"));
+    }
+
+    #[test]
+    fn palette_submit_sets_pending_with_origin_palette_and_stays_open() {
+        let mut app = App::default();
+        app.open_palette();
+        chars(&mut app, "route list");
+        app.modal_key(press(crossterm::event::KeyCode::Enter));
+        assert!(matches!(app.modal(), Some(Modal::Palette(_))));
+        assert_eq!(
+            app.take_pending(),
+            Some(Pending {
+                argv: argv(&["cox", "route", "list"]),
+                origin: Origin::Palette,
+            })
+        );
+    }
+
+    #[test]
+    fn palette_esc_closes_it() {
+        let mut app = App::default();
+        app.open_palette();
+        app.modal_key(press(crossterm::event::KeyCode::Esc));
+        assert_eq!(app.modal(), None);
+    }
+
+    #[test]
+    fn apply_exec_result_sets_an_ok_and_a_failed_status() {
+        let mut app = App::default();
+        app.apply_exec_result(result(Some(0), "stopped r0\n"), Origin::Action);
+        assert_eq!(
+            app.status(),
+            Some(&(StatusLevel::Ok, "stopped r0".to_string()))
+        );
+        app.apply_exec_result(result(Some(2), "no such run\n"), Origin::Action);
+        assert_eq!(
+            app.status(),
+            Some(&(
+                StatusLevel::Failed,
+                "failed (exit 2): no such run".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn a_palette_result_fills_the_open_palette_output_and_the_status() {
+        let mut app = App::default();
+        app.open_palette();
+        app.apply_exec_result(result(Some(0), "stopped r0\n"), Origin::Palette);
+        let Some(Modal::Palette(palette)) = app.modal() else {
+            panic!("expected a palette, got {:?}", app.modal());
+        };
+        assert_eq!(
+            palette.output(),
+            Some(&argv(&["$ cox runs stop r0", "stopped r0", "exit 0"])[..])
+        );
+        assert_eq!(app.status().map(|s| s.0), Some(StatusLevel::Ok));
     }
 }

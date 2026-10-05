@@ -13,7 +13,8 @@ use ratatui::{
 };
 
 use super::chair_card::{Freshness, TICK_INTERVAL_S, beat_freshness, short_age};
-use crate::app::App;
+use super::regatta::action_hints;
+use crate::app::{App, Focus};
 use crate::feed::{Chair, FeedSnapshot, InboxEntry, Machine, Run, Spend};
 use crate::theme::{SlipstreamPalette, slipstream_palette};
 
@@ -34,6 +35,21 @@ const STEP_NAMES: [&str; 6] = ["plan", "build", "handoff", "review", "arbitrate"
 
 /// The keys `input::handle_key` and `main` bind that act on this page.
 const KEYS: &str = "j/k select   enter open   esc close   tab page   t theme   q quit";
+
+/// The key row: `KEYS`, then the focused list's action keys, then `:` for the palette.
+fn keys_text(focus: Focus) -> String {
+    let hints = action_hints(focus)
+        .iter()
+        .map(|(k, l)| format!("{k} {l}"))
+        .collect::<Vec<_>>()
+        .join("  ");
+    [KEYS, hints.as_str(), ": palette"]
+        .iter()
+        .filter(|part| !part.is_empty())
+        .copied()
+        .collect::<Vec<_>>()
+        .join("   ")
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ChipState {
@@ -274,7 +290,10 @@ fn render_with(f: &mut Frame, app: &App, p: SlipstreamPalette, version: &str) {
     render_header(f, r.header, snapshot, app.utc_offset(), version, &p);
     render_cards(f, r.left, snapshot, app.selected(), &p);
     render_rail(f, r.rail, snapshot, &p);
-    f.render_widget(Paragraph::new(Span::styled(KEYS, dim_style(&p))), r.keys);
+    f.render_widget(
+        Paragraph::new(Span::styled(keys_text(app.focus()), dim_style(&p))),
+        r.keys,
+    );
     if let Some(err) = app.feed_error() {
         render_error_line(f, chair_rect(r.rail), err, &p);
     }
@@ -599,6 +618,49 @@ mod tests {
 
     /// The first run card's second line: header, RUNS label, card border, line one, line two.
     const CHIP_ROW: u16 = 4;
+
+    #[test]
+    fn the_key_row_keeps_its_keys_and_adds_the_runs_actions_and_the_palette() {
+        assert_eq!(
+            keys_text(Focus::Runs),
+            format!("{KEYS}   p pause  k kill  m move   : palette")
+        );
+        assert_eq!(
+            keys_text(Focus::Inbox),
+            format!("{KEYS}   a accept  x deny   : palette")
+        );
+        assert_eq!(keys_text(Focus::History), format!("{KEYS}   : palette"));
+    }
+
+    /// Slipstream lists only runs, so `app.focus()` reads Runs there. A Regatta focus left on
+    /// the inbox must not leak its accept/deny hints onto this page.
+    #[test]
+    fn the_key_row_follows_app_focus_which_is_runs_on_this_page() {
+        use crossterm::event::KeyCode;
+        let snapshot = crate::feed::parse_snapshot(FIXTURE.trim()).expect("fixture should parse");
+        let mut app = App::new(AppPage::Regatta, ThemeId::Regatta);
+        app.apply_snapshot(snapshot);
+        (0..4).for_each(|_| crate::input::handle_key(&mut app, KeyCode::Right));
+        assert_eq!(app.focus(), Focus::Inbox);
+        crate::input::handle_key(&mut app, KeyCode::Tab);
+        assert_eq!(app.page(), AppPage::Slipstream);
+        let terminal = draw(&app, 160, 46);
+        let buffer = terminal.backend().buffer();
+        let row: String = (0..buffer.area.width)
+            .map(|x| buffer[(x, 45)].symbol())
+            .collect();
+        assert_eq!(row.trim_end(), keys_text(Focus::Runs));
+    }
+
+    #[test]
+    fn the_key_row_snapshot() {
+        let terminal = draw(&app_from(FIXTURE, ThemeId::Regatta), 160, 46);
+        let buffer = terminal.backend().buffer();
+        let row: String = (0..buffer.area.width)
+            .map(|x| buffer[(x, 45)].symbol())
+            .collect();
+        insta::assert_snapshot!(row.trim_end());
+    }
 
     #[test]
     fn step_index_maps_review_adversary_to_the_review_step() {

@@ -1,0 +1,6 @@
+---
+source: src/ui/status_line.rs
+assertion_line: 87
+expression: drawn(None).backend().to_string()
+---
+"                                        "
