@@ -10,14 +10,15 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Paragraph, Sparkline},
+    widgets::{Block, BorderType, Borders, Paragraph},
 };
 
 use crate::app::{App, Focus};
-use crate::feed::{Chair, FeedSnapshot, Run};
+use crate::feed::{Chair, FeedSnapshot, Machine, Run};
 use crate::theme::Theme;
 
-use super::chair_card::{Freshness, TICK_INTERVAL_S, beat_freshness};
+use super::chair_card::{Freshness, TICK_INTERVAL_S, beat_freshness, short_age};
+use super::local_time;
 
 /// Cells in a spend meter, and the least one shrinks to in a narrow frame.
 const METER_WIDTH: usize = 26;
@@ -537,6 +538,41 @@ fn render_spend(f: &mut Frame, rect: Rect, snapshot: &FeedSnapshot, app: &App, t
     f.render_widget(paragraph, rect);
 }
 
+/// One machine row: marker, name in its `accent`, one block per lane, `in_use/capacity`, the
+/// login dot, then the beat age. A lane block is the machine's `accent` in use, `theme.track` free.
+fn machine_line(m: &Machine, accent: Color, selected: bool, theme: &Theme) -> Line<'static> {
+    let marker = if selected { "\u{25b6} " } else { "  " };
+    let (login, login_color) = if m.login_ok {
+        ("\u{25cf} login ok", theme.landed)
+    } else {
+        ("\u{25cf} login lapsed", theme.quarantined)
+    };
+    let lanes = (0..m.capacity).map(|lane| {
+        let color = if lane < m.lanes_in_use {
+            accent
+        } else {
+            theme.track
+        };
+        Span::styled("\u{25a0}", Style::default().fg(color))
+    });
+    let head = [
+        Span::styled(marker, Style::default().fg(theme.accent)),
+        Span::styled(m.name.clone(), Style::default().fg(accent)),
+        Span::raw(" "),
+    ];
+    let tail = [
+        Span::raw(format!(" {}/{} ", m.lanes_in_use, m.capacity)),
+        Span::styled(login, Style::default().fg(login_color)),
+        Span::raw(format!(" {}", short_age(m.beat_age_s))),
+    ];
+    Line::from(
+        head.into_iter()
+            .chain(lanes)
+            .chain(tail)
+            .collect::<Vec<Span<'static>>>(),
+    )
+}
+
 fn render_machines(
     f: &mut Frame,
     rect: Rect,
@@ -549,21 +585,8 @@ fn render_machines(
         .iter()
         .enumerate()
         .map(|(i, m)| {
-            let is_selected = selected == Some(i);
-            let prefix = if is_selected { "\u{25b6} " } else { "  " };
-            let color = if is_selected {
-                theme.accent
-            } else {
-                theme.machine_accents[i % theme.machine_accents.len()]
-            };
-            let login = if m.login_ok { "login ok" } else { "login down" };
-            let name = &m.name;
-            let lanes_in_use = m.lanes_in_use;
-            let capacity = m.capacity;
-            Line::styled(
-                format!("{prefix}{name} {lanes_in_use}/{capacity} {login}"),
-                Style::default().fg(color),
-            )
+            let accent = theme.machine_accents[i % theme.machine_accents.len()];
+            machine_line(m, accent, selected == Some(i), theme)
         })
         .collect();
     let paragraph = Paragraph::new(lines)
@@ -572,45 +595,138 @@ fn render_machines(
     f.render_widget(paragraph, rect);
 }
 
-/// Buckets `history` into 24 hourly cells by hours before the newest sample: a sample `h`
-/// whole hours older than the newest lands in cell `23 - h`, so cell 23 is the last hour.
-/// Samples older than 24h, or a timestamp that fails to parse, are dropped. Max per cell.
-fn lane_cells(history: &[(String, u32)]) -> [u32; 24] {
-    let mut cells = [0u32; 24];
-    let Some(newest) = history
+/// The most lanes in use in any sample, 0 for an empty history.
+fn lane_peak(history: &[(String, u32)]) -> u32 {
+    history.iter().map(|&(_, lanes)| lanes).max().unwrap_or(0)
+}
+
+/// Hours the lanes chart spans, ending at the newest sample.
+const LANES_WINDOW_HOURS: i64 = 24;
+
+/// The parsed samples; a timestamp that fails to parse is dropped. Order is not assumed.
+fn lane_samples(history: &[(String, u32)]) -> Vec<(DateTime<FixedOffset>, u32)> {
+    history
         .iter()
-        .filter_map(|(at, _)| DateTime::parse_from_rfc3339(at).ok())
-        .max()
-    else {
-        return cells;
+        .filter_map(|(at, lanes)| Some((DateTime::parse_from_rfc3339(at).ok()?, *lanes)))
+        .collect()
+}
+
+/// The chart's time window: the 24 hours ending at the newest sample, none for no samples.
+fn lane_window(
+    history: &[(String, u32)],
+) -> Option<(DateTime<FixedOffset>, DateTime<FixedOffset>)> {
+    let newest = lane_samples(history).into_iter().map(|(at, _)| at).max()?;
+    Some((newest - chrono::Duration::hours(LANES_WINDOW_HOURS), newest))
+}
+
+/// `cols` counts spaced evenly across [`lane_window`]. Each is the count of the latest sample at
+/// or before its time, 0 before the first sample. No samples give zeros.
+fn lane_columns(history: &[(String, u32)], cols: usize) -> Vec<u32> {
+    let samples = lane_samples(history);
+    let Some((start, end)) = lane_window(history) else {
+        return vec![0; cols];
     };
-    for (at, lanes) in history {
-        let Ok(at) = DateTime::parse_from_rfc3339(at) else {
-            continue;
-        };
-        let hours_before = (newest - at).num_minutes() as f64 / 60.0;
-        if hours_before < 0.0 {
-            continue;
+    let span_ms = (end - start).num_milliseconds();
+    let last_col = i64::try_from(cols.saturating_sub(1))
+        .unwrap_or(i64::MAX)
+        .max(1);
+    (0..cols)
+        .map(|col| {
+            let at = start + chrono::Duration::milliseconds(span_ms * col as i64 / last_col);
+            samples
+                .iter()
+                .filter(|(sampled, _)| *sampled <= at)
+                .max_by_key(|(sampled, _)| *sampled)
+                .map_or(0, |&(_, lanes)| lanes)
+        })
+        .collect()
+}
+
+/// Braille dots for the left and right column of a cell, indexed top to bottom.
+const BRAILLE_LEFT: [u32; 4] = [0x01, 0x02, 0x04, 0x40];
+const BRAILLE_RIGHT: [u32; 4] = [0x08, 0x10, 0x20, 0x80];
+
+/// Braille rows, top first, for an area chart: two columns of `counts` per cell, each filled
+/// from the bottom to `count / peak` of the height. A non-zero count lights at least one dot.
+fn braille_area(counts: &[u32], peak: u32, rows: usize) -> Vec<String> {
+    let dots = rows * 4;
+    let heights: Vec<usize> = counts
+        .iter()
+        .map(|&n| match (n, peak) {
+            (0, _) | (_, 0) => 0,
+            _ => ((n as usize * dots + peak as usize / 2) / peak as usize).clamp(1, dots),
+        })
+        .collect();
+    (0..rows)
+        .map(|row| {
+            heights
+                .chunks(2)
+                .map(|pair| {
+                    let lit = |side: usize, dot: usize| {
+                        let from_bottom = (rows - 1 - row) * 4 + (3 - dot);
+                        u32::from(pair.get(side).is_some_and(|&h| from_bottom < h))
+                    };
+                    let mask = (0..4).fold(0, |mask, dot| {
+                        mask | (lit(0, dot) * BRAILLE_LEFT[dot])
+                            | (lit(1, dot) * BRAILLE_RIGHT[dot])
+                    });
+                    match mask {
+                        0 => ' ',
+                        _ => char::from_u32(0x2800 + mask).unwrap_or(' '),
+                    }
+                })
+                .collect()
+        })
+        .collect()
+}
+
+/// The axis line under the chart: `start` at the left, `lanes in use · peak N` centred and
+/// `end` at the right, cut to `width` cells.
+fn lane_axis_line(start: &str, peak: u32, end: &str, width: usize) -> String {
+    let label = format!("lanes in use \u{b7} peak {peak}");
+    let used = start.chars().count() + label.chars().count() + end.chars().count();
+    let line = match width.checked_sub(used) {
+        Some(room) if room >= 2 => {
+            let left = room / 2;
+            format!(
+                "{start}{}{label}{}{end}",
+                " ".repeat(left),
+                " ".repeat(room - left)
+            )
         }
-        let h = hours_before.floor() as i64;
-        if let Ok(h) = usize::try_from(h) {
-            if h < 24 {
-                let cell = 23 - h;
-                cells[cell] = cells[cell].max(*lanes);
-            }
-        }
-    }
-    cells
+        _ => format!("{start} {label} {end}"),
+    };
+    line.chars().take(width).collect()
 }
 
 fn render_lanes(f: &mut Frame, rect: Rect, app: &App, theme: &Theme) {
-    let cells = lane_cells(app.lanes_history());
-    let data: Vec<u64> = cells.iter().map(|&n| u64::from(n)).collect();
-    let sparkline = Sparkline::default()
-        .block(numbered_block(4, FRAME_NAMES[3], theme, false))
-        .data(&data)
-        .style(Style::default().fg(theme.accent).bg(theme.bg));
-    f.render_widget(sparkline, rect);
+    let block = numbered_block(4, FRAME_NAMES[3], theme, false);
+    let inner = block.inner(rect);
+    f.render_widget(block, rect);
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+    let history = app.lanes_history();
+    let peak = lane_peak(history);
+    let offset = app.utc_offset();
+    let stamp = |at: DateTime<FixedOffset>| local_time(&at.to_rfc3339(), offset);
+    let (start, end) = lane_window(history)
+        .map_or_else(Default::default, |(start, end)| (stamp(start), stamp(end)));
+    let axis = lane_axis_line(&start, peak, &end, usize::from(inner.width));
+    let chart = braille_area(
+        &lane_columns(history, usize::from(inner.width) * 2),
+        peak,
+        usize::from(inner.height - 1),
+    );
+    let lines: Vec<Line> = chart
+        .into_iter()
+        .map(|row| Line::styled(row, Style::default().fg(theme.accent)))
+        .chain(std::iter::once(Line::styled(
+            axis,
+            Style::default().fg(theme.dim),
+        )))
+        .collect();
+    f.render_widget(Paragraph::new(lines).style(base_style(theme)), inner);
 }
 
 fn run_color(theme: &Theme, run: &Run) -> Color {
@@ -948,15 +1064,165 @@ mod tests {
         let _ = draw_spend(3, 2);
     }
 
+    fn history(samples: &[(&str, u32)]) -> Vec<(String, u32)> {
+        samples
+            .iter()
+            .map(|&(at, lanes)| (at.to_string(), lanes))
+            .collect()
+    }
+
     #[test]
-    fn lane_cells_buckets_by_hours_before_the_newest_sample() {
-        let history = vec![
-            ("2026-09-29T18:00:00Z".to_string(), 4),
-            ("2026-09-29T12:30:00Z".to_string(), 2),
-        ];
-        let cells = lane_cells(&history);
-        assert_eq!(cells[23], 4);
-        assert_eq!(cells[18], 2);
+    fn lane_peak_is_the_history_maximum_and_zero_when_empty() {
+        let samples = history(&[("2026-09-29T00:00:00Z", 2), ("2026-09-29T03:00:00Z", 7)]);
+        assert_eq!(lane_peak(&samples), 7);
+        assert_eq!(lane_peak(&[]), 0);
+    }
+
+    #[test]
+    fn lane_columns_span_the_24h_ending_at_the_newest_sample_in_any_order() {
+        let samples = history(&[("2026-09-29T00:00:00Z", 2), ("2026-09-29T03:00:00Z", 7)]);
+        let reversed = history(&[("2026-09-29T03:00:00Z", 7), ("2026-09-29T00:00:00Z", 2)]);
+        let every_3h = vec![0, 0, 0, 0, 0, 0, 0, 2, 7];
+        assert_eq!(lane_columns(&samples, 9), every_3h);
+        assert_eq!(lane_columns(&reversed, 9), every_3h);
+        assert_eq!(lane_columns(&samples[..1], 3), vec![0, 0, 2]);
+        assert_eq!(lane_columns(&[], 2), vec![0, 0]);
+    }
+
+    #[test]
+    fn braille_area_fills_from_the_bottom_to_the_count_over_the_peak() {
+        assert_eq!(braille_area(&[4, 4], 4, 1), vec!["\u{28ff}"]);
+        assert_eq!(braille_area(&[4, 2], 4, 1), vec!["\u{28e7}"]);
+        assert_eq!(braille_area(&[1, 0], 8, 1), vec!["\u{2840}"]);
+        assert_eq!(braille_area(&[0, 0], 4, 2), vec![" ", " "]);
+    }
+
+    #[test]
+    fn lane_axis_line_centres_the_label_between_the_two_times() {
+        assert_eq!(
+            lane_axis_line("00:00", 7, "06:00", 40),
+            "00:00    lanes in use \u{b7} peak 7     06:00"
+        );
+        assert_eq!(lane_axis_line("00:00", 7, "06:00", 10), "00:00 lane");
+    }
+
+    fn app_with_lane_samples(samples: &[(&str, u32)]) -> App {
+        let mut app = App::new(AppPage::Regatta, ThemeId::Regatta);
+        for &(at, lanes) in samples {
+            let feed = FIXTURE
+                .replacen(
+                    "\"at\": \"2026-09-29T00:00:00Z\"",
+                    &format!("\"at\": \"{at}\""),
+                    1,
+                )
+                .replacen(
+                    "\"lanes_in_use\": 2",
+                    &format!("\"lanes_in_use\": {lanes}"),
+                    1,
+                );
+            app.apply_snapshot(crate::feed::parse_snapshot(feed.trim()).expect("feed parses"));
+        }
+        app
+    }
+
+    #[test]
+    fn the_lanes_frame_draws_a_sloped_area_and_labels_the_peak_and_the_24h_window() {
+        let app = app_with_lane_samples(&[
+            ("2026-09-29T00:00:00Z", 2),
+            ("2026-09-29T03:00:00Z", 7),
+            ("2026-09-29T06:00:00Z", 3),
+        ]);
+        let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
+        let mut terminal = Terminal::new(TestBackend::new(44, 6)).expect("terminal");
+        terminal
+            .draw(|f| render_lanes(f, f.area(), &app, &theme))
+            .expect("draw should not fail");
+        // 84 dot columns over 09-28 06:00 to 09-29 06:00; 12 dot rows, so 2, 7 and 3 of a
+        // peak of 7 stand 3, 12 and 5 dots high.
+        let framed = |row: String| format!("\u{2502}{row}\u{2502}");
+        assert_eq!(
+            row_text(&terminal, 1),
+            framed(format!(
+                "{}\u{28b8}\u{28ff}\u{28ff}\u{28ff}\u{28ff}\u{2847}",
+                " ".repeat(36)
+            ))
+        );
+        assert_eq!(
+            row_text(&terminal, 2),
+            framed(format!(
+                "{}\u{28b8}\u{28ff}\u{28ff}\u{28ff}\u{28ff}\u{28c7}",
+                " ".repeat(36)
+            ))
+        );
+        assert_eq!(
+            row_text(&terminal, 3),
+            framed(format!(
+                "{}\u{28b0}{}\u{28fe}{}",
+                " ".repeat(31),
+                "\u{28f6}".repeat(4),
+                "\u{28ff}".repeat(5)
+            ))
+        );
+        assert_eq!(
+            row_text(&terminal, 4),
+            framed("06:00     lanes in use \u{b7} peak 7      06:00".to_string())
+        );
+    }
+
+    const ACCENT: Color = Color::Rgb(0x79, 0xc0, 0xff);
+
+    fn draw_machines(feed: &str) -> Terminal<TestBackend> {
+        let snapshot = crate::feed::parse_snapshot(feed.trim()).expect("feed parses");
+        let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
+        let mut terminal = Terminal::new(TestBackend::new(60, 4)).expect("terminal");
+        terminal
+            .draw(|f| render_machines(f, f.area(), &snapshot, None, &theme))
+            .expect("draw should not fail");
+        terminal
+    }
+
+    fn fg_at(terminal: &Terminal<TestBackend>, y: u16, needle: &str) -> Option<Color> {
+        let x = col_of(terminal, y, needle);
+        terminal.backend().buffer()[(x, y)].style().fg
+    }
+
+    #[test]
+    fn the_login_ok_dot_is_the_landed_color() {
+        let terminal = draw_machines(FIXTURE);
+        assert!(row_text(&terminal, 1).contains("\u{25cf} login ok 12s"));
+        assert_eq!(fg_at(&terminal, 1, "\u{25cf}"), Some(LOW));
+    }
+
+    #[test]
+    fn the_login_lapsed_dot_is_the_quarantined_color() {
+        let terminal = draw_machines(&FIXTURE.replace("\"login_ok\": true", "\"login_ok\": false"));
+        assert!(row_text(&terminal, 1).contains("\u{25cf} login lapsed 12s"));
+        assert_eq!(fg_at(&terminal, 1, "\u{25cf}"), Some(HIGH));
+    }
+
+    #[test]
+    fn an_in_use_lane_block_is_its_machine_accent_and_a_free_one_the_track() {
+        let second = r#"{"name": "spare", "state": "active", "lanes_in_use": 1, "capacity": 2, "login_ok": true, "login_checked_at": "2026-09-28T23:50:00Z", "beat_age_s": 90, "checkouts": {}}"#;
+        let feed = FIXTURE.replacen(
+            "{\"behind_main\": 0}}}]",
+            &format!("{{\"behind_main\": 0}}}}}}, {second}]"),
+            1,
+        );
+        let terminal = draw_machines(&feed);
+        let buffer = terminal.backend().buffer();
+        let first = col_of(&terminal, 1, "\u{25a0}");
+        assert_eq!(buffer[(first, 1)].style().fg, Some(ACCENT));
+        assert_eq!(buffer[(first + 1, 1)].style().fg, Some(ACCENT));
+        assert_eq!(buffer[(first + 2, 1)].style().fg, Some(TRACK));
+        assert!(row_text(&terminal, 1).contains(" 2/3 "));
+        // Machine 1's accent differs from theme.accent, so this tells the two apart.
+        const SECOND_ACCENT: Color = Color::Rgb(0xff, 0xa6, 0x57);
+        let name = col_of(&terminal, 2, "spare");
+        let block = col_of(&terminal, 2, "\u{25a0}");
+        assert_eq!(buffer[(name, 2)].style().fg, Some(SECOND_ACCENT));
+        assert_eq!(buffer[(block, 2)].style().fg, Some(SECOND_ACCENT));
+        assert_eq!(buffer[(block + 1, 2)].style().fg, Some(TRACK));
+        assert!(row_text(&terminal, 2).contains(" 1/2 \u{25cf} login ok 1m"));
     }
 
     #[test]
