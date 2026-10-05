@@ -1,14 +1,14 @@
 ---
 source: src/ui/mod.rs
-assertion_line: 849
+assertion_line: 909
 expression: text
 ---
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
-╭ 6 queue ──────────────────────────────────────────────────────────╮╭ inbox ──────────────────────────────────────────╮
+╭ 6 queue ──────────────────────────────────────────────────────────╮╭ 9 inbox ────────────────────────────────────────╮
 │  dash-feed-streams-a-version┌Kill run dash-feed-1──────────────────────────────────────┐k budget stop after 2 attempt│
 │                             │ $ cox runs stop dash-feed-1                              │                             │
 │                             │                                                          │                             │
 │                             │ y run    n cancel                                        │                             │
 │                             └──────────────────────────────────────────────────────────┘                             │
 ╰───────────────────────────────────────────────────────────────────╯╰─────────────────────────────────────────────────╯
-1-6 frames · ←→ focus · ↑↓ select · ⏎ drill down · t theme · v layout · q quit │ p pause  k kill  m move · : palette
+1-9 frames · ←→ focus · ↑↓ select · ⏎ drill down · t theme · v layout · q quit │ p pause  k kill  m move · : palette
