@@ -1,16 +1,9 @@
 ---
 source: src/ui/regatta.rs
+assertion_line: 794
 expression: terminal.backend().to_string()
 ---
-"╭ 1 chair ───────────────────────────────────────╮"
-"│chair@omarchy:12345 omarchy live                │"
-"│beat age: 4s                                    │"
-"│doing: land_phase api-runners/runner-parity · 1m│"
-"│last tick 23:59 · 1m ago                        │"
-"│lands 2  launches 1  failures 0  needs chair 0  │"
-"│chair 09-28 19:59 EDT | landed 2, launched 1,   │"
-"│waiting on api-runners review before the next   │"
-"│land                                            │"
-"│                                                │"
-"│                                                │"
-"╰────────────────────────────────────────────────╯"
+"╭ 1 chair ─────────────────────────────────────────────────────────────────────╮"
+"│● chair@omarchy:12345 @ omarchy · epoch 7 · beat 4s · live                    │"
+"│lands today 2 (- phases) · needs you 0 · drafts - · housekeeping -            │"
+"╰──────────────────────────────────────────────────────────────────────────────╯"
