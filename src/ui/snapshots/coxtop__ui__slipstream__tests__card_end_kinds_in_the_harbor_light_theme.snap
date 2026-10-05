@@ -1,6 +1,6 @@
 ---
 source: src/ui/slipstream.rs
-assertion_line: 943
+assertion_line: 994
 expression: "end_kinds_text(ThemeId::HarborLight)"
 ---
 coxtop
@@ -36,4 +36,4 @@ R U N S
 
 
 
-↑↓ select   enter open   esc close   tab page   t theme   q quit   p pause  k ki
+↑↓ select   enter open   esc close   tab page   p pause  k kill  m move   : pale

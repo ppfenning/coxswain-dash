@@ -65,7 +65,24 @@ fn kind_arg(kind: DetailKind) -> &'static str {
         DetailKind::Run => "run",
         DetailKind::Initiative => "initiative",
         DetailKind::Machine => "machine",
+        DetailKind::Watch => "watch",
+        DetailKind::Spend => "spend",
+        DetailKind::Health => "health",
     }
+}
+
+/// The id the detail child is asked for. Spend and health take none, so their app-side id, the
+/// kind's own word, must not reach the command line.
+fn child_id(kind: DetailKind, id: &str) -> &str {
+    match kind {
+        DetailKind::Spend | DetailKind::Health => "",
+        DetailKind::Run | DetailKind::Initiative | DetailKind::Machine | DetailKind::Watch => id,
+    }
+}
+
+/// Whether the loop runs a detail child for `kind`. Watch reads the feed and has none.
+fn has_detail_child(kind: DetailKind) -> bool {
+    kind != DetailKind::Watch
 }
 
 /// Spawns `cox dash --detail <kind_arg(kind)> <id>` and reads its stdout on a thread into a
@@ -74,7 +91,7 @@ fn spawn_detail_reader(
     kind: DetailKind,
     id: &str,
 ) -> (std::process::Child, mpsc::Receiver<String>) {
-    let mut child = detail::spawn_detail(kind_arg(kind), id);
+    let mut child = detail::spawn_detail(kind_arg(kind), child_id(kind, id));
     let stdout = child.stdout.take().expect("detail stdout should be piped");
     let (tx, rx) = mpsc::channel::<String>();
     std::thread::spawn(move || {
@@ -162,7 +179,7 @@ fn main() {
             }
             detail_rx = None;
             detail_key = wanted.clone();
-            if let Some((kind, id)) = wanted {
+            if let Some((kind, id)) = wanted.filter(|(kind, _)| has_detail_child(*kind)) {
                 let (child, rx) = spawn_detail_reader(kind, &id);
                 detail_child = Some(child);
                 detail_rx = Some(rx);
@@ -501,9 +518,22 @@ mod tests {
     }
 
     #[test]
-    fn kind_arg_names_the_three_detail_kinds() {
+    fn kind_arg_names_each_detail_kind() {
+        assert_eq!(kind_arg(DetailKind::Watch), "watch");
+        assert_eq!(kind_arg(DetailKind::Spend), "spend");
+        assert_eq!(kind_arg(DetailKind::Health), "health");
         assert_eq!(kind_arg(DetailKind::Run), "run");
         assert_eq!(kind_arg(DetailKind::Initiative), "initiative");
         assert_eq!(kind_arg(DetailKind::Machine), "machine");
+    }
+
+    #[test]
+    fn spend_and_health_ask_for_no_id_and_watch_runs_no_child() {
+        assert_eq!(child_id(DetailKind::Spend, "spend"), "");
+        assert_eq!(child_id(DetailKind::Health, "health"), "");
+        assert_eq!(child_id(DetailKind::Run, "r1"), "r1");
+        assert!(has_detail_child(DetailKind::Spend));
+        assert!(has_detail_child(DetailKind::Health));
+        assert!(!has_detail_child(DetailKind::Watch));
     }
 }

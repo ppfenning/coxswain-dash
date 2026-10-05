@@ -67,12 +67,17 @@ pub enum Focus {
 }
 
 /// Which kind of entity an open detail request names, matching the id field the detail
-/// snapshot for that kind carries (`run`, `initiative`, or `machine`).
+/// snapshot for that kind carries (`run`, `initiative`, or `machine`). The last three name no
+/// entity: their id is the kind's own word, `watch` reads the feed and holds no snapshot, and
+/// `spend` and `health` take no id on the command line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DetailKind {
     Run,
     Initiative,
     Machine,
+    Watch,
+    Spend,
+    Health,
 }
 
 /// The open overlay: a confirm for a bound action, or the colon palette.
@@ -116,6 +121,8 @@ fn detail_snapshot_id(snap: &DetailSnapshot) -> &str {
         DetailSnapshot::Run(r) => &r.run,
         DetailSnapshot::Initiative(i) => &i.initiative,
         DetailSnapshot::Machine(m) => &m.machine,
+        DetailSnapshot::Spend(_) => "spend",
+        DetailSnapshot::Health(_) => "health",
     }
 }
 
@@ -731,6 +738,29 @@ impl App {
         }
     }
 
+    /// Opens the watch board. A no-op while a detail is open, so Esc comes first. It reads the
+    /// feed at draw time, so it opens before any feed snapshot has arrived.
+    pub fn open_watch(&mut self) {
+        self.open_view(DetailKind::Watch, "watch");
+    }
+
+    /// Opens the spend board; a no-op while a detail is open.
+    pub fn open_spend(&mut self) {
+        self.open_view(DetailKind::Spend, "spend");
+    }
+
+    /// Opens the health board; a no-op while a detail is open.
+    pub fn open_health(&mut self) {
+        self.open_view(DetailKind::Health, "health");
+    }
+
+    fn open_view(&mut self, kind: DetailKind, id: &str) {
+        if self.detail.is_none() {
+            self.detail = Some((kind, id.to_string(), None));
+            self.detail_error = None;
+        }
+    }
+
     /// Closes the open detail, if any; a no-op when none is open.
     pub fn close_detail(&mut self) {
         self.detail = None;
@@ -759,17 +789,19 @@ impl App {
 
     /// What an action key applies to: the open detail's entity, else the focused list's row.
     pub fn target(&self) -> Option<Target> {
+        // The watch, spend and health views name no entity, so no action key applies to them.
         let of_entity = |kind: DetailKind, id: String| match kind {
-            DetailKind::Run => Target::Run(id),
-            DetailKind::Initiative => Target::Initiative(id),
-            DetailKind::Machine => Target::Machine(id),
+            DetailKind::Run => Some(Target::Run(id)),
+            DetailKind::Initiative => Some(Target::Initiative(id)),
+            DetailKind::Machine => Some(Target::Machine(id)),
+            DetailKind::Watch | DetailKind::Spend | DetailKind::Health => None,
         };
         match &self.detail {
-            Some((kind, id, _)) => Some(of_entity(*kind, id.clone())),
+            Some((kind, id, _)) => of_entity(*kind, id.clone()),
             None => self
                 .selected_inbox_id()
                 .map(Target::InboxItem)
-                .or_else(|| self.selected_entity().map(|(k, id)| of_entity(k, id))),
+                .or_else(|| self.selected_entity().and_then(|(k, id)| of_entity(k, id))),
         }
     }
 
@@ -1412,6 +1444,53 @@ mod tests {
         app.apply_detail_snapshot(snap);
         let (_, _, slot) = app.detail().expect("detail should still be open");
         assert!(slot.is_none());
+    }
+
+    const SPEND_FIXTURE: &str = include_str!("../tests/fixtures/dash_detail_spend_v1.json");
+    const HEALTH_FIXTURE: &str = include_str!("../tests/fixtures/dash_detail_health_v1.json");
+
+    #[test]
+    fn each_view_opens_with_its_kind_and_word_and_no_feed() {
+        for (open, kind, word) in [
+            (App::open_watch as fn(&mut App), DetailKind::Watch, "watch"),
+            (App::open_spend, DetailKind::Spend, "spend"),
+            (App::open_health, DetailKind::Health, "health"),
+        ] {
+            let mut app = App::default();
+            assert!(app.snapshot().is_none());
+            open(&mut app);
+            let (open_kind, id, slot) = app.detail().expect("the view should open");
+            assert_eq!((*open_kind, id.as_str()), (kind, word));
+            assert!(slot.is_none());
+            assert!(app.target().is_none());
+        }
+    }
+
+    #[test]
+    fn a_second_view_while_one_is_open_is_ignored() {
+        let mut app = App::default();
+        app.open_spend();
+        app.open_health();
+        app.open_watch();
+        assert_eq!(app.detail().map(|d| d.0), Some(DetailKind::Spend));
+        app.close_detail();
+        app.open_health();
+        assert_eq!(app.detail().map(|d| d.0), Some(DetailKind::Health));
+    }
+
+    #[test]
+    fn an_open_spend_takes_a_spend_snapshot_and_ignores_a_health_one() {
+        let mut app = App::default();
+        app.open_spend();
+        let health = crate::detail::parse_detail(HEALTH_FIXTURE.trim()).expect("health parses");
+        app.apply_detail_snapshot(health);
+        assert!(app.detail().is_some_and(|d| d.2.is_none()));
+        let spend = crate::detail::parse_detail(SPEND_FIXTURE.trim()).expect("spend parses");
+        app.apply_detail_snapshot(spend);
+        assert!(matches!(
+            app.detail().and_then(|d| d.2.as_ref()),
+            Some(DetailSnapshot::Spend(_))
+        ));
     }
 
     #[test]

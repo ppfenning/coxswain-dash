@@ -1,6 +1,6 @@
 ---
 source: src/ui/mod.rs
-assertion_line: 1178
+assertion_line: 1184
 expression: text
 ---
 ╭ 1 chair ─────────────────────────────────────────────────╮╭ 2 spend ─────────────────────────────────────────────────╮
@@ -42,4 +42,4 @@ expression: text
 │today  0 lands  0 quarantines  $0.00  0 runs                                                                          │
 │no runs ended yet                                                                                                     │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
-1-9 frames · ←→ focus · ↑↓ select · ⏎ drill down · t theme · v layout · q quit │ p pause  k kill  m move · : palette
+1-9 frames · ←→ focus · ↑↓ select · ⏎ drill down │ p pause  k kill  m move · : palette  w watch  $ spend  h health

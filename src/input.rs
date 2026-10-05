@@ -126,6 +126,10 @@ pub fn handle_key(app: &mut App, key: KeyCode) {
         // `s` was unbound in the landed keymap, so it opens the settings screen.
         KeyCode::Char('s') => app.open_settings(),
         KeyCode::Char('v') => app.cycle_regatta_layout_preset(),
+        // No action binding uses `w`, `$` or `h`; a test over `actions::bindings` holds that.
+        KeyCode::Char('w') => app.open_watch(),
+        KeyCode::Char('$') => app.open_spend(),
+        KeyCode::Char('h') => app.open_health(),
         KeyCode::Char('7') => app.toggle_history_frame(),
         KeyCode::Char('8') => app.toggle_run_cost_frame(),
         KeyCode::Char('9') => app.toggle_inbox_frame(),
@@ -1038,6 +1042,89 @@ mod tests {
         app.open_add_machine();
         handle_key(&mut app, KeyCode::Esc);
         assert!(app.form().is_none());
+    }
+
+    fn view_kind(app: &App) -> Option<crate::app::DetailKind> {
+        app.detail().map(|d| d.0)
+    }
+
+    #[test]
+    fn w_dollar_and_h_open_their_view_and_esc_closes_it_on_both_pages() {
+        use crate::app::DetailKind::{Health, Spend, Watch};
+        for page in [AppPage::Regatta, AppPage::Slipstream] {
+            for (key, kind) in [('w', Watch), ('$', Spend), ('h', Health)] {
+                let mut app = App::new(page, ThemeId::Regatta);
+                handle_key(&mut app, KeyCode::Char(key));
+                assert_eq!(view_kind(&app), Some(kind), "{key} on {page:?}");
+                handle_key(&mut app, KeyCode::Esc);
+                assert!(app.detail().is_none(), "Esc after {key} on {page:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_second_view_key_while_a_view_is_open_is_ignored() {
+        let mut app = App::new(AppPage::Slipstream, ThemeId::Regatta);
+        handle_key(&mut app, KeyCode::Char('$'));
+        handle_key(&mut app, KeyCode::Char('h'));
+        handle_key(&mut app, KeyCode::Char('w'));
+        assert_eq!(view_kind(&app), Some(crate::app::DetailKind::Spend));
+    }
+
+    #[test]
+    fn a_view_key_with_a_run_detail_open_leaves_the_run_open() {
+        let mut app = app_on_runs();
+        handle_key(&mut app, KeyCode::Enter);
+        handle_key(&mut app, KeyCode::Char('h'));
+        assert_eq!(view_kind(&app), Some(crate::app::DetailKind::Run));
+    }
+
+    #[test]
+    fn a_form_keeps_w_dollar_and_h_for_its_field() {
+        let mut app = app_on_machines();
+        app.open_add_machine();
+        type_keys(&mut app, "w$h");
+        assert!(app.detail().is_none());
+        assert_eq!(app.form().map(|f| f.value_of("name")), Some("w$h"));
+    }
+
+    #[test]
+    fn a_modal_keeps_w_dollar_and_h() {
+        let mut app = app_on_runs();
+        handle_key(&mut app, KeyCode::Char(':'));
+        type_keys(&mut app, "w$h");
+        assert!(app.detail().is_none());
+        assert!(app.modal().is_some());
+    }
+
+    #[test]
+    fn the_settings_screen_keeps_w_dollar_and_h() {
+        let mut app = app_on_runs();
+        handle_key(&mut app, KeyCode::Char('s'));
+        assert!(app.settings().is_some());
+        type_keys(&mut app, "w$h");
+        assert!(app.detail().is_none());
+    }
+
+    #[test]
+    fn no_action_binding_uses_w_dollar_or_h() {
+        use crate::actions::{Target, bindings};
+        let targets = [
+            Target::Run("r".into()),
+            Target::Initiative("i".into()),
+            Target::Machine("m".into()),
+            Target::InboxItem("x".into()),
+        ];
+        for target in &targets {
+            for binding in bindings(target) {
+                assert!(
+                    !matches!(binding.key, 'w' | '$' | 'h'),
+                    "{:?} binds {}",
+                    target,
+                    binding.key
+                );
+            }
+        }
     }
 
     #[test]

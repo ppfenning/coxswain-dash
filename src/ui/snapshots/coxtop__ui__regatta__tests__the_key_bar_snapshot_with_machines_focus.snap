@@ -1,6 +1,6 @@
 ---
 source: src/ui/regatta.rs
-assertion_line: 2982
+assertion_line: 3015
 expression: "key_bar_row(Focus::Machines, 120)"
 ---
-1-9 frames · ←→ focus · ↑↓ select │ + lanes up  - lanes down  d drain  a activate  A add machine · : palette
+1-9 frames │ + lanes up  - lanes down  d drain  a activate  A add machine · : palette  w watch  $ spend  h health

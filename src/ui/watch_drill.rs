@@ -1,7 +1,6 @@
 //! Rendering for the watch board: a bordered block titled `Watch` with one row per followed
 //! pull request or run. Nothing calls `render` yet, so unused-code warnings are silenced
 //! until the wiring phase.
-#![allow(dead_code)]
 
 use ratatui::{
     Frame,
