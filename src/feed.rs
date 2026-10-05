@@ -25,6 +25,54 @@ pub struct FeedSnapshot {
     pub decisions: Vec<Decision>,
     #[serde(default)]
     pub spend_series: Vec<SpendPoint>,
+    #[serde(default)]
+    pub history: Vec<HistoryRow>,
+    #[serde(default)]
+    pub history_today: HistoryToday,
+}
+
+/// How an ended run finished. A value this build does not know parses as `Unknown`.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum Outcome {
+    Landed,
+    Approved,
+    Quarantined,
+    Stopped,
+    Crashed,
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Deserialize, PartialEq)]
+pub struct LandedTask {
+    pub task: String,
+    pub pr: u64,
+}
+
+/// One ended run. `cause` is the first cause and is present only on a quarantined row.
+#[derive(Debug, Deserialize, PartialEq)]
+pub struct HistoryRow {
+    pub run: String,
+    pub machine: String,
+    pub initiative: String,
+    /// RFC 3339 UTC, kept as sent.
+    pub ended_at: String,
+    pub outcome: Outcome,
+    pub cost_usd: f64,
+    #[serde(default)]
+    pub landed: Vec<LandedTask>,
+    #[serde(default)]
+    pub cause: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct HistoryToday {
+    pub lands: u32,
+    pub quarantines: u32,
+    pub cost_usd: f64,
+    pub runs: u32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -385,6 +433,68 @@ mod tests {
         assert_eq!(snapshot.runs.len(), 1);
         assert!(snapshot.runs[0].cost_series.is_empty());
         assert!(snapshot.spend_series.is_empty());
+    }
+
+    const LANDED_ROW: &str = r#"{"run":"dash-feed-0","machine":"omarchy","initiative":"dash-feed","ended_at":"2026-09-28T23:50:00Z","outcome":"landed","cost_usd":2.15,"landed":[{"task":"p1-foundations-task","pr":41}]}"#;
+    const QUARANTINED_ROW: &str = r#"{"run":"dash-feed-9","machine":"omarchy","initiative":"dash-feed","ended_at":"2026-09-28T23:40:00Z","outcome":"quarantined","cost_usd":0.42,"landed":[],"cause":"review rejected twice"}"#;
+
+    fn with_history(history: &str, today: &str) -> String {
+        with_chair(&format!("{OLD_CHAIR}}}")).replace(
+            r#""watch":[]"#,
+            &format!(r#""watch":[],"history":[{history}],"history_today":{today}"#),
+        )
+    }
+
+    #[test]
+    fn parse_snapshot_reads_history_rows_and_the_today_object() {
+        let line = with_history(
+            &format!("{LANDED_ROW},{QUARANTINED_ROW}"),
+            r#"{"lands":1,"quarantines":1,"cost_usd":2.57,"runs":2}"#,
+        );
+        let snapshot = parse_snapshot(&line).expect("feed with history should parse");
+        assert_eq!(snapshot.history.len(), 2);
+        let landed = &snapshot.history[0];
+        assert_eq!(landed.run, "dash-feed-0");
+        assert_eq!(landed.ended_at, "2026-09-28T23:50:00Z");
+        assert_eq!(landed.outcome, Outcome::Landed);
+        assert_eq!(landed.cost_usd, 2.15);
+        assert_eq!(
+            landed.landed,
+            vec![LandedTask {
+                task: "p1-foundations-task".to_string(),
+                pr: 41
+            }]
+        );
+        assert!(landed.cause.is_none());
+        let quarantined = &snapshot.history[1];
+        assert_eq!(quarantined.outcome, Outcome::Quarantined);
+        assert!(quarantined.landed.is_empty());
+        assert_eq!(quarantined.cause.as_deref(), Some("review rejected twice"));
+        assert_eq!(
+            snapshot.history_today,
+            HistoryToday {
+                lands: 1,
+                quarantines: 1,
+                cost_usd: 2.57,
+                runs: 2
+            }
+        );
+    }
+
+    #[test]
+    fn parse_snapshot_reads_an_unknown_outcome_as_unknown() {
+        let row = LANDED_ROW.replace(r#""outcome":"landed""#, r#""outcome":"someday""#);
+        let snapshot = parse_snapshot(&with_history(&row, "{}")).expect("should parse");
+        assert_eq!(snapshot.history[0].outcome, Outcome::Unknown);
+        assert_eq!(snapshot.history_today, HistoryToday::default());
+    }
+
+    #[test]
+    fn parse_snapshot_defaults_history_when_the_keys_are_absent() {
+        let snapshot = parse_snapshot(&with_chair(&format!("{OLD_CHAIR}}}")))
+            .expect("feed without history should parse");
+        assert!(snapshot.history.is_empty());
+        assert_eq!(snapshot.history_today, HistoryToday::default());
     }
 
     #[test]
