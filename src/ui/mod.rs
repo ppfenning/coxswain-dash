@@ -92,7 +92,10 @@ fn render_base(f: &mut Frame, app: &App, theme: &Theme) {
 /// the panel leaves; a panel at full width leaves it none.
 fn render_page(f: &mut Frame, app: &App, theme: &Theme) {
     let panel = app.chair_panel();
-    let (page, side) = split_panel(f.area(), panel.is_open().then(|| panel.width().percent()));
+    // A shown panel is drawn even with no session, so its prompt (Enter starts a session) or the
+    // last line of an ended session is visible.
+    let shown = panel.is_open() || app.chair_panel_shown();
+    let (page, side) = split_panel(f.area(), shown.then(|| panel.width().percent()));
     if page.width > 0 {
         render_page_in(f, page, app, theme);
     }
