@@ -59,6 +59,21 @@ pub enum CloseOutcome {
     NeedsConfirm,
 }
 
+/// The panel's border title. While focused it names the key that hands focus back.
+pub fn title(focused: bool) -> &'static str {
+    if focused {
+        " chair · Ctrl-] leaves "
+    } else {
+        " chair "
+    }
+}
+
+/// The status line's release hint, the same words the focused title carries: `Some` only while
+/// the panel holds focus.
+pub fn release_hint(focused: bool) -> Option<&'static str> {
+    focused.then_some("chair · Ctrl-] leaves")
+}
+
 /// Owns exactly one `PtySession` and the state of the terminal drawn from it.
 pub struct ChairPanel<P: PtySession> {
     pty: P,
@@ -294,7 +309,7 @@ impl<P: PtySession> ChairPanel<P> {
             theme.dim
         };
         let block = Block::bordered()
-            .title(" chair ")
+            .title(title(self.focused))
             .style(Style::new().fg(theme.fg).bg(theme.bg))
             .border_style(Style::new().fg(border).bg(theme.bg));
         let inner = block.inner(area);
@@ -590,6 +605,79 @@ mod tests {
             .draw(|frame| panel.render(frame, frame.area(), &resolve(theme)))
             .unwrap();
         terminal.backend().to_string()
+    }
+
+    #[test]
+    fn the_title_and_status_hint_name_ctrl_right_bracket_only_while_focused() {
+        assert!(title(true).contains("Ctrl-]"));
+        assert_eq!(title(false), " chair ");
+        assert_eq!(release_hint(true), Some(title(true).trim()));
+        assert_eq!(release_hint(false), None);
+    }
+
+    const SCREEN: Rect = Rect::new(0, 0, 120, 40);
+
+    /// An app with the panel open and focused on a `FakePty`, and the regatta rects for a
+    /// 120x40 screen, built the way `main` builds them.
+    fn focused_app() -> (crate::app::App, [Option<Rect>; 6]) {
+        let mut app = crate::app::App::default().with_pty(Box::new(FakePty::default()));
+        app.chair_panel_mut().open(Some("abc"), 24, 80);
+        app.chair_panel_mut().set_focus(true);
+        assert!(app.chair_panel().focused());
+        let rects = crate::ui::regatta_frame_rects(SCREEN, &app);
+        (app, rects)
+    }
+
+    #[test]
+    fn with_the_pane_open_the_frame_rects_are_the_ones_drawn_in_the_page_it_leaves() {
+        let (app, rects) = focused_app();
+        let (page, pane) = crate::ui::split_page(SCREEN, &app);
+        let pane = pane.expect("pane is shown");
+        assert_eq!((page.right(), pane.x), (78, 78));
+        assert_eq!(rects[3].map(|lanes| lanes.right()), Some(page.right()));
+        assert!(rects.iter().flatten().all(|r| r.right() <= pane.x));
+    }
+
+    fn click(column: u16, row: u16) -> crossterm::event::MouseEvent {
+        crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        }
+    }
+
+    #[test]
+    fn a_click_on_another_frame_releases_focus_and_focuses_that_frame() {
+        let (mut app, rects) = focused_app();
+        let machines = rects[2].expect("machines frame is visible");
+        crate::input::handle_mouse(&mut app, click(machines.x + 1, machines.y + 1), &rects);
+        assert!(!app.chair_panel().focused());
+        assert!(!app.chair_focused());
+        assert_eq!(app.focus(), crate::app::Focus::Machines);
+    }
+
+    #[test]
+    fn a_click_on_a_frame_with_no_list_releases_focus_and_keeps_the_list_focus() {
+        let (mut app, rects) = focused_app();
+        let spend = rects[1].expect("spend frame is visible");
+        crate::input::handle_mouse(&mut app, click(spend.x + 1, spend.y + 1), &rects);
+        assert!(!app.chair_focused());
+        assert_eq!(app.focus(), crate::app::Focus::Runs);
+        assert_eq!(app.regatta_frames_visible(), [true; 6]);
+    }
+
+    #[test]
+    fn a_click_inside_the_pane_keeps_focus() {
+        let (mut app, rects) = focused_app();
+        let machines = rects[2].expect("machines frame is visible");
+        let pane = crate::ui::split_page(SCREEN, &app)
+            .1
+            .expect("pane is shown");
+        // A full-width layout would put the lanes frame under this point.
+        crate::input::handle_mouse(&mut app, click(pane.x + 2, machines.y + 1), &rects);
+        assert!(app.chair_panel().focused());
+        assert_eq!(app.focus(), crate::app::Focus::Runs);
     }
 
     #[test]

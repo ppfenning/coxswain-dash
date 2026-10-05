@@ -197,13 +197,44 @@ fn row_hit(app: &App, rects: &[Option<Rect>; 6], x: u16, y: u16) -> Option<(Focu
     None
 }
 
+/// The list a click on `rects[idx]` focuses: machines (2), runs (4) or queue (5).
+fn list_focus(idx: usize) -> Option<Focus> {
+    match idx {
+        2 => Some(Focus::Machines),
+        4 => Some(Focus::Runs),
+        5 => Some(Focus::Queue),
+        _ => None,
+    }
+}
+
+/// While the chair panel has focus, a press on a frame releases it and focuses that frame's
+/// list, when the frame has one. `rects` never overlaps the panel, since `regatta::frame_rects`
+/// lays the frames out in the page the panel leaves, so a press in the panel, or in no frame,
+/// keeps focus where it is.
+fn press_with_chair_focus(app: &mut App, rects: &[Option<Rect>; 6], x: u16, y: u16) {
+    if let Some(idx) = rects
+        .iter()
+        .position(|rect| rect.is_some_and(|rect| contains(rect, x, y)))
+    {
+        app.release_chair_focus_to(list_focus(idx));
+    } else {
+        // The press is in the panel or between frames: focus stays on the panel.
+    }
+}
+
 /// A left-button press on a row of the runs, queue or machines frame focuses that list, selects
 /// the row and opens its detail. A press elsewhere inside `rects[i]` toggles regatta frame
 /// `i + 1`, today's behavior; a press outside every rect is a no-op. `rects` is
 /// `regatta::frame_rects`'s output, so this never disagrees with what is actually drawn.
+/// While the chair panel has focus, a press inside it changes nothing and a press on any other
+/// frame releases focus and focuses that frame, without hiding it or opening a detail. A frame
+/// with no list (chair, spend, lanes) takes the release and leaves the list focus unchanged.
 pub fn handle_mouse(app: &mut App, event: MouseEvent, rects: &[Option<Rect>; 6]) {
     if event.kind != MouseEventKind::Down(MouseButton::Left) {
         return;
+    }
+    if app.chair_focused() {
+        return press_with_chair_focus(app, rects, event.column, event.row);
     }
     if let Some((focus, row)) = row_hit(app, rects, event.column, event.row) {
         for _ in 0..3 {
