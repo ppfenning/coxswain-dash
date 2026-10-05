@@ -12,6 +12,7 @@ pub fn handle_key(app: &mut App, key: KeyCode) {
         KeyCode::BackTab => app.prev_page(),
         KeyCode::Char('t') => app.toggle_theme(),
         KeyCode::Char('p') => app.cycle_regatta_layout_preset(),
+        KeyCode::Char('7') => app.toggle_history_frame(),
         KeyCode::Char(c) if c.is_ascii_digit() && c != '0' => {
             app.toggle_regatta_frame(c.to_digit(10).unwrap() as usize)
         }
@@ -262,7 +263,67 @@ mod tests {
     fn left_cycles_focus_to_the_previous_frame() {
         let mut app = App::new(AppPage::Regatta, ThemeId::Regatta);
         handle_key(&mut app, KeyCode::Left);
-        assert_eq!(app.focus(), Focus::Machines);
+        assert_eq!(app.focus(), Focus::History);
+    }
+
+    /// A snapshot with two ended runs (`h0`, `h1`) in its history, or none when `rows` is false.
+    fn snapshot_with_history(rows: bool) -> crate::feed::FeedSnapshot {
+        let history = if rows {
+            r#","history":[{"run":"h0","machine":"m0","initiative":"i0","ended_at":"2026-09-29T00:00:00Z","outcome":"landed","cost_usd":1.0},{"run":"h1","machine":"m0","initiative":"i0","ended_at":"2026-09-29T00:00:00Z","outcome":"stopped","cost_usd":2.0}]"#
+        } else {
+            ""
+        };
+        let json = format!(
+            r#"{{"schema":1,"at":"2026-09-29T00:00:00Z","chair":{{"holder":"h","host":"h","epoch":1,"liveness":"live","beat_age_s":0}},"spend":{{"five_hour_fraction":0.0,"five_hour_source":"meter","weekly_fraction":0.0,"weekly_source":"meter","hard_stop_fraction":0.0,"five_hour_resets_at":"2026-09-29T00:00:00Z","weekly_resets_at":"2026-09-29T00:00:00Z"}},"machines":[],"runs":[],"queue":[],"inbox":[],"watch":[]{history}}}"#
+        );
+        crate::feed::parse_snapshot(&json).expect("literal snapshot should parse")
+    }
+
+    fn app_focused_on_history(rows: bool) -> App {
+        let mut app = App::new(AppPage::Regatta, ThemeId::Regatta);
+        app.apply_snapshot(snapshot_with_history(rows));
+        handle_key(&mut app, KeyCode::Left);
+        assert_eq!(app.focus(), Focus::History);
+        app
+    }
+
+    #[test]
+    fn char_seven_toggles_the_history_frame_and_no_numbered_frame() {
+        let mut app = App::default();
+        handle_key(&mut app, KeyCode::Char('7'));
+        assert!(!app.regatta_history_visible());
+        assert_eq!(app.regatta_frames_visible(), [true; 6]);
+        handle_key(&mut app, KeyCode::Char('7'));
+        assert!(app.regatta_history_visible());
+    }
+
+    #[test]
+    fn up_and_down_clamp_the_history_selection_at_both_ends() {
+        let mut app = app_focused_on_history(true);
+        handle_key(&mut app, KeyCode::Up);
+        assert_eq!(app.selected(), 0);
+        handle_key(&mut app, KeyCode::Down);
+        handle_key(&mut app, KeyCode::Down);
+        assert_eq!(app.selected(), 1);
+    }
+
+    #[test]
+    fn enter_on_a_history_row_opens_that_rows_run() {
+        let mut app = app_focused_on_history(true);
+        handle_key(&mut app, KeyCode::Down);
+        handle_key(&mut app, KeyCode::Enter);
+        let (kind, id, _) = app.detail().expect("detail should be open");
+        assert_eq!(*kind, crate::app::DetailKind::Run);
+        assert_eq!(id, "h1");
+    }
+
+    #[test]
+    fn enter_on_empty_history_changes_nothing() {
+        let mut app = app_focused_on_history(false);
+        handle_key(&mut app, KeyCode::Enter);
+        assert!(app.detail().is_none());
+        assert_eq!(app.selected(), 0);
+        assert_eq!(app.focus(), Focus::History);
     }
 
     #[test]
