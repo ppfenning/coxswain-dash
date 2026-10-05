@@ -557,10 +557,10 @@ fn chair_lines(chair: &Chair, theme: &Theme) -> Vec<Line<'static>> {
     // The feed carries no phases, drafts or housekeeping age yet, so those draw `-`.
     let counts_line = Line::from(chair_counts_text(
         chair.today.lands,
-        None,
+        chair.phases_today,
         chair.today.needs_chair_open,
-        None,
-        None,
+        chair.drafts,
+        chair.housekeeping_age_s.map(|s| s / 3600),
     ));
     vec![holder_line, counts_line]
 }

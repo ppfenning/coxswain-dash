@@ -93,6 +93,15 @@ pub struct Chair {
     pub current_action: Option<CurrentAction>,
     #[serde(default)]
     pub today: ChairToday,
+    /// Phases landed today; absent on feeds before the chair fields.
+    #[serde(default)]
+    pub phases_today: Option<u32>,
+    /// Initiatives waiting for approval as drafts.
+    #[serde(default)]
+    pub drafts: Option<u32>,
+    /// Seconds since the chair's last housekeeping run.
+    #[serde(default)]
+    pub housekeeping_age_s: Option<u64>,
 }
 
 /// What the chair is doing now. `since` is RFC 3339 UTC.
@@ -558,5 +567,19 @@ mod tests {
         assert!(
             matches!(&messages[..], [FeedMessage::Error(text)] if text == "feed exited with status 3")
         );
+    }
+
+    #[test]
+    fn chair_parses_phases_drafts_and_housekeeping_when_present() {
+        let json = r#"{"holder":"h","host":"m","epoch":1,"liveness":"live","beat_age_s":5,"phases_today":3,"drafts":2,"housekeeping_age_s":7200}"#;
+        let chair: Chair = serde_json::from_str(json).expect("chair parses");
+        assert_eq!(chair.phases_today, Some(3));
+        assert_eq!(chair.drafts, Some(2));
+        assert_eq!(chair.housekeeping_age_s, Some(7200));
+        let bare: Chair = serde_json::from_str(
+            r#"{"holder":"h","host":"m","epoch":1,"liveness":"live","beat_age_s":5}"#,
+        )
+        .expect("older feed parses");
+        assert_eq!(bare.phases_today, None);
     }
 }
