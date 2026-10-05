@@ -1,0 +1,45 @@
+---
+source: src/ui/mod.rs
+assertion_line: 708
+expression: text
+---
+> budgets              budgets
+                       > max_usd  20  f.toml  git-tracked  max_usd must be below 30
+
+                       staged
+                       > $ cox settings set budgets max_usd 40 --dry-run
+                           max_usd must be below 30
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Up/Down field   Enter edit   Tab next pane   r reload   Esc close

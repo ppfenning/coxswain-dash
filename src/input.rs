@@ -49,7 +49,7 @@ pub fn handle_event_with(app: &mut App, key: KeyEvent, run: &mut dyn FnMut(&[Str
         return;
     }
     // An open form spends every key, so a showing card does not see them.
-    if app.card_visible() && app.form().is_none() {
+    if app.card_visible() && app.form().is_none() && app.settings().is_none() {
         match app.decision_card_mut().on_key(key.code) {
             KeyOutcome::Selected(_) => return,
             KeyOutcome::Answer(argv) => {
@@ -78,6 +78,11 @@ pub fn handle_key(app: &mut App, key: KeyCode) {
         app.modal_key(KeyEvent::new(key, KeyModifiers::NONE));
         return;
     }
+    // An open settings screen spends every key, so its Tab moves a pane and not the page.
+    if app.settings().is_some() {
+        app.settings_key(KeyEvent::new(key, KeyModifiers::NONE));
+        return;
+    }
     // An open form spends every key, so a typed `k` or `t` never reaches a handler behind it.
     if app.form().is_some() {
         app.form_key(KeyEvent::new(key, KeyModifiers::NONE));
@@ -99,6 +104,8 @@ pub fn handle_key(app: &mut App, key: KeyCode) {
         KeyCode::Tab => app.next_page(),
         KeyCode::BackTab => app.prev_page(),
         KeyCode::Char('t') => app.toggle_theme(),
+        // `s` was unbound in the landed keymap, so it opens the settings screen.
+        KeyCode::Char('s') => app.open_settings(),
         KeyCode::Char('p') => app.cycle_regatta_layout_preset(),
         KeyCode::Char('7') => app.toggle_history_frame(),
         KeyCode::Char('8') => app.toggle_run_cost_frame(),
@@ -477,6 +484,90 @@ mod tests {
 
     fn stop_argv() -> Vec<String> {
         ["cox", "runs", "stop", "r0"].map(String::from).to_vec()
+    }
+
+    const SETTINGS_ROWS: &str = r#"{"sections":[{"id":"budgets","rows":[{"section":"budgets","scope":"budgets","key":"max_usd","value":"20","file":"f.toml","tracked":true,"pat_only":false}]}]}"#;
+
+    fn words(parts: &[&str]) -> Vec<String> {
+        parts.iter().map(|p| p.to_string()).collect()
+    }
+
+    /// An app with the settings screen open, its rows loaded and no command pending.
+    fn app_with_settings() -> App {
+        let mut app = App::default();
+        handle_key(&mut app, KeyCode::Char('s'));
+        app.take_pending();
+        app.apply_exec_result(
+            crate::exec::ExecResult {
+                argv: words(&["cox", "settings", "get", "--json"]),
+                code: Some(0),
+                output: SETTINGS_ROWS.to_string(),
+            },
+            crate::app::Origin::SettingsLoad,
+        );
+        app
+    }
+
+    #[test]
+    fn s_opens_the_settings_screen_and_leaves_the_get_pending() {
+        let mut app = App::default();
+        handle_key(&mut app, KeyCode::Char('s'));
+        assert!(app.settings().is_some());
+        let pending = app.take_pending().expect("a pending command");
+        assert_eq!(pending.argv, words(&["cox", "settings", "get", "--json"]));
+    }
+
+    #[test]
+    fn tab_with_the_screen_open_moves_its_pane_and_not_the_page() {
+        let mut app = app_with_settings();
+        let page = app.page();
+        let pane = app.settings().map(|s| s.pane());
+        handle_key(&mut app, KeyCode::Tab);
+        assert_eq!(app.page(), page);
+        assert_ne!(app.settings().map(|s| s.pane()), pane);
+    }
+
+    #[test]
+    fn y_with_a_confirm_over_the_screen_goes_to_the_modal_and_queues_the_apply() {
+        let mut app = app_with_settings();
+        for code in [
+            KeyCode::Tab,
+            KeyCode::Enter,
+            KeyCode::Backspace,
+            KeyCode::Backspace,
+            KeyCode::Char('4'),
+            KeyCode::Char('0'),
+            KeyCode::Enter,
+            KeyCode::Tab,
+            KeyCode::Char('a'),
+        ] {
+            handle_key(&mut app, code);
+        }
+        app.take_pending();
+        assert!(matches!(app.modal(), Some(crate::app::Modal::Confirm(_))));
+        handle_key(&mut app, KeyCode::Char('y'));
+        assert!(app.modal().is_none());
+        let pending = app.take_pending().expect("a pending command");
+        assert_eq!(
+            pending.argv,
+            words(&["cox", "settings", "set", "budgets", "max_usd", "40"])
+        );
+    }
+
+    #[test]
+    fn esc_closes_the_settings_screen() {
+        let mut app = app_with_settings();
+        handle_key(&mut app, KeyCode::Esc);
+        assert!(app.settings().is_none());
+    }
+
+    #[test]
+    fn t_with_the_screen_closed_still_toggles_the_theme() {
+        let mut app = App::default();
+        let theme = app.theme();
+        handle_key(&mut app, KeyCode::Char('t'));
+        assert_ne!(app.theme(), theme);
+        assert!(app.settings().is_none());
     }
 
     #[test]
