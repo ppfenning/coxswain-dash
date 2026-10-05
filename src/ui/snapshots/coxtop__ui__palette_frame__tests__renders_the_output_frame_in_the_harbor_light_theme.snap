@@ -1,0 +1,15 @@
+---
+source: src/ui/palette_frame.rs
+assertion_line: 209
+expression: "draw(ThemeId::HarborLight, &state).backend().to_string()"
+---
+" ┌cox─────────────────────────────────┐ "
+" │alpha                               │ "
+" │bravo                               │ "
+" │charlie                             │ "
+" │delta                               │ "
+" │echo                                │ "
+" │foxtrot                             │ "
+" │Up Down scroll    Esc close         │ "
+" └────────────────────────────────────┘ "
+"                                        "

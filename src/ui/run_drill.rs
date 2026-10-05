@@ -13,6 +13,7 @@ use ratatui::{
     widgets::{Block, BorderType, Borders, Paragraph},
 };
 
+use crate::actions::Target;
 use crate::detail::{RunDetail, StepDetail};
 use crate::theme::Theme;
 
@@ -23,6 +24,7 @@ pub fn render(f: &mut Frame, detail: &RunDetail, theme: &Theme, offset: chrono::
     let area = f.area();
     let block = Block::default()
         .title(format!("run {}", detail.run))
+        .title_bottom(super::footer_line(&Target::Run(detail.run.clone()), theme))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .style(base_style(theme));

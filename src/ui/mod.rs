@@ -23,9 +23,11 @@ use ratatui::{
     Frame,
     layout::Rect,
     style::Style,
+    text::Line,
     widgets::{Block, BorderType, Borders, Clear, Paragraph},
 };
 
+use crate::actions::{Target, bindings};
 use crate::app::{App, AppPage, DetailKind};
 use crate::detail::DetailSnapshot;
 use crate::theme::Theme;
@@ -177,6 +179,23 @@ fn render_loading(f: &mut Frame, kind: DetailKind, id: &str, theme: &Theme) {
     f.render_widget(paragraph, area);
 }
 
+/// The action keys of a target as `p pause  k kill`, one `key label` pair per binding.
+fn footer_text(target: &Target) -> String {
+    bindings(target)
+        .iter()
+        .map(|b| format!("{} {}", b.key, b.label))
+        .collect::<Vec<_>>()
+        .join("  ")
+}
+
+/// A drill board's footer: its action keys, drawn dim on the bottom border so no row moves.
+fn footer_line(target: &Target, theme: &Theme) -> Line<'static> {
+    Line::styled(
+        footer_text(target),
+        Style::default().fg(theme.dim).bg(theme.bg),
+    )
+}
+
 /// Formats an RFC 3339 timestamp as `%H:%M` in `offset`. A string that does not parse as
 /// RFC 3339 comes back unchanged. Pure: the offset is passed in, never read from the clock.
 pub fn local_time(utc: &str, offset: FixedOffset) -> String {
@@ -245,6 +264,22 @@ mod tests {
             .draw(|f| render(f, &app, &theme))
             .expect("draw should not fail");
         insta::assert_snapshot!(terminal.backend().to_string());
+    }
+
+    #[test]
+    fn footer_text_lists_each_entitys_bindings() {
+        assert_eq!(
+            footer_text(&Target::Run("r".into())),
+            "p pause  k kill  m move"
+        );
+        assert_eq!(
+            footer_text(&Target::Machine("m".into())),
+            "+ lanes up  - lanes down  d drain  a activate"
+        );
+        assert_eq!(
+            footer_text(&Target::Initiative("i".into())),
+            "] priority up  [ priority down"
+        );
     }
 
     #[test]
