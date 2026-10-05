@@ -445,7 +445,7 @@ mod tests {
     fn left_cycles_focus_to_the_previous_frame() {
         let mut app = App::new(AppPage::Regatta, ThemeId::Regatta);
         handle_key(&mut app, KeyCode::Left);
-        assert_eq!(app.focus(), Focus::History);
+        assert_eq!(app.focus(), Focus::Inbox);
     }
 
     /// A snapshot with two ended runs (`h0`, `h1`) in its history, or none when `rows` is false.
@@ -464,6 +464,7 @@ mod tests {
     fn app_focused_on_history(rows: bool) -> App {
         let mut app = App::new(AppPage::Regatta, ThemeId::Regatta);
         app.apply_snapshot(snapshot_with_history(rows));
+        handle_key(&mut app, KeyCode::Left);
         handle_key(&mut app, KeyCode::Left);
         assert_eq!(app.focus(), Focus::History);
         app
