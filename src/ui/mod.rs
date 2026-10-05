@@ -737,7 +737,7 @@ mod tests {
         assert_drawn_in(
             &buffer,
             ERROR_LINE,
-            slipstream::resolved_palette().failed_chip,
+            slipstream::resolved_palette(crate::app::ThemeId::Regatta).failed_chip,
         );
         let (x, _) = find(&buffer, ERROR_LINE).expect("error line is on screen");
         assert!(x >= 120 - slipstream::RAIL_WIDTH);

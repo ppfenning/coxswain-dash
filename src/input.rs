@@ -114,8 +114,9 @@ pub fn handle_key(app: &mut App, key: KeyCode) {
         }
         KeyCode::Right => app.cycle_focus_next(),
         KeyCode::Left => app.cycle_focus_prev(),
-        KeyCode::Down | KeyCode::Char('j') => app.select_next(),
-        KeyCode::Up | KeyCode::Char('k') => app.select_prev(),
+        // Arrows only: `k` is the kill action, so j/k no longer move the selection.
+        KeyCode::Down => app.select_next(),
+        KeyCode::Up => app.select_prev(),
         KeyCode::Enter => app.open_detail(),
         KeyCode::Esc => app.close_detail(),
         KeyCode::Char(c) if c == KEY_ADD_MACHINE && app.focus() == Focus::Machines => {
@@ -450,13 +451,13 @@ mod tests {
     }
 
     #[test]
-    fn down_and_char_j_both_select_the_next_row() {
+    fn down_selects_the_next_row_and_j_does_not() {
         let mut app = App::default();
         app.apply_snapshot(snapshot_with_two_runs());
         handle_key(&mut app, KeyCode::Down);
         assert_eq!(app.selected(), 1);
         handle_key(&mut app, KeyCode::Char('j'));
-        assert_eq!(app.selected(), 0);
+        assert_eq!(app.selected(), 1);
     }
 
     #[test]
