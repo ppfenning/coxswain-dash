@@ -1,0 +1,29 @@
+---
+source: src/form_initiative.rs
+assertion_line: 352
+expression: draw(&form)
+---
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"        ┌Remove initiative p2-x────────────────────────────────────────┐        "
+"        │ > reason                                                     │        "
+"        │                                                              │        "
+"        │ Tab next  Enter confirm  Esc cancel                          │        "
+"        └──────────────────────────────────────────────────────────────┘        "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
