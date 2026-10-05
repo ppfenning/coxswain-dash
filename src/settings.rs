@@ -22,9 +22,11 @@ pub struct SettingsRow {
     pub section: String,
     pub scope: String,
     pub key: String,
+    /// The verb prints the raw value (a number, a boolean or a string); it is kept as display text.
+    #[serde(deserialize_with = "display_value")]
     pub value: String,
-    // The verb names the source file `file`; `source` is accepted as a spelling of the same field.
-    #[serde(rename = "file", alias = "source")]
+    // The verb names the source file `source_file`; `file` and `source` are accepted as spellings of the same field.
+    #[serde(rename = "source_file", alias = "file", alias = "source")]
     pub source: String,
     pub tracked: bool,
     pub pat_only: bool,
@@ -37,8 +39,20 @@ struct WireSnapshot {
 
 #[derive(Deserialize)]
 struct WireSection {
+    // `cox settings get --json` names a section `name`; `id` is accepted as the same field.
+    #[serde(alias = "name")]
     id: String,
     rows: Vec<SettingsRow>,
+}
+
+/// A JSON value as the text the screen shows: a string as itself, null as empty, anything else
+/// in its JSON spelling (`1`, `true`, `0.5`).
+fn display_value<'de, D: serde::Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+    Ok(match serde_json::Value::deserialize(d)? {
+        serde_json::Value::String(text) => text,
+        serde_json::Value::Null => String::new(),
+        other => other.to_string(),
+    })
 }
 
 /// Screen name for a section id. An unknown id is shown as itself.
@@ -152,5 +166,22 @@ mod tests {
     #[test]
     fn invalid_json_is_an_err() {
         assert!(parse("{not json").is_err());
+    }
+
+    #[test]
+    fn parses_the_verbs_own_output_with_raw_values_and_named_sections() {
+        let json = r#"{"sections":[{"name":"lanes and machines","rows":[
+            {"section":"lanes and machines","scope":"cartridge","key":"policy.dispatch.max_in_flight","value":1,"source_file":"cartridge.yaml","tracked":true,"pat_only":false},
+            {"section":"lanes and machines","scope":"cartridge","key":"policy.flag","value":true,"source_file":"cartridge.yaml","tracked":true,"pat_only":false},
+            {"section":"lanes and machines","scope":"profile","key":"workspace_dir","value":"~/repos/workspace","source_file":"profile.yaml","tracked":false,"pat_only":false}]}]}"#;
+        let snap = parse(json).expect("the verb's output parses");
+        assert_eq!(snap.sections[0].id, "lanes and machines");
+        let values: Vec<&str> = snap.sections[0]
+            .rows
+            .iter()
+            .map(|r| r.value.as_str())
+            .collect();
+        assert_eq!(values, ["1", "true", "~/repos/workspace"]);
+        assert_eq!(snap.sections[0].rows[0].source, "cartridge.yaml");
     }
 }
