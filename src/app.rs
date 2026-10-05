@@ -299,6 +299,10 @@ impl App {
         &mut self.chair_panel
     }
 
+    pub fn decision_card(&self) -> &DecisionCard {
+        &self.decision_card
+    }
+
     pub fn decision_card_mut(&mut self) -> &mut DecisionCard {
         &mut self.decision_card
     }

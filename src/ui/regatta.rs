@@ -44,8 +44,7 @@ const FRAME_NAMES: [&str; 6] = [
     "queue",
 ];
 
-pub fn render(f: &mut Frame, app: &App, theme: &Theme) {
-    let area = f.area();
+pub fn render(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     let Some(snapshot) = app.snapshot() else {
         render_waiting(f, area, theme);
         return;
@@ -2142,7 +2141,7 @@ mod tests {
         let theme = crate::theme::resolve_for(theme_id, Some("truecolor"));
         let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
         terminal
-            .draw(|f| render(f, app, &theme))
+            .draw(|f| render(f, f.area(), app, &theme))
             .expect("draw should not fail");
         terminal
     }
@@ -2178,7 +2177,7 @@ mod tests {
         let backend = TestBackend::new(120, 40);
         let mut terminal = Terminal::new(backend).expect("terminal");
         terminal
-            .draw(|f| render(f, &app, &theme))
+            .draw(|f| render(f, f.area(), &app, &theme))
             .expect("draw should not fail");
         let rect = frame_rects(area, &app)[1].expect("frame 2 is visible");
         terminal.backend().buffer()[(rect.x + 1, rect.y)].fg
@@ -2254,7 +2253,7 @@ mod tests {
         let backend = TestBackend::new(120, 40);
         let mut terminal = Terminal::new(backend).expect("terminal");
         terminal
-            .draw(|f| render(f, &app, &theme))
+            .draw(|f| render(f, f.area(), &app, &theme))
             .expect("draw should not fail");
         let runs_rect = frame_rects(area, &app)[4].expect("runs frame is visible");
         let buffer = terminal.backend().buffer();
@@ -2339,7 +2338,7 @@ mod tests {
         let area = Rect::new(0, 0, 80, 24);
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("terminal");
         terminal
-            .draw(|f| render(f, &app, &theme))
+            .draw(|f| render(f, f.area(), &app, &theme))
             .expect("draw should not fail");
         let (_, inbox) = layout_rects(area, &app);
         assert!(inbox.height >= 5, "inbox {inbox:?}");
@@ -2366,7 +2365,7 @@ mod tests {
         let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
         let mut terminal = Terminal::new(TestBackend::new(120, 40)).expect("terminal");
         terminal
-            .draw(|f| render(f, &app, &theme))
+            .draw(|f| render(f, f.area(), &app, &theme))
             .expect("draw should not fail");
         let buffer = terminal.backend().buffer();
         let chair = frame_rects(Rect::new(0, 0, 120, 40), &app)[0].expect("chair rect");

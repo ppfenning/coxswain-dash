@@ -282,17 +282,17 @@ fn render_label(f: &mut Frame, rect: Rect, label: &str, p: &SlipstreamPalette) {
     );
 }
 
-pub fn render(f: &mut Frame, app: &App) {
+pub fn render(f: &mut Frame, area: Rect, app: &App) {
     render_with(
         f,
+        area,
         app,
         resolved_palette(app.theme()),
         env!("CARGO_PKG_VERSION"),
     );
 }
 
-fn render_with(f: &mut Frame, app: &App, p: SlipstreamPalette, version: &str) {
-    let area = f.area();
+fn render_with(f: &mut Frame, area: Rect, app: &App, p: SlipstreamPalette, version: &str) {
     f.render_widget(Block::default().style(base_style(&p)), area);
     let Some(snapshot) = app.snapshot() else {
         render_waiting(f, area, &p);
@@ -620,7 +620,15 @@ mod tests {
     fn draw(app: &App, width: u16, height: u16) -> Terminal<TestBackend> {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
         terminal
-            .draw(|f| render_with(f, app, slipstream_palette_for(app.theme()), "1.2.3"))
+            .draw(|f| {
+                render_with(
+                    f,
+                    f.area(),
+                    app,
+                    slipstream_palette_for(app.theme()),
+                    "1.2.3",
+                )
+            })
             .expect("draw should not fail");
         terminal
     }
