@@ -14,7 +14,9 @@ use ratatui::{
 };
 
 use crate::app::{App, Focus};
-use crate::feed::{Chair, FeedSnapshot, InboxEntry, Machine, QueueEntry, Run};
+use crate::feed::{
+    Chair, FeedSnapshot, HistoryRow, HistoryToday, InboxEntry, Machine, Outcome, QueueEntry, Run,
+};
 use crate::theme::Theme;
 
 use super::chair_card::{Freshness, TICK_INTERVAL_S, beat_freshness, short_age};
@@ -49,6 +51,16 @@ pub fn render(f: &mut Frame, app: &App, theme: &Theme) {
         }
     }
     render_inbox(f, inbox_area, snapshot, theme);
+    if let Some(rect) = history_rect(area, app) {
+        render_history(
+            f,
+            rect,
+            snapshot,
+            frame_selection(app, Focus::History),
+            app.utc_offset(),
+            theme,
+        );
+    }
     render_key_bar(f, split_key_bar(area).1, theme);
 }
 
@@ -197,8 +209,54 @@ fn split_key_bar(area: Rect) -> (Rect, Rect) {
     )
 }
 
+/// The fewest rows the history frame is drawn in: two borders, the header and one row.
+const HISTORY_MIN_ROWS: u16 = 4;
+
+/// Rows the history frame asks for: two borders, the header, and one row per ended run (one for
+/// the empty-state line). It never takes more than a third of `body_h`, and is absent (0) when
+/// that third is under `HISTORY_MIN_ROWS`.
+fn history_height(len: usize, body_h: u16) -> u16 {
+    let want = u16::try_from(len.max(1).saturating_add(3)).unwrap_or(u16::MAX);
+    let cap = body_h / 3;
+    if cap < HISTORY_MIN_ROWS {
+        0
+    } else {
+        want.min(cap)
+    }
+}
+
+/// `body` split into the area the numbered frames and inbox share and the history band under
+/// it, full width, in every layout preset. The band is `None` when the frame is hidden or has no
+/// room.
+fn split_history(body: Rect, app: &App) -> (Rect, Option<Rect>) {
+    let len = app.snapshot().map_or(0, |s| s.history.len());
+    let height = if app.regatta_history_visible() {
+        history_height(len, body.height)
+    } else {
+        0
+    };
+    if height == 0 {
+        return (body, None);
+    }
+    let rest = Rect {
+        height: body.height - height,
+        ..body
+    };
+    let band = Rect {
+        y: body.y + rest.height,
+        height,
+        ..body
+    };
+    (rest, Some(band))
+}
+
+/// The history frame's rect for a terminal of `full`, as `render` draws it.
+fn history_rect(full: Rect, app: &App) -> Option<Rect> {
+    split_history(split_key_bar(full).0, app).1
+}
+
 fn layout_rects(full: Rect, app: &App) -> ([Option<Rect>; 6], Rect) {
-    let (area, _) = split_key_bar(full);
+    let (area, _) = split_history(split_key_bar(full).0, app);
     if app.regatta_layout_preset() == 0 {
         let runs_len = app.snapshot().map_or(0, |s| s.runs.len());
         return canvas_layout(area, app.regatta_frames_visible(), runs_len);
@@ -854,6 +912,145 @@ fn paint_selected_row(f: &mut Frame, inner: Rect, row: Option<usize>, theme: &Th
         f.buffer_mut()
             .set_style(area, Style::default().bg(theme.selected_row));
     }
+}
+
+/// The outcome word's colour. Approved is cyan and stopped yellow, borrowed from the roles that
+/// already carry those hues. A crash reads as a failure, an outcome this build does not know as
+/// waiting.
+fn outcome_color(theme: &Theme, outcome: Outcome) -> Color {
+    match outcome {
+        Outcome::Landed => theme.landed,
+        Outcome::Approved => theme.status_running,
+        Outcome::Quarantined => theme.quarantined,
+        Outcome::Stopped => theme.meter_mid,
+        Outcome::Crashed => theme.status_failed,
+        Outcome::Unknown => theme.status_waiting,
+    }
+}
+
+fn outcome_word(outcome: Outcome) -> &'static str {
+    match outcome {
+        Outcome::Landed => "landed",
+        Outcome::Approved => "approved",
+        Outcome::Quarantined => "quarantined",
+        Outcome::Stopped => "stopped",
+        Outcome::Crashed => "crashed",
+        Outcome::Unknown => "unknown",
+    }
+}
+
+/// Width of the history outcome column: the word, then the cause or PR number.
+const HISTORY_OUTCOME_WIDTH: usize = 28;
+
+/// What follows the outcome word: a quarantined row's cause, a landed row's first PR number.
+fn outcome_detail(row: &HistoryRow) -> String {
+    match (row.outcome, row.cause.as_deref(), row.landed.first()) {
+        (Outcome::Quarantined, Some(cause), _) => format!(" {cause}"),
+        (Outcome::Landed, _, Some(task)) => format!(" #{}", task.pr),
+        _ => String::new(),
+    }
+}
+
+/// The history frame's top row: today's counts.
+fn history_header(today: &HistoryToday, theme: &Theme) -> Line<'static> {
+    Line::styled(
+        format!(
+            "today  {} lands  {} quarantines  ${:.2}  {} runs",
+            today.lands, today.quarantines, today.cost_usd, today.runs
+        ),
+        Style::default().fg(theme.dim),
+    )
+}
+
+/// One ended run: end time in `offset`, machine in `accent`, initiative, outcome word in its
+/// colour with its cause or PR, then cost. A selected row is prefixed `▶` and sits on
+/// `theme.selected_row`.
+fn history_row(
+    row: &HistoryRow,
+    offset: FixedOffset,
+    accent: Color,
+    selected: bool,
+    theme: &Theme,
+) -> Line<'static> {
+    let prefix = if selected { "\u{25b6} " } else { "  " };
+    let word = outcome_word(row.outcome);
+    let line = Line::from(vec![
+        Span::raw(format!("{prefix}{} ", local_time(&row.ended_at, offset))),
+        Span::styled(
+            fit_cell(&row.machine, RUN_COLUMNS[1]),
+            Style::default().fg(accent),
+        ),
+        Span::raw(format!(" {} ", fit_cell(&row.initiative, RUN_COLUMNS[2]))),
+        Span::styled(word, Style::default().fg(outcome_color(theme, row.outcome))),
+        Span::styled(
+            fit_cell(&outcome_detail(row), HISTORY_OUTCOME_WIDTH - word.len()),
+            Style::default().fg(theme.dim),
+        ),
+        Span::raw(format!(" {:>COST_WIDTH$}", format!("${:.2}", row.cost_usd))),
+    ]);
+    if selected {
+        line.style(Style::default().fg(theme.accent).bg(theme.selected_row))
+    } else {
+        line
+    }
+}
+
+/// The accent of the machine named `name`, by its place in the machines frame; `theme.dim` for a
+/// machine the feed no longer lists.
+fn machine_accent(snapshot: &FeedSnapshot, name: &str, theme: &Theme) -> Color {
+    snapshot
+        .machines
+        .iter()
+        .position(|m| m.name == name)
+        .map_or(theme.dim, |i| {
+            theme.machine_accents[i % theme.machine_accents.len()]
+        })
+}
+
+/// The first history row drawn so that `selected` stays on screen in `rows` rows.
+fn history_window_start(selected: Option<usize>, rows: usize) -> usize {
+    selected.map_or(0, |s| (s + 1).saturating_sub(rows))
+}
+
+/// The history frame: today's counts, then one row per ended run in feed order, newest first.
+fn render_history(
+    f: &mut Frame,
+    rect: Rect,
+    snapshot: &FeedSnapshot,
+    selected: Option<usize>,
+    offset: FixedOffset,
+    theme: &Theme,
+) {
+    let block = framed("history", theme, selected.is_some());
+    let inner = block.inner(rect);
+    let shown = selected.filter(|i| *i < snapshot.history.len());
+    let rows = usize::from(inner.height).saturating_sub(1);
+    let start = history_window_start(shown, rows);
+    let body: Vec<Line<'static>> = if snapshot.history.is_empty() {
+        vec![Line::styled(
+            "no runs ended yet",
+            Style::default().fg(theme.dim),
+        )]
+    } else {
+        snapshot
+            .history
+            .iter()
+            .enumerate()
+            .skip(start)
+            .take(rows)
+            .map(|(i, r)| {
+                let accent = machine_accent(snapshot, &r.machine, theme);
+                history_row(r, offset, accent, shown == Some(i), theme)
+            })
+            .collect()
+    };
+    let lines: Vec<Line<'static>> = std::iter::once(history_header(&snapshot.history_today, theme))
+        .chain(body)
+        .collect();
+    let paragraph = Paragraph::new(lines).block(block).style(base_style(theme));
+    f.render_widget(paragraph, rect);
+    // The header takes the first inner row.
+    paint_selected_row(f, inner, shown.map(|i| i - start + 1), theme);
 }
 
 /// Cells in a queue progress bar.
@@ -1551,7 +1748,7 @@ mod tests {
         let app = App::default();
         assert_eq!(app.regatta_layout_preset(), 0);
         let area = Rect::new(0, 0, 120, 40);
-        let body = Rect::new(0, 0, 120, 39);
+        let (body, _) = split_history(Rect::new(0, 0, 120, 39), &app);
         assert_eq!(layout_rects(area, &app), canvas_layout(body, ALL, 0));
     }
 
@@ -1607,7 +1804,9 @@ mod tests {
             .expect("draw should not fail");
         let (_, inbox) = layout_rects(area, &app);
         assert!(inbox.height >= 5, "inbox {inbox:?}");
-        assert_eq!(inbox.y + inbox.height, 23);
+        let history = history_rect(area, &app).expect("history band");
+        assert_eq!(inbox.y + inbox.height, history.y);
+        assert_eq!(history.y + history.height, 23);
     }
 
     #[test]
@@ -1909,5 +2108,267 @@ mod tests {
         let mut focus = app_with_fixture();
         crate::input::handle_key(&mut focus, KeyCode::Right);
         assert_ne!(focus.focus(), before.focus());
+    }
+
+    const THEMES: [ThemeId; 2] = [ThemeId::Regatta, ThemeId::HarborLight];
+
+    /// A feed with two machines, no runs, and the `HISTORY` and `TODAY` placeholders filled in.
+    fn history_app(history: &str, today: &str) -> App {
+        let json = r#"{"schema":1,"at":"2026-10-04T20:00:00Z","chair":{"holder":"h","host":"h","epoch":1,"liveness":"live","beat_age_s":0},"spend":{"five_hour_fraction":0.0,"five_hour_source":"meter","weekly_fraction":0.0,"weekly_source":"meter","hard_stop_fraction":0.0,"five_hour_resets_at":"2026-10-04T22:00:00Z","weekly_resets_at":"2026-10-11T04:00:00Z"},"machines":[{"name":"omarchy","state":"active","lanes_in_use":0,"capacity":3,"login_ok":true,"login_checked_at":"2026-10-04T19:00:00Z","beat_age_s":0,"checkouts":{}},{"name":"spare","state":"active","lanes_in_use":0,"capacity":2,"login_ok":true,"login_checked_at":"2026-10-04T19:00:00Z","beat_age_s":0,"checkouts":{}}],"runs":[],"queue":[],"inbox":[],"watch":[],"history":[HISTORY],"history_today":TODAY}"#
+            .replace("HISTORY", history)
+            .replace("TODAY", today);
+        let snapshot = crate::feed::parse_snapshot(&json).expect("literal feed should parse");
+        let mut app = App::default();
+        app.apply_snapshot(snapshot);
+        app
+    }
+
+    const TODAY: &str = r#"{"lands":3,"quarantines":1,"cost_usd":4.2,"runs":5}"#;
+
+    /// One row of each outcome, newest first, ended 2026-10-04 between 08:00Z and 13:12Z.
+    const MIXED: &str = r#"
+{"run":"r6","machine":"omarchy","initiative":"dash-feed","ended_at":"2026-10-04T13:12:00Z","outcome":"landed","cost_usd":1.25,"landed":[{"task":"p1","pr":41}]},
+{"run":"r5","machine":"omarchy","initiative":"dash-feed","ended_at":"2026-10-04T12:40:00Z","outcome":"approved","cost_usd":0.5},
+{"run":"r4","machine":"spare","initiative":"history-frame","ended_at":"2026-10-04T11:05:00Z","outcome":"quarantined","cost_usd":2.1,"cause":"verify_failed"},
+{"run":"r3","machine":"spare","initiative":"history-frame","ended_at":"2026-10-04T10:30:00Z","outcome":"stopped","cost_usd":0.3},
+{"run":"r2","machine":"omarchy","initiative":"dash-feed","ended_at":"2026-10-04T09:15:00Z","outcome":"crashed","cost_usd":0.1},
+{"run":"r1","machine":"spare","initiative":"history-frame","ended_at":"2026-10-04T08:00:00Z","outcome":"mystery","cost_usd":0.0}"#;
+
+    fn rgb(r: u8, g: u8, b: u8) -> Color {
+        Color::Rgb(r, g, b)
+    }
+
+    fn line_text(line: &Line<'_>) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    fn draw_history_frame(app: &App, theme_id: ThemeId) -> Terminal<TestBackend> {
+        let theme = crate::theme::resolve_for(theme_id, Some("truecolor"));
+        let snapshot = app.snapshot().expect("snapshot");
+        let mut terminal = Terminal::new(TestBackend::new(80, 9)).expect("terminal");
+        terminal
+            .draw(|f| render_history(f, f.area(), snapshot, None, app.utc_offset(), &theme))
+            .expect("draw should not fail");
+        terminal
+    }
+
+    #[test]
+    fn history_frame_mixed_outcomes_in_the_regatta_theme() {
+        let terminal = draw_history_frame(&history_app(MIXED, TODAY), ThemeId::Regatta);
+        insta::assert_snapshot!(terminal.backend().to_string());
+    }
+
+    #[test]
+    fn history_frame_mixed_outcomes_in_the_harbor_light_theme() {
+        let terminal = draw_history_frame(&history_app(MIXED, TODAY), ThemeId::HarborLight);
+        insta::assert_snapshot!(terminal.backend().to_string());
+    }
+
+    #[test]
+    fn history_frame_empty_in_the_regatta_theme() {
+        let terminal = draw_history_frame(&history_app("", TODAY), ThemeId::Regatta);
+        insta::assert_snapshot!(terminal.backend().to_string());
+    }
+
+    #[test]
+    fn history_frame_empty_in_the_harbor_light_theme() {
+        let terminal = draw_history_frame(&history_app("", TODAY), ThemeId::HarborLight);
+        insta::assert_snapshot!(terminal.backend().to_string());
+    }
+
+    #[test]
+    fn outcome_words_take_their_status_colours_in_both_themes() {
+        let expected = [
+            (
+                ThemeId::Regatta,
+                [
+                    rgb(0x56, 0xd3, 0x64),
+                    rgb(0x56, 0xd4, 0xdd),
+                    rgb(0xff, 0x7b, 0x72),
+                    rgb(0xe3, 0xb3, 0x41),
+                    rgb(0xff, 0x7b, 0x72),
+                    rgb(0x8b, 0x94, 0x9e),
+                ],
+            ),
+            (
+                ThemeId::HarborLight,
+                [
+                    rgb(0x1a, 0x7f, 0x37),
+                    rgb(0x0a, 0x6c, 0x74),
+                    rgb(0xc2, 0x1d, 0x2a),
+                    rgb(0x8a, 0x5a, 0x00),
+                    rgb(0xc2, 0x1d, 0x2a),
+                    rgb(0x57, 0x60, 0x6a),
+                ],
+            ),
+        ];
+        let app = history_app(MIXED, TODAY);
+        let words = [
+            "landed",
+            "approved",
+            "quarantined",
+            "stopped",
+            "crashed",
+            "unknown",
+        ];
+        for (theme_id, colors) in expected {
+            let terminal = draw_page(&app, theme_id, 120, 40);
+            let rect = history_rect(Rect::new(0, 0, 120, 40), &app).expect("history rect");
+            let buffer = terminal.backend().buffer();
+            for (i, (word, color)) in words.iter().zip(colors).enumerate() {
+                let y = rect.y + 2 + i as u16;
+                let x = col_of(&terminal, y, word);
+                assert_eq!(buffer[(x, y)].fg, color, "{theme_id:?} {word}");
+                assert_eq!(buffer[(x + 2, y)].fg, color, "{theme_id:?} {word}");
+            }
+        }
+    }
+
+    #[test]
+    fn history_rows_read_time_machine_initiative_outcome_and_cost() {
+        let app = history_app(MIXED, TODAY);
+        let terminal = draw_page(&app, ThemeId::Regatta, 120, 40);
+        let rect = history_rect(Rect::new(0, 0, 120, 40), &app).expect("history rect");
+        let row = |i: u16| row_text(&terminal, rect.y + 2 + i);
+        assert!(row(0).contains("13:12 omarchy    dash-feed"), "{}", row(0));
+        assert!(row(0).contains("landed #41"), "{}", row(0));
+        assert!(row(0).contains("$1.25"), "{}", row(0));
+        assert!(!row(1).contains('#'), "{}", row(1));
+        assert!(row(2).contains("quarantined verify_failed"), "{}", row(2));
+        assert!(row(5).contains("08:00 spare"), "{}", row(5));
+    }
+
+    #[test]
+    fn history_machine_names_wear_the_machines_frame_accent() {
+        let app = history_app(MIXED, TODAY);
+        let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
+        let terminal = draw_page(&app, ThemeId::Regatta, 120, 40);
+        let rect = history_rect(Rect::new(0, 0, 120, 40), &app).expect("history rect");
+        let buffer = terminal.backend().buffer();
+        let omarchy = col_of(&terminal, rect.y + 2, "omarchy");
+        let spare = col_of(&terminal, rect.y + 4, "spare");
+        assert_eq!(buffer[(omarchy, rect.y + 2)].fg, theme.machine_accents[0]);
+        assert_eq!(buffer[(spare, rect.y + 4)].fg, theme.machine_accents[1]);
+        assert_ne!(theme.machine_accents[0], theme.machine_accents[1]);
+    }
+
+    #[test]
+    fn the_end_time_is_converted_with_the_offset_the_app_carries() {
+        let et = FixedOffset::west_opt(4 * 3600).unwrap();
+        let app = history_app(MIXED, TODAY).with_utc_offset(et);
+        let terminal = draw_page(&app, ThemeId::Regatta, 120, 40);
+        let rect = history_rect(Rect::new(0, 0, 120, 40), &app).expect("history rect");
+        assert!(row_text(&terminal, rect.y + 2).contains("09:12 omarchy"));
+    }
+
+    #[test]
+    fn history_header_prints_todays_counts() {
+        let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
+        let today = HistoryToday {
+            lands: 3,
+            quarantines: 1,
+            cost_usd: 4.2,
+            runs: 5,
+        };
+        assert_eq!(
+            line_text(&history_header(&today, &theme)),
+            "today  3 lands  1 quarantines  $4.20  5 runs"
+        );
+        let app = history_app(MIXED, TODAY);
+        let terminal = draw_page(&app, ThemeId::Regatta, 120, 40);
+        let rect = history_rect(Rect::new(0, 0, 120, 40), &app).expect("history rect");
+        assert!(
+            row_text(&terminal, rect.y + 1)
+                .contains("today  3 lands  1 quarantines  $4.20  5 runs")
+        );
+    }
+
+    #[test]
+    fn an_empty_history_says_no_runs_ended_yet_in_both_themes() {
+        let app = history_app("", TODAY);
+        for theme_id in THEMES {
+            let terminal = draw_page(&app, theme_id, 120, 40);
+            let rect = history_rect(Rect::new(0, 0, 120, 40), &app).expect("history rect");
+            assert!(row_text(&terminal, rect.y + 2).contains("no runs ended yet"));
+        }
+    }
+
+    #[test]
+    fn the_selected_history_row_is_marked_and_painted_in_both_themes() {
+        use crossterm::event::KeyCode;
+        let mut app = history_app(MIXED, TODAY);
+        for _ in 0..3 {
+            crate::input::handle_key(&mut app, KeyCode::Right);
+        }
+        app.select_next();
+        assert_eq!(app.focus(), Focus::History);
+        assert_eq!(app.selected(), 1);
+        for theme_id in THEMES {
+            let theme = crate::theme::resolve_for(theme_id, Some("truecolor"));
+            let terminal = draw_page(&app, theme_id, 120, 40);
+            let rect = history_rect(Rect::new(0, 0, 120, 40), &app).expect("history rect");
+            let buffer = terminal.backend().buffer();
+            assert!(row_text(&terminal, rect.y + 3).contains("\u{25b6} 12:40"));
+            assert_eq!(buffer[(rect.x + 3, rect.y + 3)].bg, theme.selected_row);
+            assert_eq!(buffer[(rect.x + 3, rect.y + 2)].bg, theme.bg);
+            assert_eq!(buffer[(rect.x, rect.y)].fg, theme.border_focus);
+        }
+    }
+
+    #[test]
+    fn history_window_keeps_the_selected_row_on_screen() {
+        assert_eq!(history_window_start(None, 3), 0);
+        assert_eq!(history_window_start(Some(2), 3), 0);
+        assert_eq!(history_window_start(Some(3), 3), 1);
+        assert_eq!(history_window_start(Some(9), 0), 10);
+    }
+
+    #[test]
+    fn history_height_is_rows_plus_three_capped_at_a_third_of_the_body() {
+        assert_eq!(history_height(0, 39), 4);
+        assert_eq!(history_height(6, 39), 9);
+        assert_eq!(history_height(50, 39), 13);
+        assert_eq!(history_height(6, 11), 0);
+    }
+
+    #[test]
+    fn the_history_rect_sits_above_the_key_bar_in_every_preset_and_hides_with_its_flag() {
+        let area = Rect::new(0, 0, 120, 40);
+        let mut app = history_app(MIXED, TODAY);
+        for preset in 0..4 {
+            assert_eq!(app.regatta_layout_preset(), preset);
+            let history = history_rect(area, &app).expect("history is visible");
+            assert_eq!(history, Rect::new(0, 30, 120, 9));
+            let (rects, inbox) = layout_rects(area, &app);
+            for rect in rects.iter().flatten().chain([&inbox]) {
+                assert!(
+                    rect.y + rect.height <= history.y,
+                    "{rect:?} overlaps {history:?}"
+                );
+            }
+            app.cycle_regatta_layout_preset();
+        }
+        app.toggle_history_frame();
+        assert_eq!(history_rect(area, &app), None);
+    }
+
+    #[test]
+    fn outcome_color_maps_every_outcome_to_an_existing_role() {
+        let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
+        assert_eq!(outcome_color(&theme, Outcome::Landed), theme.landed);
+        assert_eq!(
+            outcome_color(&theme, Outcome::Approved),
+            theme.status_running
+        );
+        assert_eq!(
+            outcome_color(&theme, Outcome::Quarantined),
+            theme.quarantined
+        );
+        assert_eq!(outcome_color(&theme, Outcome::Stopped), theme.meter_mid);
+        assert_eq!(outcome_color(&theme, Outcome::Crashed), theme.status_failed);
+        assert_eq!(
+            outcome_color(&theme, Outcome::Unknown),
+            theme.status_waiting
+        );
     }
 }
