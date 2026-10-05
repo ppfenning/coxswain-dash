@@ -39,9 +39,56 @@ pub enum Outcome {
     Approved,
     Quarantined,
     Stopped,
+    /// Ended normally having built nothing (waiting on a land or a need), not a failure.
+    Idle,
     Crashed,
     #[serde(other)]
     Unknown,
+}
+
+/// How a run row ended. Wire shape is a bare kind string (`"landed"`) or an object
+/// `{"kind": "died", "cause": "..."}`; only quarantined and died carry a cause.
+#[derive(Debug, Clone, PartialEq)]
+pub enum RunEnd {
+    Running,
+    Landed,
+    Approved,
+    Quarantined { cause: Option<String> },
+    Idle,
+    Died { cause: Option<String> },
+    Stopped,
+}
+
+/// An unrecognised kind or a wrong JSON type is `None`, never an error.
+pub fn parse_end(value: &serde_json::Value) -> Option<RunEnd> {
+    let (kind, cause) = match value {
+        serde_json::Value::String(kind) => (kind.as_str(), None),
+        serde_json::Value::Object(map) => (
+            map.get("kind")?.as_str()?,
+            map.get("cause")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string),
+        ),
+        _ => return None,
+    };
+    match kind {
+        "running" => Some(RunEnd::Running),
+        "landed" => Some(RunEnd::Landed),
+        "approved" => Some(RunEnd::Approved),
+        "quarantined" => Some(RunEnd::Quarantined { cause }),
+        "idle" => Some(RunEnd::Idle),
+        "died" => Some(RunEnd::Died { cause }),
+        "stopped" => Some(RunEnd::Stopped),
+        _ => None,
+    }
+}
+
+fn deserialize_end<'de, D>(deserializer: D) -> Result<Option<RunEnd>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(value.as_ref().and_then(parse_end))
 }
 
 #[derive(Debug, Deserialize, PartialEq)]
@@ -173,6 +220,9 @@ pub struct Run {
     /// At most 60 points. Empty means the run has made no calls yet.
     #[serde(default)]
     pub cost_series: Vec<CostPoint>,
+    /// How the run ended; `None` when the feed omits it or sends a kind this build does not know.
+    #[serde(default, deserialize_with = "deserialize_end")]
+    pub end: Option<RunEnd>,
 }
 
 /// One `[at, cumulative_cost_usd, node]` point. `at` is RFC 3339 UTC, kept as sent.
@@ -628,5 +678,67 @@ mod tests {
         )
         .expect("older feed parses");
         assert_eq!(bare.phases_today, None);
+    }
+
+    #[test]
+    fn history_parses_idle_as_its_own_outcome() {
+        let row: HistoryRow = serde_json::from_str(
+            r#"{"run":"r","machine":"m","initiative":"i","ended_at":"2026-10-05T12:00:00Z","outcome":"idle","cost_usd":0.0}"#,
+        )
+        .expect("idle row parses");
+        assert_eq!(row.outcome, Outcome::Idle);
+    }
+
+    fn run_with(end: &str) -> Run {
+        let json = format!(
+            r#"{{"run":"r","machine":"m","phase":"p","node":"n","attempt":1,"turns":2,"cost":0.5,"verdict":"","status":"running"{end}}}"#
+        );
+        serde_json::from_str(&json).expect("run row parses")
+    }
+
+    #[test]
+    fn run_end_parses_each_kind_as_a_bare_string() {
+        let kinds = [
+            ("running", RunEnd::Running),
+            ("landed", RunEnd::Landed),
+            ("approved", RunEnd::Approved),
+            ("quarantined", RunEnd::Quarantined { cause: None }),
+            ("idle", RunEnd::Idle),
+            ("died", RunEnd::Died { cause: None }),
+            ("stopped", RunEnd::Stopped),
+        ];
+        for (kind, want) in kinds {
+            let row = run_with(&format!(r#","end":"{kind}""#));
+            assert_eq!(row.end, Some(want), "kind {kind}");
+        }
+    }
+
+    #[test]
+    fn run_end_carries_a_cause_on_quarantined_and_died() {
+        let row = run_with(r#","end":{"kind":"quarantined","cause":"tests red"}"#);
+        assert_eq!(
+            row.end,
+            Some(RunEnd::Quarantined {
+                cause: Some("tests red".to_string())
+            })
+        );
+        let row = run_with(r#","end":{"kind":"died","cause":"oom"}"#);
+        assert_eq!(
+            row.end,
+            Some(RunEnd::Died {
+                cause: Some("oom".to_string())
+            })
+        );
+        let row = run_with(r#","end":{"kind":"landed"}"#);
+        assert_eq!(row.end, Some(RunEnd::Landed));
+    }
+
+    #[test]
+    fn run_end_is_none_when_absent_null_or_unrecognised() {
+        assert_eq!(run_with("").end, None);
+        assert_eq!(run_with(r#","end":null"#).end, None);
+        assert_eq!(run_with(r#","end":"someday""#).end, None);
+        assert_eq!(run_with(r#","end":{"kind":"someday"}"#).end, None);
+        assert_eq!(run_with(r#","end":7"#).end, None);
     }
 }

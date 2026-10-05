@@ -24,13 +24,11 @@ mod palette;
 // Only `RealPty` is used outside tests; `FakePty` is the test seam.
 #[allow(dead_code)]
 mod pty;
-// The settings model is not wired into the `App` yet.
-#[allow(dead_code)]
 mod settings;
-// The settings screen state is not wired into the `App` yet.
+// `pane` and `refusal_for_selected` are read only by the settings frame, which is not drawn yet.
 #[allow(dead_code)]
 mod settings_screen;
-// Staged settings edits are not wired into the `App` yet.
+// `diff_for` is read only by the settings frame, which is not drawn yet.
 #[allow(dead_code)]
 mod settings_stage;
 mod theme;
@@ -348,6 +346,139 @@ mod tests {
         assert_eq!(
             app.status(),
             Some(&(exec::StatusLevel::Ok, "stopped dash-feed-1".to_owned()))
+        );
+    }
+
+    #[test]
+    fn settings_origins_pair_in_start_order() {
+        let dry = Origin::SettingsDryRun {
+            scope: "budgets".to_owned(),
+            key: "max_usd".to_owned(),
+        };
+        let apply = Origin::SettingsApply {
+            scope: "budgets".to_owned(),
+            key: "max_usd".to_owned(),
+        };
+        let mut queue = VecDeque::from([Origin::SettingsLoad, dry.clone(), apply.clone()]);
+        assert_eq!(pair_origin(&mut queue, &done()), Some(Origin::SettingsLoad));
+        assert_eq!(pair_origin(&mut queue, &done()), Some(dry));
+        assert_eq!(pair_origin(&mut queue, &done()), Some(apply));
+        assert_eq!(pair_origin(&mut queue, &done()), None);
+    }
+
+    const ROWS: &str = r#"{"sections":[{"id":"budgets","rows":[{"section":"budgets","scope":"budgets","key":"max_usd","value":"20","file":"f.toml","tracked":true,"pat_only":false}]}]}"#;
+
+    fn key(code: KeyCode) -> crossterm::event::KeyEvent {
+        crossterm::event::KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    /// Runs the app's pending call through a `FakeRunner` that answers `code` and `output`, pairs
+    /// the result with its origin and applies it. Returns the argvs the runner saw.
+    fn run_pending(app: &mut App, code: i32, output: &str) -> Vec<Vec<String>> {
+        let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let runner: Arc<dyn CmdRunner> = Arc::new(FakeRunner {
+            result: ExecResult {
+                argv: vec!["cox".to_owned()],
+                code: Some(code),
+                output: output.to_owned(),
+            },
+            calls: Arc::clone(&calls),
+        });
+        let (tx, rx) = mpsc::channel::<ExecResult>();
+        let mut origins = VecDeque::new();
+
+        let pending = app.take_pending().expect("a call is pending");
+        origins.push_back(pending.origin);
+        exec::start(runner, pending.argv, tx);
+        let result = rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the runner should deliver a result");
+        let origin = pair_origin(&mut origins, &result).expect("the origin is queued");
+        app.apply_exec_result(result, origin);
+
+        calls.lock().unwrap().clone()
+    }
+
+    fn strings(words: &[&str]) -> Vec<String> {
+        words.iter().map(|w| (*w).to_owned()).collect()
+    }
+
+    /// An app whose settings screen holds `ROWS` and has `budgets max_usd` staged at 40, with the
+    /// dry-run call still pending.
+    fn app_with_staged_edit() -> App {
+        let mut app = App::new(AppPage::Regatta, ThemeId::Regatta);
+        app.open_settings();
+        run_pending(&mut app, 0, ROWS);
+        for code in [
+            KeyCode::Tab,
+            KeyCode::Enter,
+            KeyCode::Backspace,
+            KeyCode::Backspace,
+            KeyCode::Char('4'),
+            KeyCode::Char('0'),
+            KeyCode::Enter,
+        ] {
+            app.settings_key(key(code));
+        }
+        app
+    }
+
+    #[test]
+    fn opening_settings_runs_the_get_call_and_a_json_result_loads_the_rows() {
+        let mut app = App::new(AppPage::Regatta, ThemeId::Regatta);
+        app.open_settings();
+        let calls = run_pending(&mut app, 0, ROWS);
+        assert_eq!(calls, vec![strings(&["cox", "settings", "get", "--json"])]);
+        assert_eq!(app.settings().map(|s| s.current_rows().len()), Some(1));
+    }
+
+    #[test]
+    fn a_refused_dry_run_leaves_the_edit_staged_with_a_refusal() {
+        let mut app = app_with_staged_edit();
+        let calls = run_pending(&mut app, 1, "max_usd must be below 30\n");
+        assert_eq!(
+            calls,
+            vec![strings(&[
+                "cox",
+                "settings",
+                "set",
+                "budgets",
+                "max_usd",
+                "40",
+                "--dry-run"
+            ])]
+        );
+        let staged = app.settings().map(|s| s.staged().clone());
+        assert_eq!(staged.as_ref().map(|s| s.edits().len()), Some(1));
+        assert_eq!(
+            staged
+                .as_ref()
+                .and_then(|s| s.refusal_for("budgets", "max_usd")),
+            Some("max_usd must be below 30")
+        );
+    }
+
+    #[test]
+    fn a_confirmed_apply_runs_the_set_call_removes_the_edit_and_queues_the_reload() {
+        let mut app = app_with_staged_edit();
+        app.take_pending();
+        app.settings_key(key(KeyCode::Tab));
+        app.settings_key(key(KeyCode::Char('a')));
+        app.modal_key(key(KeyCode::Char('y')));
+        let calls = run_pending(&mut app, 0, "set\n");
+        assert_eq!(
+            calls,
+            vec![strings(&[
+                "cox", "settings", "set", "budgets", "max_usd", "40"
+            ])]
+        );
+        assert_eq!(app.settings().map(|s| s.staged().edits().len()), Some(0));
+        assert_eq!(
+            app.take_pending().map(|p| (p.argv, p.origin)),
+            Some((
+                strings(&["cox", "settings", "get", "--json"]),
+                Origin::SettingsLoad
+            ))
         );
     }
 

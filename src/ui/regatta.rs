@@ -1097,13 +1097,14 @@ fn paint_selected_row(f: &mut Frame, inner: Rect, row: Option<usize>, theme: &Th
 
 /// The outcome word's colour. Approved is cyan and stopped yellow, borrowed from the roles that
 /// already carry those hues. A crash reads as a failure, an outcome this build does not know as
-/// waiting.
+/// waiting, and a run that ended having built nothing (idle) as dim.
 fn outcome_color(theme: &Theme, outcome: Outcome) -> Color {
     match outcome {
         Outcome::Landed => theme.landed,
         Outcome::Approved => theme.status_running,
         Outcome::Quarantined => theme.quarantined,
         Outcome::Stopped => theme.meter_mid,
+        Outcome::Idle => theme.dim,
         Outcome::Crashed => theme.status_failed,
         Outcome::Unknown => theme.status_waiting,
     }
@@ -1115,6 +1116,7 @@ fn outcome_word(outcome: Outcome) -> &'static str {
         Outcome::Approved => "approved",
         Outcome::Quarantined => "quarantined",
         Outcome::Stopped => "stopped",
+        Outcome::Idle => "idle",
         Outcome::Crashed => "crashed",
         Outcome::Unknown => "unknown",
     }
@@ -2993,6 +2995,7 @@ mod tests {
             theme.quarantined
         );
         assert_eq!(outcome_color(&theme, Outcome::Stopped), theme.meter_mid);
+        assert_eq!(outcome_color(&theme, Outcome::Idle), theme.dim);
         assert_eq!(outcome_color(&theme, Outcome::Crashed), theme.status_failed);
         assert_eq!(
             outcome_color(&theme, Outcome::Unknown),

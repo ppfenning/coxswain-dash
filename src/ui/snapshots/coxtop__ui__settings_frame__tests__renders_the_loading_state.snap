@@ -1,0 +1,9 @@
+---
+source: src/ui/settings_frame.rs
+assertion_line: 703
+expression: terminal.backend().to_string()
+---
+"loading settings…                                                                                   "
+"                                                                                                    "
+"                                                                                                    "
+"                                                                                                    "

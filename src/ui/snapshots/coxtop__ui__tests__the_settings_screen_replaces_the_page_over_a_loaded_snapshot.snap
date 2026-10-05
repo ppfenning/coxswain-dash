@@ -1,0 +1,45 @@
+---
+source: src/ui/mod.rs
+assertion_line: 686
+expression: text
+---
+> budgets              budgets
+                       > max_usd  20  f.toml  git-tracked
+
+                       staged
+                         nothing staged
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Up/Down section   Tab next pane   r reload   Esc close
