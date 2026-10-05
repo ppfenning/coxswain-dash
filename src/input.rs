@@ -8,6 +8,7 @@ use ratatui::layout::Rect;
 
 use crate::app::{App, Focus};
 use crate::decision_card::KeyOutcome;
+use crate::form::KEY_ADD_MACHINE;
 
 /// Runs the card's answer argv without waiting on it. A failed spawn has nowhere to report to
 /// and the decision stays open in the feed, so the error is dropped here at the edge.
@@ -47,7 +48,8 @@ pub fn handle_event_with(app: &mut App, key: KeyEvent, run: &mut dyn FnMut(&[Str
         app.modal_key(key);
         return;
     }
-    if app.card_visible() {
+    // An open form spends every key, so a showing card does not see them.
+    if app.card_visible() && app.form().is_none() {
         match app.decision_card_mut().on_key(key.code) {
             KeyOutcome::Selected(_) => return,
             KeyOutcome::Answer(argv) => {
@@ -74,6 +76,11 @@ pub fn handle_event_with(app: &mut App, key: KeyEvent, run: &mut dyn FnMut(&[Str
 pub fn handle_key(app: &mut App, key: KeyCode) {
     if app.modal().is_some() {
         app.modal_key(KeyEvent::new(key, KeyModifiers::NONE));
+        return;
+    }
+    // An open form spends every key, so a typed `k` or `t` never reaches a handler behind it.
+    if app.form().is_some() {
+        app.form_key(KeyEvent::new(key, KeyModifiers::NONE));
         return;
     }
     if key == KeyCode::Char(':') {
@@ -104,6 +111,9 @@ pub fn handle_key(app: &mut App, key: KeyCode) {
         KeyCode::Up | KeyCode::Char('k') => app.select_prev(),
         KeyCode::Enter => app.open_detail(),
         KeyCode::Esc => app.close_detail(),
+        KeyCode::Char(c) if c == KEY_ADD_MACHINE && app.focus() == Focus::Machines => {
+            app.open_add_machine()
+        }
         _ => {}
     }
 }
@@ -668,5 +678,82 @@ mod tests {
         let (kind, id, _) = app.detail().expect("detail should be open");
         assert_eq!(*kind, crate::app::DetailKind::Run);
         assert_eq!(id, "r0");
+    }
+
+    fn app_on_machines() -> App {
+        let mut app = app_on_runs();
+        handle_key(&mut app, KeyCode::Right);
+        handle_key(&mut app, KeyCode::Right);
+        assert_eq!(app.focus(), Focus::Machines);
+        app
+    }
+
+    fn type_keys(app: &mut App, text: &str) {
+        text.chars().for_each(|c| handle_key(app, KeyCode::Char(c)));
+    }
+
+    #[test]
+    fn the_add_machine_key_on_the_machines_frame_opens_the_form() {
+        let mut app = app_on_machines();
+        handle_key(&mut app, KeyCode::Char(KEY_ADD_MACHINE));
+        assert_eq!(app.form().map(|f| f.title.as_str()), Some("Add machine"));
+    }
+
+    #[test]
+    fn the_add_machine_key_on_another_frame_opens_nothing() {
+        let mut app = app_on_runs();
+        assert_eq!(app.focus(), Focus::Runs);
+        handle_key(&mut app, KeyCode::Char(KEY_ADD_MACHINE));
+        assert!(app.form().is_none());
+        assert!(app.modal().is_none());
+    }
+
+    #[test]
+    fn a_printable_key_with_a_form_open_lands_in_the_focused_field() {
+        let mut app = app_on_machines();
+        app.open_add_machine();
+        type_keys(&mut app, "kt");
+        assert_eq!(app.form().map(|f| f.value_of("name")), Some("kt"));
+        assert!(app.modal().is_none());
+        assert_eq!(app.theme(), ThemeId::Regatta);
+    }
+
+    #[test]
+    fn y_with_a_confirm_over_a_form_reaches_the_confirm_not_the_form() {
+        let mut app = app_on_machines();
+        app.open_add_machine();
+        type_keys(&mut app, "edge-1");
+        handle_key(&mut app, KeyCode::Enter);
+        type_keys(&mut app, "pat@edge-1");
+        [KeyCode::Enter, KeyCode::Enter, KeyCode::Enter]
+            .into_iter()
+            .for_each(|code| handle_key(&mut app, code));
+        assert_eq!(
+            confirm_command(&app),
+            Some("cox host add edge-1 --ssh pat@edge-1 --capacity 1")
+        );
+        handle_key(&mut app, KeyCode::Char('y'));
+        let argv = app.take_pending().map(|p| p.argv);
+        assert_eq!(
+            argv.as_ref().and_then(|a| a.get(1..3)),
+            Some(&["host".to_string(), "add".to_string()][..])
+        );
+        assert_eq!(app.form().map(|f| f.value_of("capabilities")), Some(""));
+    }
+
+    #[test]
+    fn esc_with_a_form_open_and_no_modal_closes_the_form() {
+        let mut app = app_on_machines();
+        app.open_add_machine();
+        handle_key(&mut app, KeyCode::Esc);
+        assert!(app.form().is_none());
+    }
+
+    #[test]
+    fn a_on_a_selected_machine_is_still_activate_and_opens_the_activate_confirm() {
+        let mut app = app_on_machines();
+        handle_key(&mut app, KeyCode::Char('a'));
+        assert_eq!(confirm_command(&app), Some("cox host activate m0"));
+        assert!(app.form().is_none());
     }
 }

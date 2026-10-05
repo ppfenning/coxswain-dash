@@ -3,6 +3,7 @@
 
 mod chair_card;
 pub mod confirm_dialog;
+pub mod form_frame;
 pub mod initiative_drill;
 pub mod machine_drill;
 pub mod palette_frame;
@@ -37,8 +38,17 @@ const NO_FEED: &str = "no feed yet";
 /// The page or detail view, then the status line over the footer row, then the open modal.
 pub fn render(f: &mut Frame, app: &App, theme: &Theme) {
     render_base(f, app, theme);
+    render_form(f, app, theme);
     render_status(f, app, theme);
     render_modal(f, app, theme);
+}
+
+/// The open form over the page, under the status line and any modal, so a confirm drawn after
+/// it shows its command above the form.
+fn render_form(f: &mut Frame, app: &App, theme: &Theme) {
+    if let Some(form) = app.form() {
+        form_frame::render(f, f.area(), theme, form);
+    }
 }
 
 /// While a status shows it replaces the footer row; the page body is never resized.
@@ -518,6 +528,28 @@ mod tests {
         let mut app = app_with_feed();
         assert!(app.begin_action('k'));
         insta::assert_snapshot!(excerpt(&app, ThemeId::HarborLight, &[15..23, 39..40]));
+    }
+
+    fn form_type(app: &mut App, keys: &[KeyCode]) {
+        for key in keys {
+            app.form_key(KeyEvent::from(*key));
+        }
+    }
+
+    #[test]
+    fn the_form_is_drawn_with_its_confirm_over_it() {
+        let mut app = app_with_feed();
+        app.open_add_machine();
+        let mut keys: Vec<KeyCode> = "edge-1".chars().map(KeyCode::Char).collect();
+        keys.push(KeyCode::Enter);
+        keys.extend("pat@edge-1".chars().map(KeyCode::Char));
+        keys.extend([KeyCode::Enter, KeyCode::Backspace, KeyCode::Char('4')]);
+        keys.extend([KeyCode::Enter, KeyCode::Enter]);
+        form_type(&mut app, &keys);
+        let text = excerpt(&app, ThemeId::Regatta, &[14..26, 39..40]);
+        assert!(text.contains("$ cox host add edge-1 --ssh pat@edge-1 --capacity 4"));
+        assert!(text.contains("Add machine"));
+        insta::assert_snapshot!(text);
     }
 
     #[test]
