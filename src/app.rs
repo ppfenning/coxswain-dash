@@ -15,7 +15,7 @@ use crate::detail::DetailSnapshot;
 use crate::feed::FeedSnapshot;
 
 /// How many layout presets the regatta page cycles through.
-const REGATTA_LAYOUT_PRESET_COUNT: usize = 3;
+const REGATTA_LAYOUT_PRESET_COUNT: usize = 4;
 
 /// How long a lanes-in-use sample is kept once a newer one has arrived.
 const LANES_HISTORY_MAX_AGE_HOURS: i64 = 24;
@@ -527,13 +527,15 @@ mod tests {
     }
 
     #[test]
-    fn cycle_regatta_layout_preset_wraps_over_three_presets() {
+    fn cycle_regatta_layout_preset_wraps_over_four_presets() {
         let mut app = App::default();
         assert_eq!(app.regatta_layout_preset(), 0);
         app.cycle_regatta_layout_preset();
         assert_eq!(app.regatta_layout_preset(), 1);
         app.cycle_regatta_layout_preset();
         assert_eq!(app.regatta_layout_preset(), 2);
+        app.cycle_regatta_layout_preset();
+        assert_eq!(app.regatta_layout_preset(), 3);
         app.cycle_regatta_layout_preset();
         assert_eq!(app.regatta_layout_preset(), 0);
     }

@@ -10,7 +10,7 @@ use chrono::{DateTime, FixedOffset};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, Gauge, Paragraph, Sparkline},
 };
@@ -105,7 +105,84 @@ fn visible_frame_indices(app: &App) -> Vec<usize> {
         .collect()
 }
 
+/// Canvas layout row heights: chair|spend, machines|lanes, and the inbox's floor.
+const CANVAS_TOP_ROWS: u16 = 4;
+const CANVAS_MIDDLE_ROWS: u16 = 6;
+const CANVAS_INBOX_MIN: u16 = 5;
+/// Width of the machines frame; lanes take the rest of its row.
+const CANVAS_MACHINES_WIDTH: u16 = 48;
+
+/// Two side-by-side frames in `area`, the left one `left_width` wide. A hidden frame gives its
+/// share to the other; both hidden places neither.
+fn split_pair(
+    area: Rect,
+    left_width: u16,
+    show_left: bool,
+    show_right: bool,
+) -> (Option<Rect>, Option<Rect>) {
+    let left_width = left_width.min(area.width);
+    match (show_left, show_right) {
+        (true, true) => (
+            Some(Rect {
+                width: left_width,
+                ..area
+            }),
+            Some(Rect {
+                x: area.x + left_width,
+                width: area.width - left_width,
+                ..area
+            }),
+        ),
+        (true, false) => (Some(area), None),
+        (false, true) => (None, Some(area)),
+        (false, false) => (None, None),
+    }
+}
+
+/// Preset 0, the canvas: chair|spend, machines|lanes, runs, then queue|inbox, top to bottom.
+/// Returns the rects of frames 1-6 (`None` when hidden) and the inbox rect. The inbox is never
+/// shorter than `CANVAS_INBOX_MIN` rows (unless `area` itself is), so the rows above it give up
+/// height first, top to bottom. `runs_len` is the runs list length; frame 5 is as tall as its
+/// rows and borders need, at most half of the height left after the first two rows.
+fn canvas_layout(area: Rect, visible: [bool; 6], runs_len: usize) -> ([Option<Rect>; 6], Rect) {
+    let rows_of = |shown: bool, rows: u16| if shown { rows } else { 0 };
+    let budget = area.height.saturating_sub(CANVAS_INBOX_MIN);
+    let top_h = rows_of(visible[0] || visible[1], CANVAS_TOP_ROWS).min(budget);
+    let middle_h = rows_of(visible[2] || visible[3], CANVAS_MIDDLE_ROWS).min(budget - top_h);
+    let left = area.height - top_h - middle_h;
+    let runs_need = u16::try_from(runs_len.saturating_add(2))
+        .unwrap_or(u16::MAX)
+        .max(3);
+    let runs_h = rows_of(visible[4], runs_need)
+        .min(left / 2)
+        .min(budget - top_h - middle_h);
+    let bottom_h = left - runs_h;
+    let row = |y: u16, height: u16| Rect { y, height, ..area };
+    let top = row(area.y, top_h);
+    let middle = row(area.y + top_h, middle_h);
+    let runs = row(area.y + top_h + middle_h, runs_h);
+    let bottom = row(area.y + top_h + middle_h + runs_h, bottom_h);
+    let (chair, spend) = split_pair(top, top.width / 2, visible[0], visible[1]);
+    let (machines, lanes) = split_pair(middle, CANVAS_MACHINES_WIDTH, visible[2], visible[3]);
+    let (queue, inbox) = split_pair(bottom, bottom.width * 58 / 100, visible[5], true);
+    (
+        [
+            chair,
+            spend,
+            machines,
+            lanes,
+            visible[4].then_some(runs),
+            queue,
+        ],
+        inbox.unwrap_or(bottom),
+    )
+}
+
 fn layout_rects(area: Rect, app: &App) -> ([Option<Rect>; 6], Rect) {
+    if app.regatta_layout_preset() == 0 {
+        let runs_len = app.snapshot().map_or(0, |s| s.runs.len());
+        return canvas_layout(area, app.regatta_frames_visible(), runs_len);
+    }
     let visible = visible_frame_indices(app);
     let mut rects: [Option<Rect>; 6] = [None; 6];
     let [grid_area, inbox_area] = {
@@ -116,8 +193,8 @@ fn layout_rects(area: Rect, app: &App) -> ([Option<Rect>; 6], Rect) {
         [split[0], split[1]]
     };
     let placed = match app.regatta_layout_preset() {
-        0 => grid_layout(grid_area, &visible),
-        1 => stacked_layout(grid_area, &visible),
+        1 => grid_layout(grid_area, &visible),
+        2 => stacked_layout(grid_area, &visible),
         _ => sidebar_layout(grid_area, &visible),
     };
     for (slot, rect) in visible.into_iter().zip(placed) {
@@ -126,7 +203,7 @@ fn layout_rects(area: Rect, app: &App) -> ([Option<Rect>; 6], Rect) {
     (rects, inbox_area)
 }
 
-/// Preset 0: a 2-column grid, filled row by row; an odd frame out spans the full row.
+/// Preset 1: a 2-column grid, filled row by row; an odd frame out spans the full row.
 fn grid_layout(area: Rect, visible: &[usize]) -> Vec<Rect> {
     let n = visible.len();
     if n == 0 {
@@ -154,7 +231,7 @@ fn grid_layout(area: Rect, visible: &[usize]) -> Vec<Rect> {
     out
 }
 
-/// Preset 1: one stacked column, one full-width row per visible frame.
+/// Preset 2: one stacked column, one full-width row per visible frame.
 fn stacked_layout(area: Rect, visible: &[usize]) -> Vec<Rect> {
     let n = visible.len();
     if n == 0 {
@@ -167,7 +244,7 @@ fn stacked_layout(area: Rect, visible: &[usize]) -> Vec<Rect> {
         .to_vec()
 }
 
-/// Preset 2: a wide main area (the first visible frame) plus the rest stacked in a right
+/// Preset 3: a wide main area (the first visible frame) plus the rest stacked in a right
 /// sidebar.
 fn sidebar_layout(area: Rect, visible: &[usize]) -> Vec<Rect> {
     let n = visible.len();
@@ -196,20 +273,32 @@ fn base_style(theme: &Theme) -> Style {
     Style::default().fg(theme.fg).bg(theme.bg)
 }
 
-/// A numbered, titled block; `focused` draws its border in `theme.accent` (today's border
-/// color, `theme.fg`, otherwise), so the runs, queue and machines frames can show which one
-/// Left/Right last focused.
-fn numbered_block(n: usize, name: &str, theme: &Theme, focused: bool) -> Block<'static> {
-    let border_color = if focused { theme.accent } else { theme.fg };
+/// A rounded, titled block: the border is `theme.border`, or `theme.border_focus` when
+/// `focused`, and the title is always `theme.border_focus`, bold, padded with one space each
+/// side. `title` is unpadded.
+fn framed(title: &str, theme: &Theme, focused: bool) -> Block<'static> {
+    let border_color = if focused {
+        theme.border_focus
+    } else {
+        theme.border
+    };
     Block::default()
         .title(Span::styled(
-            format!("{n} {name}"),
-            Style::default().fg(theme.accent),
+            format!(" {title} "),
+            Style::default()
+                .fg(theme.border_focus)
+                .add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(border_color))
         .style(base_style(theme))
+}
+
+/// A numbered frame block, titled like ` 1 chair `; `focused` marks the list Left/Right last
+/// focused.
+fn numbered_block(n: usize, name: &str, theme: &Theme, focused: bool) -> Block<'static> {
+    framed(&format!("{n} {name}"), theme, focused)
 }
 
 /// `Some(app.selected())` when `focus` is the page's currently focused list, `None` otherwise
@@ -376,14 +465,16 @@ fn render_spend(f: &mut Frame, rect: Rect, snapshot: &FeedSnapshot, app: &App, t
     let block = numbered_block(2, FRAME_NAMES[1], theme, false);
     let inner = block.inner(rect);
     f.render_widget(block, rect);
-    let rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Min(1),
-        ])
-        .split(inner);
+    // Three one-line rows from the top; a row past the frame's height is empty, so a short
+    // frame clips the last row instead of letting the solver overdraw an earlier one.
+    let rows: [Rect; 3] = std::array::from_fn(|i| {
+        let i = i as u16;
+        Rect {
+            y: inner.y + i,
+            height: inner.height.saturating_sub(i).min(1),
+            ..inner
+        }
+    });
     let five_hour_reset = super::local_time(&spend.five_hour_resets_at, app.utc_offset());
     let five_hour_pct = spend.five_hour_fraction * 100.0;
     let five_hour = Gauge::default()
@@ -562,11 +653,7 @@ fn render_queue(
 }
 
 fn render_inbox(f: &mut Frame, rect: Rect, snapshot: &FeedSnapshot, theme: &Theme) {
-    let block = Block::default()
-        .title(Span::styled("inbox", Style::default().fg(theme.accent)))
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .style(base_style(theme));
+    let block = framed("inbox", theme, false);
     let lines: Vec<Line> = snapshot
         .inbox
         .iter()
@@ -702,18 +789,18 @@ mod tests {
     }
 
     #[test]
-    fn frame_two_title_uses_the_regatta_accent_color() {
+    fn frame_two_title_uses_the_regatta_title_color() {
         assert_eq!(
             title_cell_fg(ThemeId::Regatta),
-            crate::theme::resolve(ThemeId::Regatta).accent
+            crate::theme::resolve(ThemeId::Regatta).border_focus
         );
     }
 
     #[test]
-    fn frame_two_title_uses_the_harbor_light_accent_color() {
+    fn frame_two_title_uses_the_harbor_light_title_color() {
         assert_eq!(
             title_cell_fg(ThemeId::HarborLight),
-            crate::theme::resolve(ThemeId::HarborLight).accent
+            crate::theme::resolve(ThemeId::HarborLight).border_focus
         );
     }
 
@@ -758,8 +845,8 @@ mod tests {
         assert_eq!(row_at(area, &app, 119, 39), None);
     }
 
-    /// The runs frame's selected row and its border are both drawn in `theme.accent` when the
-    /// runs list is focused: read straight from `terminal.backend().buffer()` cells, since a
+    /// The runs frame's selected row is drawn in `theme.accent` and its border in
+    /// `theme.border_focus` when the runs list is focused: read straight from `terminal.backend().buffer()` cells, since a
     /// text-only snapshot cannot show a style. `app_with_fixture` defaults to `Focus::Runs`
     /// with `selected() == 0`, so the fixture's one run is both focused and selected.
     fn runs_row_and_border_fg(theme_id: ThemeId) -> (Color, Color) {
@@ -781,18 +868,108 @@ mod tests {
     }
 
     #[test]
-    fn the_runs_frames_selected_row_and_border_are_drawn_in_the_regatta_accent() {
+    fn the_runs_frames_selected_row_is_accent_and_border_is_focus_in_the_regatta_theme() {
         let (row_fg, border_fg) = runs_row_and_border_fg(ThemeId::Regatta);
-        let accent = crate::theme::resolve(ThemeId::Regatta).accent;
-        assert_eq!(row_fg, accent);
-        assert_eq!(border_fg, accent);
+        let theme = crate::theme::resolve(ThemeId::Regatta);
+        assert_eq!(row_fg, theme.accent);
+        assert_eq!(border_fg, theme.border_focus);
     }
 
     #[test]
-    fn the_runs_frames_selected_row_and_border_are_drawn_in_the_harbor_light_accent() {
+    fn the_runs_frames_selected_row_is_accent_and_border_is_focus_in_the_harbor_light_theme() {
         let (row_fg, border_fg) = runs_row_and_border_fg(ThemeId::HarborLight);
-        let accent = crate::theme::resolve(ThemeId::HarborLight).accent;
-        assert_eq!(row_fg, accent);
-        assert_eq!(border_fg, accent);
+        let theme = crate::theme::resolve(ThemeId::HarborLight);
+        assert_eq!(row_fg, theme.accent);
+        assert_eq!(border_fg, theme.border_focus);
+    }
+
+    const ALL: [bool; 6] = [true; 6];
+
+    #[test]
+    fn preset_zero_is_the_canvas_layout() {
+        let app = App::default();
+        assert_eq!(app.regatta_layout_preset(), 0);
+        let area = Rect::new(0, 0, 120, 40);
+        assert_eq!(layout_rects(area, &app), canvas_layout(area, ALL, 0));
+    }
+
+    #[test]
+    fn canvas_layout_places_every_row_at_120x40_with_one_run() {
+        let (rects, inbox) = canvas_layout(Rect::new(0, 0, 120, 40), ALL, 1);
+        assert_eq!(rects[0], Some(Rect::new(0, 0, 60, 4)));
+        assert_eq!(rects[1], Some(Rect::new(60, 0, 60, 4)));
+        assert_eq!(rects[2], Some(Rect::new(0, 4, 48, 6)));
+        assert_eq!(rects[3], Some(Rect::new(48, 4, 72, 6)));
+        assert_eq!(rects[4], Some(Rect::new(0, 10, 120, 3)));
+        assert_eq!(rects[5], Some(Rect::new(0, 13, 69, 27)));
+        assert_eq!(inbox, Rect::new(69, 13, 51, 27));
+    }
+
+    #[test]
+    fn canvas_layout_caps_runs_at_half_of_what_is_left() {
+        let (rects, inbox) = canvas_layout(Rect::new(0, 0, 120, 40), ALL, 100);
+        assert_eq!(rects[4], Some(Rect::new(0, 10, 120, 15)));
+        assert_eq!(inbox.height, 15);
+    }
+
+    #[test]
+    fn canvas_layout_keeps_the_inbox_at_five_rows_down_to_a_short_terminal() {
+        for height in [24, 16, 12, 9] {
+            let (rects, inbox) = canvas_layout(Rect::new(0, 0, 80, height), ALL, 100);
+            assert!(inbox.height >= 5, "height {height}: inbox {inbox:?}");
+            let bottom = rects
+                .iter()
+                .flatten()
+                .chain([&inbox])
+                .map(|r| r.y + r.height);
+            assert_eq!(bottom.max(), Some(height));
+        }
+    }
+
+    #[test]
+    fn the_rendered_canvas_at_80x24_gives_the_inbox_at_least_five_rows() {
+        let app = app_with_fixture();
+        let theme = crate::theme::resolve(ThemeId::Regatta);
+        let area = Rect::new(0, 0, 80, 24);
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("terminal");
+        terminal
+            .draw(|f| render(f, &app, &theme))
+            .expect("draw should not fail");
+        let (_, inbox) = layout_rects(area, &app);
+        assert!(inbox.height >= 5, "inbox {inbox:?}");
+        assert_eq!(inbox.y + inbox.height, 24);
+    }
+
+    #[test]
+    fn canvas_layout_gives_a_hidden_frames_share_to_its_neighbour() {
+        let hidden = [false, true, false, true, true, false];
+        let (rects, inbox) = canvas_layout(Rect::new(0, 0, 100, 30), hidden, 3);
+        assert_eq!(rects[0], None);
+        assert_eq!(rects[1], Some(Rect::new(0, 0, 100, 4)));
+        assert_eq!(rects[2], None);
+        assert_eq!(rects[3], Some(Rect::new(0, 4, 100, 6)));
+        assert_eq!(rects[5], None);
+        assert_eq!(inbox.width, 100);
+    }
+
+    #[test]
+    fn titles_are_bold_padded_in_the_title_color_and_borders_use_the_border_color() {
+        let app = app_with_fixture();
+        let theme = crate::theme::resolve(ThemeId::Regatta);
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).expect("terminal");
+        terminal
+            .draw(|f| render(f, &app, &theme))
+            .expect("draw should not fail");
+        let buffer = terminal.backend().buffer();
+        let chair = frame_rects(Rect::new(0, 0, 120, 40), &app)[0].expect("chair rect");
+        let title: String = (1..=9)
+            .map(|dx| buffer[(chair.x + dx, chair.y)].symbol())
+            .collect();
+        assert_eq!(title, " 1 chair ");
+        let title_cell = &buffer[(chair.x + 2, chair.y)];
+        assert_eq!(title_cell.fg, theme.border_focus);
+        assert!(title_cell.modifier.contains(Modifier::BOLD));
+        assert_eq!(buffer[(chair.x, chair.y)].fg, theme.border);
+        assert_eq!(buffer[(chair.x, chair.y)].symbol(), "\u{256d}");
     }
 }

@@ -2,7 +2,7 @@
 source: src/ui/regatta.rs
 expression: terminal.backend().to_string()
 ---
-"╭1 chair─────────────────────────────────────────╮"
+"╭ 1 chair ───────────────────────────────────────╮"
 "│chair@omarchy:12345 omarchy live                │"
 "│beat age: 20s                                   │"
 "│idle between ticks                              │"
