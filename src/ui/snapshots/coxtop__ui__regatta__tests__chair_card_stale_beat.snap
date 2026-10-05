@@ -1,9 +1,10 @@
 ---
 source: src/ui/regatta.rs
-assertion_line: 806
+assertion_line: 1736
 expression: terminal.backend().to_string()
 ---
 "╭ 1 chair ─────────────────────────────────────────────────────────────────────╮"
 "│● chair@omarchy:12345 @ omarchy · epoch 7 · beat 130s · stale                 │"
 "│lands today 0 (- phases) · needs you 0 · drafts - · housekeeping -            │"
+"│tick - · idle · 0 refused or failed today                                     │"
 "╰──────────────────────────────────────────────────────────────────────────────╯"

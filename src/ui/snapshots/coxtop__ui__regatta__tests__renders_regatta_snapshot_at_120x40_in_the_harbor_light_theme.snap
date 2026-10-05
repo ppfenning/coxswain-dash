@@ -1,11 +1,12 @@
 ---
 source: src/ui/regatta.rs
-assertion_line: 1993
+assertion_line: 2159
 expression: terminal.backend().to_string()
 ---
 "╭ 1 chair ─────────────────────────────────────────────────╮╭ 2 spend ─────────────────────────────────────────────────╮"
 "│● chair@omarchy:12345 @ omarchy · epoch 7 · beat 4s · live││5 hour ████░░░░░░░░░░░░░░░░░░░░ 16% · resets 2 AM         │"
 "│lands today 2 (- phases) · needs you 1 · drafts - · housek││week   ████████░░░░░░░░░░░░░░│░ 35% of 93% stop · Sun 4 AM│"
+"│tick - · land dash-feed/p2-feed · 10s · 1 refused or faile││                                                          │"
 "╰──────────────────────────────────────────────────────────╯╰──────────────────────────────────────────────────────────╯"
 "╭ 3 machines ──────────────────────────────────╮╭ 4 lanes over 24h ────────────────────────────────────────────────────╮"
 "│  omarchy ■■■ 2/3 ● login ok 12s              ││                         ⢸ dash-feed-1  p1-foundations · build   $0.84│"
@@ -20,7 +21,6 @@ expression: terminal.backend().to_string()
 "╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯"
 "╭ 6 queue ──────────────────────────────────────────────────────────╮╭ inbox ──────────────────────────────────────────╮"
 "│  dash-feed-streams-a-versioned-json-snaps… ████████████ 0/3 phases││needs_chair some-task budget stop after 2 attempt│"
-"│                                                                   ││                                                 │"
 "│                                                                   ││                                                 │"
 "│                                                                   ││                                                 │"
 "│                                                                   ││                                                 │"
