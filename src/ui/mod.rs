@@ -4,6 +4,7 @@
 mod chair_card;
 pub mod confirm_dialog;
 pub mod form_frame;
+pub mod health_drill;
 pub mod initiative_drill;
 pub mod machine_drill;
 pub mod palette_frame;
@@ -12,7 +13,9 @@ mod run_cost;
 pub mod run_drill;
 pub mod settings_frame;
 mod slipstream;
+pub mod spend_drill;
 pub mod status_line;
+pub mod watch_drill;
 
 use chrono::{DateTime, FixedOffset};
 use ratatui::{
