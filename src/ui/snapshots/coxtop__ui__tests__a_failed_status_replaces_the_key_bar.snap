@@ -1,0 +1,8 @@
+---
+source: src/ui/mod.rs
+assertion_line: 558
+expression: "excerpt(&app, ThemeId::Regatta, &[37..40])"
+---
+│no runs ended yet                                                                                                     │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+failed (exit 2): no such run

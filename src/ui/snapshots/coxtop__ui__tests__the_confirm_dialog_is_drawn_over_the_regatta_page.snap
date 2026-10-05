@@ -1,0 +1,14 @@
+---
+source: src/ui/mod.rs
+assertion_line: 510
+expression: text
+---
+╭ 6 queue ──────────────────────────────────────────────────────────╮╭ inbox ──────────────────────────────────────────╮
+│  dash-feed-streams-a-versioned-json-snaps… ████████████ 0/3 phases││needs_chair some-task budget stop after 2 attempt│
+│                             ┌Kill run dash-feed-1──────────────────────────────────────┐                             │
+│                             │ $ cox runs stop dash-feed-1                              │                             │
+│                             │                                                          │                             │
+│                             │ y run    n cancel                                        │                             │
+│                             └──────────────────────────────────────────────────────────┘                             │
+╰───────────────────────────────────────────────────────────────────╯╰─────────────────────────────────────────────────╯
+1-6 frames · ←→ focus · ↑↓ select · ⏎ drill down · t theme · p layout · q quit │ p pause  k kill  m move · : palette
