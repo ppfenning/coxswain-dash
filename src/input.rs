@@ -13,6 +13,7 @@ pub fn handle_key(app: &mut App, key: KeyCode) {
         KeyCode::Char('t') => app.toggle_theme(),
         KeyCode::Char('p') => app.cycle_regatta_layout_preset(),
         KeyCode::Char('7') => app.toggle_history_frame(),
+        KeyCode::Char('8') => app.toggle_run_cost_frame(),
         KeyCode::Char(c) if c.is_ascii_digit() && c != '0' => {
             app.toggle_regatta_frame(c.to_digit(10).unwrap() as usize)
         }
@@ -285,6 +286,17 @@ mod tests {
         handle_key(&mut app, KeyCode::Left);
         assert_eq!(app.focus(), Focus::History);
         app
+    }
+
+    #[test]
+    fn char_eight_toggles_the_run_cost_frame_and_nothing_else() {
+        let mut app = App::default();
+        handle_key(&mut app, KeyCode::Char('8'));
+        assert!(!app.regatta_run_cost_visible());
+        assert!(app.regatta_history_visible());
+        assert_eq!(app.regatta_frames_visible(), [true; 6]);
+        handle_key(&mut app, KeyCode::Char('8'));
+        assert!(app.regatta_run_cost_visible());
     }
 
     #[test]

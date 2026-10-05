@@ -1,6 +1,7 @@
 //! Rendering for the Regatta page: seven rounded, titled frames (chair, spend, machines,
 //! lanes-over-24h, runs, queue, and an always-shown inbox) laid out by `app.regatta_layout_preset()`
-//! and reflowed around whichever of frames 1-6 `app.regatta_frames_visible()` hides.
+//! and reflowed around whichever of frames 1-6 `app.regatta_frames_visible()` hides. Two more
+//! frames, history (7) and run cost (8), are full-width bands under them with their own flags.
 //! [`frame_rects`] is the pure layout core; [`render`] calls it so the rects it draws into and
 //! the rects a mouse click is tested against never disagree.
 
@@ -9,8 +10,9 @@ use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
+    symbols::Marker,
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Paragraph},
+    widgets::{Axis, Block, BorderType, Borders, Chart, Dataset, GraphType, Paragraph},
 };
 
 use crate::app::{App, Focus};
@@ -21,6 +23,7 @@ use crate::theme::Theme;
 
 use super::chair_card::{Freshness, TICK_INTERVAL_S, beat_freshness, short_age};
 use super::local_time;
+use super::run_cost::{chart_bounds, dollar_labels, drawable};
 
 /// Cells in a spend meter, and the least one shrinks to in a narrow frame.
 const METER_WIDTH: usize = 26;
@@ -60,6 +63,9 @@ pub fn render(f: &mut Frame, app: &App, theme: &Theme) {
             app.utc_offset(),
             theme,
         );
+    }
+    if let Some(rect) = run_cost_rect(area, app) {
+        render_run_cost(f, rect, snapshot, app.utc_offset(), theme);
     }
     render_key_bar(f, split_key_bar(area).1, theme);
 }
@@ -255,8 +261,78 @@ fn history_rect(full: Rect, app: &App) -> Option<Rect> {
     split_history(split_key_bar(full).0, app).1
 }
 
+/// The fewest rows the run cost frame is drawn in: two borders, two axis rows and four plot rows.
+const RUN_COST_MIN_ROWS: u16 = 8;
+/// The most rows the run cost frame takes.
+const RUN_COST_MAX_ROWS: u16 = 12;
+/// The shortest a frame of presets 1-3 is allowed to be pushed to: the canvas's top row height.
+const SHARED_FRAME_FLOOR: u16 = CANVAS_TOP_ROWS;
+
+/// Rows the numbered frames and the inbox need above the run cost band, so the band never
+/// shrinks one of them below what it holds. The canvas counts exact content: the runs frame
+/// must stay under its half-of-what-is-left cap and the bottom row must hold the inbox floor or
+/// the queue's rows. Presets 1-3 size frames by ratio, so each visible frame keeps the floor.
+fn rows_above_run_cost(app: &App) -> u16 {
+    let visible = app.regatta_frames_visible();
+    let (runs_len, queue_len) = app
+        .snapshot()
+        .map_or((0, 0), |s| (s.runs.len(), s.queue.len()));
+    let rows_of = |shown: bool, rows: u16| if shown { rows } else { 0 };
+    let shown = u16::try_from(visible.iter().filter(|v| **v).count()).unwrap_or(0);
+    let floor = SHARED_FRAME_FLOOR;
+    match app.regatta_layout_preset() {
+        0 => {
+            let runs = u16::try_from(runs_len.saturating_add(3)).unwrap_or(u16::MAX);
+            let queue = u16::try_from(queue_len.saturating_add(2)).unwrap_or(u16::MAX);
+            let bottom = CANVAS_INBOX_MIN.max(rows_of(visible[5], queue));
+            let left = if visible[4] {
+                runs.saturating_mul(2).max(runs.saturating_add(bottom))
+            } else {
+                bottom
+            };
+            rows_of(visible[0] || visible[1], CANVAS_TOP_ROWS)
+                .saturating_add(rows_of(visible[2] || visible[3], CANVAS_MIDDLE_ROWS))
+                .saturating_add(left)
+        }
+        1 => (floor * shown.div_ceil(2)).saturating_add(CANVAS_INBOX_MIN),
+        2 => (floor * shown).saturating_add(CANVAS_INBOX_MIN),
+        _ => (floor * shown.saturating_sub(1).max(shown.min(1))).saturating_add(CANVAS_INBOX_MIN),
+    }
+}
+
+/// `body` split into the area the numbered frames and inbox share and the run cost band under
+/// it, full width, in every layout preset. The band takes only the rows `rows_above_run_cost`
+/// leaves spare, and is `None` when the frame is hidden or those are under `RUN_COST_MIN_ROWS`.
+fn split_run_cost(body: Rect, app: &App) -> (Rect, Option<Rect>) {
+    let spare = body.height.saturating_sub(rows_above_run_cost(app));
+    let height = if app.regatta_run_cost_visible() && spare >= RUN_COST_MIN_ROWS {
+        spare.min(RUN_COST_MAX_ROWS)
+    } else {
+        0
+    };
+    if height == 0 {
+        return (body, None);
+    }
+    let rest = Rect {
+        height: body.height - height,
+        ..body
+    };
+    let band = Rect {
+        y: body.y + rest.height,
+        height,
+        ..body
+    };
+    (rest, Some(band))
+}
+
+/// The run cost frame's rect for a terminal of `full`, as `render` draws it: under the numbered
+/// frames and above the history band.
+fn run_cost_rect(full: Rect, app: &App) -> Option<Rect> {
+    split_run_cost(split_history(split_key_bar(full).0, app).0, app).1
+}
+
 fn layout_rects(full: Rect, app: &App) -> ([Option<Rect>; 6], Rect) {
-    let (area, _) = split_history(split_key_bar(full).0, app);
+    let (area, _) = split_run_cost(split_history(split_key_bar(full).0, app).0, app);
     if app.regatta_layout_preset() == 0 {
         let runs_len = app.snapshot().map_or(0, |s| s.runs.len());
         return canvas_layout(area, app.regatta_frames_visible(), runs_len);
@@ -1172,6 +1248,105 @@ fn render_inbox(f: &mut Frame, rect: Rect, snapshot: &FeedSnapshot, theme: &Them
     f.render_widget(paragraph, rect);
 }
 
+/// The frame's number key and title: it follows history (7) as the eighth frame.
+const RUN_COST_NUMBER: usize = 8;
+const RUN_COST_NAME: &str = "run cost";
+
+/// `(at, dollars)` pairs as `(epoch seconds, dollars)`, dropping a pair whose `at` is not RFC 3339.
+fn epoch_points<'a>(points: impl Iterator<Item = (&'a str, f64)>) -> Vec<(f64, f64)> {
+    points
+        .filter_map(|(at, usd)| {
+            DateTime::parse_from_rfc3339(at)
+                .ok()
+                .map(|t| (t.timestamp() as f64, usd))
+        })
+        .collect()
+}
+
+/// `epoch` seconds as `%H:%M` in `offset`; empty for a value chrono cannot represent.
+fn clock_label(epoch: f64, offset: FixedOffset) -> String {
+    DateTime::from_timestamp(epoch as i64, 0).map_or_else(String::new, |t| {
+        t.with_timezone(&offset).format("%H:%M").to_string()
+    })
+}
+
+/// The run cost frame: one braille line per running run that has cost points, in its machine's
+/// accent and named in the legend, over today's spend in `theme.dim`. With no point anywhere only
+/// the titled block is drawn.
+fn render_run_cost(
+    f: &mut Frame,
+    rect: Rect,
+    snapshot: &FeedSnapshot,
+    offset: FixedOffset,
+    theme: &Theme,
+) {
+    let block = numbered_block(RUN_COST_NUMBER, RUN_COST_NAME, theme, false);
+    let inner = block.inner(rect);
+    f.render_widget(block, rect);
+    let running: Vec<&Run> = snapshot
+        .runs
+        .iter()
+        .filter(|r| r.status == "running")
+        .collect();
+    let series: Vec<Vec<(f64, f64)>> = running
+        .iter()
+        .map(|r| {
+            epoch_points(
+                r.cost_series
+                    .iter()
+                    .map(|p| (p.at.as_str(), p.cumulative_cost_usd)),
+            )
+        })
+        .collect();
+    let spend = epoch_points(
+        snapshot
+            .spend_series
+            .iter()
+            .map(|p| (p.at.as_str(), p.cumulative_cost_usd)),
+    );
+    let Some(bounds) = chart_bounds(&series, &spend) else {
+        return;
+    };
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+    let line = |color: Color| {
+        Dataset::default()
+            .marker(Marker::Braille)
+            .graph_type(GraphType::Line)
+            .style(Style::default().fg(color))
+    };
+    let behind = (!spend.is_empty()).then(|| line(theme.dim).data(&spend));
+    let datasets: Vec<Dataset> = behind
+        .into_iter()
+        .chain(drawable(&series).into_iter().map(|i| {
+            line(machine_accent(snapshot, &running[i].machine, theme))
+                .name(running[i].run.clone())
+                .data(&series[i])
+        }))
+        .collect();
+    let axis = Style::default().fg(theme.dim);
+    let chart = Chart::new(datasets)
+        .style(base_style(theme))
+        .x_axis(
+            Axis::default()
+                .style(axis)
+                .bounds([bounds.x_min, bounds.x_max])
+                .labels(vec![
+                    clock_label(bounds.x_min, offset),
+                    clock_label(bounds.x_max, offset),
+                ]),
+        )
+        .y_axis(
+            Axis::default()
+                .style(axis)
+                .bounds([0.0, bounds.y_max])
+                .labels(dollar_labels(bounds.y_max, 3)),
+        )
+        .hidden_legend_constraints((Constraint::Min(0), Constraint::Min(0)));
+    f.render_widget(chart, inner);
+}
+
 /// Key and label pairs of the key bar: exactly the keys `input::handle_key` and `main` act on.
 const KEY_BAR: [(&str, &str); 7] = [
     ("1-6", "frames"),
@@ -1748,7 +1923,8 @@ mod tests {
         let app = App::default();
         assert_eq!(app.regatta_layout_preset(), 0);
         let area = Rect::new(0, 0, 120, 40);
-        let (body, _) = split_history(Rect::new(0, 0, 120, 39), &app);
+        let (rest, _) = split_history(Rect::new(0, 0, 120, 39), &app);
+        let (body, _) = split_run_cost(rest, &app);
         assert_eq!(layout_rects(area, &app), canvas_layout(body, ALL, 0));
     }
 
@@ -2370,5 +2546,207 @@ mod tests {
             outcome_color(&theme, Outcome::Unknown),
             theme.status_waiting
         );
+    }
+
+    /// Two machines and the `RUNS` and `SPEND` placeholders filled in. The feed's `at` is
+    /// 2026-10-04T14:10:00Z.
+    fn cost_app(runs: &str, spend: &str) -> App {
+        let json = r#"{"schema":1,"at":"2026-10-04T14:10:00Z","chair":{"holder":"h","host":"h","epoch":1,"liveness":"live","beat_age_s":0},"spend":{"five_hour_fraction":0.0,"five_hour_source":"meter","weekly_fraction":0.0,"weekly_source":"meter","hard_stop_fraction":0.0,"five_hour_resets_at":"2026-10-04T22:00:00Z","weekly_resets_at":"2026-10-11T04:00:00Z"},"machines":[{"name":"omarchy","state":"active","lanes_in_use":1,"capacity":3,"login_ok":true,"login_checked_at":"2026-10-04T14:00:00Z","beat_age_s":0,"checkouts":{}},{"name":"spare","state":"active","lanes_in_use":1,"capacity":2,"login_ok":true,"login_checked_at":"2026-10-04T14:00:00Z","beat_age_s":0,"checkouts":{}}],"runs":[RUNS],"queue":[],"inbox":[],"watch":[],"spend_series":[SPEND]}"#
+            .replace("RUNS", runs)
+            .replace("SPEND", spend);
+        let snapshot = crate::feed::parse_snapshot(&json).expect("literal feed should parse");
+        let mut app = App::default();
+        app.apply_snapshot(snapshot);
+        app
+    }
+
+    fn cost_run(name: &str, machine: &str, series: &str) -> String {
+        format!(
+            r#"{{"run":"{name}","machine":"{machine}","phase":"p","node":"build","attempt":1,"turns":3,"cost":1.0,"verdict":"none","status":"running","cost_series":[{series}]}}"#
+        )
+    }
+
+    const ALPHA_SERIES: &str = r#"["2026-10-04T14:00:00Z",0.10,"plan"],["2026-10-04T14:04:00Z",0.60,"build"],["2026-10-04T14:09:00Z",1.40,"build"]"#;
+    const BETA_SERIES: &str = r#"["2026-10-04T14:02:00Z",0.20,"plan"],["2026-10-04T14:06:00Z",0.50,"build"],["2026-10-04T14:09:00Z",0.90,"build"]"#;
+    const SPEND_SERIES: &str = r#"["2026-10-04T13:40:00Z",0.5],["2026-10-04T13:50:00Z",1.5],["2026-10-04T14:00:00Z",2.5],["2026-10-04T14:10:00Z",3.0]"#;
+
+    fn two_run_app() -> App {
+        let runs = format!(
+            "{},{}",
+            cost_run("r-alpha", "omarchy", ALPHA_SERIES),
+            cost_run("r-beta", "spare", BETA_SERIES)
+        );
+        cost_app(&runs, SPEND_SERIES)
+    }
+
+    fn draw_cost(app: &App, theme_id: ThemeId) -> Terminal<TestBackend> {
+        let theme = crate::theme::resolve_for(theme_id, Some("truecolor"));
+        let snapshot = app.snapshot().expect("snapshot");
+        let mut terminal = Terminal::new(TestBackend::new(80, 14)).expect("terminal");
+        terminal
+            .draw(|f| render_run_cost(f, f.area(), snapshot, app.utc_offset(), &theme))
+            .expect("draw should not fail");
+        terminal
+    }
+
+    /// The foreground of every drawn braille cell, in reading order.
+    fn braille_fgs(terminal: &Terminal<TestBackend>) -> Vec<Color> {
+        let buffer = terminal.backend().buffer();
+        buffer
+            .content()
+            .iter()
+            .filter(|c| {
+                c.symbol()
+                    .chars()
+                    .any(|ch| ('\u{2801}'..='\u{28ff}').contains(&ch))
+            })
+            .map(|c| c.fg)
+            .collect()
+    }
+
+    fn all_text(terminal: &Terminal<TestBackend>) -> String {
+        (0..terminal.backend().buffer().area.height)
+            .map(|y| row_text(terminal, y))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn epoch_points_drop_a_point_whose_at_does_not_parse() {
+        let points = [("2026-10-04T14:00:00Z", 0.5), ("noon", 1.0)];
+        assert_eq!(
+            epoch_points(points.into_iter()),
+            vec![(1_791_122_400.0, 0.5)]
+        );
+    }
+
+    #[test]
+    fn two_running_runs_draw_two_lines_in_the_regatta_theme() {
+        let terminal = draw_cost(&two_run_app(), ThemeId::Regatta);
+        insta::assert_snapshot!(terminal.backend().to_string());
+    }
+
+    #[test]
+    fn two_running_runs_draw_two_lines_in_the_harbor_light_theme() {
+        let terminal = draw_cost(&two_run_app(), ThemeId::HarborLight);
+        insta::assert_snapshot!(terminal.backend().to_string());
+    }
+
+    #[test]
+    fn each_line_wears_its_machines_accent_and_spend_is_dim_in_both_themes() {
+        for theme_id in THEMES {
+            let theme = crate::theme::resolve_for(theme_id, Some("truecolor"));
+            let terminal = draw_cost(&two_run_app(), theme_id);
+            let fgs = braille_fgs(&terminal);
+            for color in [
+                theme.machine_accents[0],
+                theme.machine_accents[1],
+                theme.dim,
+            ] {
+                assert!(
+                    fgs.contains(&color),
+                    "{theme_id:?}: no braille cell in {color:?}"
+                );
+            }
+            let text = all_text(&terminal);
+            assert!(
+                text.contains("r-alpha") && text.contains("r-beta"),
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_legend_name_is_drawn_in_its_runs_accent() {
+        let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
+        let terminal = draw_cost(&two_run_app(), ThemeId::Regatta);
+        let fg_of = |needle: &str| {
+            let y = (0..14)
+                .find(|y| row_text(&terminal, *y).contains(needle))
+                .unwrap_or_else(|| panic!("{needle} is not drawn"));
+            cell(&terminal, col_of(&terminal, y, needle), y).fg
+        };
+        assert_eq!(fg_of("r-alpha"), theme.machine_accents[0]);
+        assert_eq!(fg_of("r-beta"), theme.machine_accents[1]);
+    }
+
+    #[test]
+    fn a_run_with_an_empty_series_draws_nothing_and_is_not_in_the_legend() {
+        let runs = format!(
+            "{},{}",
+            cost_run("r-empty", "omarchy", ""),
+            cost_run("r-beta", "spare", BETA_SERIES)
+        );
+        let app = cost_app(&runs, SPEND_SERIES);
+        let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
+        let terminal = draw_cost(&app, ThemeId::Regatta);
+        let text = all_text(&terminal);
+        assert!(!text.contains("r-empty"), "{text}");
+        assert!(text.contains("r-beta"), "{text}");
+        let fgs = braille_fgs(&terminal);
+        assert!(fgs.contains(&theme.machine_accents[1]));
+        assert!(!fgs.contains(&theme.machine_accents[0]));
+        insta::assert_snapshot!(terminal.backend().to_string());
+    }
+
+    #[test]
+    fn with_no_point_anywhere_only_the_titled_block_is_drawn() {
+        let app = cost_app(&cost_run("r-empty", "omarchy", ""), "");
+        let terminal = draw_cost(&app, ThemeId::Regatta);
+        assert!(row_text(&terminal, 0).contains(" 8 run cost "));
+        assert!(braille_fgs(&terminal).is_empty());
+        assert!(!all_text(&terminal).contains("r-empty"));
+        assert_eq!(row_text(&terminal, 5).trim_matches(['\u{2502}', ' ']), "");
+    }
+
+    #[test]
+    fn a_run_that_is_not_running_is_not_drawn() {
+        let landed = cost_run("r-done", "omarchy", ALPHA_SERIES).replace("running", "landed");
+        let terminal = draw_cost(&cost_app(&landed, ""), ThemeId::Regatta);
+        assert!(braille_fgs(&terminal).is_empty());
+    }
+
+    #[test]
+    fn the_run_cost_band_takes_only_spare_rows_at_120x40_and_160x46() {
+        for (w, h) in [(120, 40), (160, 46)] {
+            let full = Rect::new(0, 0, w, h);
+            let mut app = two_run_app();
+            let (with, with_inbox) = layout_rects(full, &app);
+            let cost = run_cost_rect(full, &app).expect("the band has room");
+            assert!((RUN_COST_MIN_ROWS..=RUN_COST_MAX_ROWS).contains(&cost.height));
+            assert_eq!(cost.width, w);
+            assert_eq!(with_inbox.y + with_inbox.height, cost.y);
+            let history = history_rect(full, &app).expect("history band");
+            assert_eq!(cost.y + cost.height, history.y);
+            app.toggle_run_cost_frame();
+            assert_eq!(run_cost_rect(full, &app), None);
+            let (without, _) = layout_rects(full, &app);
+            assert_eq!(with[..5], without[..5], "{w}x{h}");
+            assert!(with_inbox.height >= CANVAS_INBOX_MIN);
+        }
+    }
+
+    #[test]
+    fn the_run_cost_band_is_absent_when_the_terminal_has_no_spare_rows() {
+        assert_eq!(run_cost_rect(Rect::new(0, 0, 80, 24), &two_run_app()), None);
+    }
+
+    #[test]
+    fn the_run_cost_frame_toggles_off_and_on_through_the_key_handler() {
+        use crossterm::event::KeyCode;
+        let mut app = two_run_app();
+        let area = Rect::new(0, 0, 120, 40);
+        let before = frame_rects(area, &app);
+        let title = |app: &App| {
+            let terminal = draw_page(app, ThemeId::Regatta, 120, 40);
+            (0..40).any(|y| row_text(&terminal, y).contains(" 8 run cost "))
+        };
+        assert!(title(&app));
+        crate::input::handle_key(&mut app, KeyCode::Char('8'));
+        assert!(!title(&app));
+        assert_eq!(run_cost_rect(area, &app), None);
+        crate::input::handle_key(&mut app, KeyCode::Char('8'));
+        assert!(title(&app));
+        assert_eq!(frame_rects(area, &app)[..5], before[..5]);
     }
 }
