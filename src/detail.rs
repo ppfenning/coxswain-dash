@@ -24,8 +24,13 @@ pub struct RunDetail {
     pub schema: u32,
     pub at: String,
     pub run: String,
+    // A run the store has not placed yet has no machine, and an early one no initiative or
+    // phase: tools sends null, which reads as empty.
+    #[serde(default, deserialize_with = "null_as_empty")]
     pub machine: String,
+    #[serde(default, deserialize_with = "null_as_empty")]
     pub initiative: String,
+    #[serde(default, deserialize_with = "null_as_empty")]
     pub phase: String,
     pub steps: Vec<StepDetail>,
     pub stopped_reason: Option<String>,
@@ -191,6 +196,10 @@ pub struct Housekeeping {
     pub age_hours: Option<f64>,
 }
 
+fn null_as_empty<'de, D: serde::Deserializer<'de>>(de: D) -> Result<String, D::Error> {
+    Ok(Option::<String>::deserialize(de)?.unwrap_or_default())
+}
+
 /// Deserializes one detail line into a [`DetailSnapshot`]. Does nothing but deserialize.
 pub fn parse_detail(line: &str) -> Result<DetailSnapshot, serde_json::Error> {
     serde_json::from_str(line)
@@ -351,6 +360,19 @@ mod tests {
                 assert_eq!(machine.checkouts["coxswain-dash"].behind_main, 3);
             }
             other => panic!("expected DetailSnapshot::Machine, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_detail_reads_a_run_with_a_null_machine_initiative_and_phase() {
+        let line = r#"{"schema": 1, "kind": "run", "at": "2026-10-05T20:41:22Z", "run": "r-2", "machine": null, "initiative": null, "phase": null, "steps": [{"node": "plan", "turns": 17, "cost": 0.36, "verdict": null, "status": "done"}], "stopped_reason": null, "files": [], "last_tool_calls": [{"tool": "", "summary": "StructuredOutput", "at": ""}], "log_tail": []}"#;
+        match parse_detail(line).expect("a null machine should parse") {
+            DetailSnapshot::Run(run) => {
+                assert_eq!(run.machine, "");
+                assert_eq!(run.initiative, "");
+                assert_eq!(run.phase, "");
+            }
+            other => panic!("expected DetailSnapshot::Run, got {other:?}"),
         }
     }
 
