@@ -39,6 +39,8 @@ pub enum Outcome {
     Approved,
     Quarantined,
     Stopped,
+    /// Ended normally having built nothing (waiting on a land or a need), not a failure.
+    Idle,
     Crashed,
     #[serde(other)]
     Unknown,
@@ -581,5 +583,14 @@ mod tests {
         )
         .expect("older feed parses");
         assert_eq!(bare.phases_today, None);
+    }
+
+    #[test]
+    fn history_parses_idle_as_its_own_outcome() {
+        let row: HistoryRow = serde_json::from_str(
+            r#"{"run":"r","machine":"m","initiative":"i","ended_at":"2026-10-05T12:00:00Z","outcome":"idle","cost_usd":0.0}"#,
+        )
+        .expect("idle row parses");
+        assert_eq!(row.outcome, Outcome::Idle);
     }
 }
