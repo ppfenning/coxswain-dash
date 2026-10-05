@@ -858,6 +858,10 @@ fn render_lanes(f: &mut Frame, rect: Rect, app: &App, theme: &Theme) {
     if inner.width == 0 || inner.height == 0 {
         return;
     }
+    let runs = app.snapshot().map_or(&[][..], |s| s.runs.as_slice());
+    let list_w = lane_runs_width(inner.width, runs.len());
+    // The run lines sit beside the chart rows only; the axis keeps the full width.
+    let chart_w = inner.width - list_w;
     let history = app.lanes_history();
     let peak = lane_peak(history);
     let offset = app.utc_offset();
@@ -866,7 +870,7 @@ fn render_lanes(f: &mut Frame, rect: Rect, app: &App, theme: &Theme) {
         .map_or_else(Default::default, |(start, end)| (stamp(start), stamp(end)));
     let axis = lane_axis_line(&start, peak, &end, usize::from(inner.width));
     let chart = braille_area(
-        &lane_columns(history, usize::from(inner.width) * 2),
+        &lane_columns(history, usize::from(chart_w) * 2),
         peak,
         usize::from(inner.height - 1),
     );
@@ -879,6 +883,52 @@ fn render_lanes(f: &mut Frame, rect: Rect, app: &App, theme: &Theme) {
         )))
         .collect();
     f.render_widget(Paragraph::new(lines).style(base_style(theme)), inner);
+    if list_w > 0 {
+        let list_area = Rect {
+            x: inner.x + chart_w + 1,
+            width: list_w - 1,
+            height: inner.height - 1,
+            ..inner
+        };
+        render_lane_runs(f, list_area, runs, theme);
+    }
+}
+
+/// Width of a run line in the lanes frame: run, stage and cost.
+const LANE_RUN_WIDTH: usize = RUN_COLUMNS[0] + 1 + RUN_COLUMNS[2] + 1 + COST_WIDTH;
+
+/// The least width the lanes chart keeps when the run lines sit beside it.
+const LANE_CHART_MIN: u16 = 24;
+
+/// Columns the lanes frame gives its run lines, gap included: none when there are no runs or the
+/// chart would drop under `LANE_CHART_MIN`.
+fn lane_runs_width(inner_width: u16, runs: usize) -> u16 {
+    let wanted = LANE_RUN_WIDTH as u16 + 1;
+    if runs > 0 && inner_width >= LANE_CHART_MIN + wanted {
+        wanted
+    } else {
+        0
+    }
+}
+
+/// One run's line in the lanes frame: run, stage coloured by status, cost.
+fn lane_run_line(r: &Run, theme: &Theme) -> Line<'static> {
+    Line::from(vec![
+        Span::raw(format!("{} ", fit_cell(&r.run, RUN_COLUMNS[0]))),
+        stage_span(r, RUN_COLUMNS[2], theme),
+        Span::raw(format!(" {:>COST_WIDTH$}", cost_text(r.cost))),
+    ])
+}
+
+/// The run lines that fit `area`, then `+ N more` for the rest.
+fn render_lane_runs(f: &mut Frame, area: Rect, runs: &[Run], theme: &Theme) {
+    let (shown, more) = overflow_split(runs.len(), usize::MAX, usize::from(area.height));
+    let lines: Vec<Line> = runs[..shown]
+        .iter()
+        .map(|r| lane_run_line(r, theme))
+        .chain((more > 0).then(|| more_line(more, theme)))
+        .collect();
+    f.render_widget(Paragraph::new(lines).style(base_style(theme)), area);
 }
 
 /// A run's status word's color. The four terminal-ish statuses have their own roles; anything
@@ -894,9 +944,11 @@ fn status_color(theme: &Theme, status: &str) -> Color {
     }
 }
 
-/// Widths of the runs columns, left to right: run, machine, phase, node. ATT and COST are
-/// right-aligned in `ATT_WIDTH` and `COST_WIDTH`.
+/// Widths of the runs columns, left to right: run, machine, phase, node. The runs frame joins
+/// phase and node into one stage column of `STAGE_WIDTH`. ATT and COST are right-aligned in
+/// `ATT_WIDTH` and `COST_WIDTH`.
 const RUN_COLUMNS: [usize; 4] = [12, 10, 22, 12];
+const STAGE_WIDTH: usize = RUN_COLUMNS[2] + 1 + RUN_COLUMNS[3];
 const ATT_WIDTH: usize = 3;
 const COST_WIDTH: usize = 7;
 
@@ -913,38 +965,83 @@ fn fit_cell(text: &str, width: usize) -> String {
     format!("{cut:<width$}")
 }
 
-/// One runs line up to the status column; the header and the rows share it so they align.
-fn run_columns(prefix: &str, cells: [&str; 4], att: &str, cost: &str) -> String {
-    let [run, machine, phase, node] = cells;
-    let [run_w, machine_w, phase_w, node_w] = RUN_COLUMNS;
+/// A run's stage: `phase · node`, whichever of the two is known, or `starting` when neither is.
+fn stage_label(phase: Option<&str>, node: Option<&str>) -> String {
+    match (phase, node) {
+        (Some(phase), Some(node)) => format!("{phase} \u{b7} {node}"),
+        (Some(only), None) | (None, Some(only)) => only.to_string(),
+        (None, None) => "starting".to_string(),
+    }
+}
+
+/// A cost in dollars and cents.
+fn cost_text(dollars: f64) -> String {
+    format!("${dollars:.2}")
+}
+
+/// The stage text's colour for a run status: running is cyan, paused yellow and needs a person
+/// magenta, each borrowed from the role that already carries the hue. Any other status keeps the
+/// frame's text colour. The feed names no paused or needs-a-person status yet, so those are
+/// matched on the words `paused`, `needs_person` and `needs_chair`.
+fn stage_color(theme: &Theme, status: &str) -> Option<Color> {
+    match status {
+        "running" => Some(theme.status_running),
+        "paused" => Some(theme.meter_mid),
+        "needs_person" | "needs_chair" => Some(theme.approved),
+        _ => None,
+    }
+}
+
+/// A run's stage padded to `width` and coloured by its status. The feed sends an unknown phase
+/// or node as an empty string.
+fn stage_span(r: &Run, width: usize, theme: &Theme) -> Span<'static> {
+    let label = stage_label(
+        Some(r.phase.as_str()).filter(|s| !s.is_empty()),
+        Some(r.node.as_str()).filter(|s| !s.is_empty()),
+    );
+    let style = stage_color(theme, &r.status)
+        .map_or_else(Style::default, |color| Style::default().fg(color));
+    Span::styled(fit_cell(&label, width), style)
+}
+
+/// The runs line up to the stage column; the header and the rows share it so they align.
+fn run_lead(prefix: &str, run: &str, machine: &str) -> String {
+    let [run_w, machine_w, ..] = RUN_COLUMNS;
     format!(
-        "{prefix}{} {} {} {} {att:>ATT_WIDTH$} {cost:>COST_WIDTH$} ",
+        "{prefix}{} {} ",
         fit_cell(run, run_w),
-        fit_cell(machine, machine_w),
-        fit_cell(phase, phase_w),
-        fit_cell(node, node_w),
+        fit_cell(machine, machine_w)
     )
 }
 
+/// The runs line from the stage column to the status column.
+fn run_tail(att: &str, cost: &str) -> String {
+    format!(" {att:>ATT_WIDTH$} {cost:>COST_WIDTH$} ")
+}
+
 fn run_header(theme: &Theme) -> Line<'static> {
-    let columns = run_columns("  ", ["RUN", "MACHINE", "PHASE", "NODE"], "ATT", "COST");
-    Line::styled(format!("{columns}STATUS"), Style::default().fg(theme.dim))
+    let line = format!(
+        "{}{}{}STATUS",
+        run_lead("  ", "RUN", "MACHINE"),
+        fit_cell("STAGE", STAGE_WIDTH),
+        run_tail("ATT", "COST")
+    );
+    Line::styled(line, Style::default().fg(theme.dim))
 }
 
 /// One run's row. A selected row is prefixed `▶` and sits on `theme.selected_row`.
 fn run_row(r: &Run, selected: bool, theme: &Theme) -> Line<'static> {
     let prefix = if selected { "\u{25b6} " } else { "  " };
-    let columns = run_columns(
-        prefix,
-        [&r.run, &r.machine, &r.phase, &r.node],
-        &r.attempt.to_string(),
-        &format!("{:.2}", r.cost),
-    );
     let status = Span::styled(
         format!("\u{25cf} {}", r.status),
         Style::default().fg(status_color(theme, &r.status)),
     );
-    let line = Line::from(vec![Span::raw(columns), status]);
+    let line = Line::from(vec![
+        Span::raw(run_lead(prefix, &r.run, &r.machine)),
+        stage_span(r, STAGE_WIDTH, theme),
+        Span::raw(run_tail(&r.attempt.to_string(), &cost_text(r.cost))),
+        status,
+    ]);
     if selected {
         line.style(Style::default().fg(theme.accent).bg(theme.selected_row))
     } else {
@@ -2123,10 +2220,7 @@ mod tests {
         let rect = frame_rects(Rect::new(0, 0, 120, 40), &app)[4].expect("runs rect");
         let header = row_text(&terminal, rect.y + 1);
         let words: Vec<&str> = header.split_whitespace().skip(1).collect();
-        assert_eq!(
-            words[..7].join(" "),
-            "RUN MACHINE PHASE NODE ATT COST STATUS"
-        );
+        assert_eq!(words[..6].join(" "), "RUN MACHINE STAGE ATT COST STATUS");
         assert_eq!(
             fg_at(&terminal, rect.y + 1, "RUN"),
             Some(Color::Rgb(0x8b, 0x94, 0x9e))
@@ -2138,6 +2232,110 @@ mod tests {
                 .map(|b| row[..b].chars().count() as u16)
                 .expect("dot")
         );
+    }
+
+    #[test]
+    fn stage_label_joins_phase_and_node_or_names_the_one_known() {
+        assert_eq!(stage_label(Some("p1"), Some("build")), "p1 \u{b7} build");
+        assert_eq!(stage_label(Some("p1"), None), "p1");
+        assert_eq!(stage_label(None, Some("build")), "build");
+        assert_eq!(stage_label(None, None), "starting");
+    }
+
+    #[test]
+    fn cost_text_is_dollars_with_cents() {
+        assert_eq!(cost_text(1.37), "$1.37");
+        assert_eq!(cost_text(0.0), "$0.00");
+        assert_eq!(cost_text(12.3456), "$12.35");
+    }
+
+    #[test]
+    fn stage_color_is_cyan_yellow_or_magenta_by_status_and_none_otherwise() {
+        let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
+        assert_eq!(
+            stage_color(&theme, "running"),
+            Some(Color::Rgb(0x56, 0xd4, 0xdd))
+        );
+        assert_eq!(stage_color(&theme, "paused"), Some(MID));
+        assert_eq!(
+            stage_color(&theme, "needs_person"),
+            Some(Color::Rgb(0xd2, 0xa8, 0xff))
+        );
+        assert_eq!(stage_color(&theme, "landed"), None);
+    }
+
+    fn stage_run(name: &str, status: &str, phase: &str, node: &str, cost: f64) -> String {
+        format!(
+            r#"{{"run":"{name}","machine":"m0","phase":"{phase}","node":"{node}","attempt":1,"turns":3,"cost":{cost},"verdict":"none","status":"{status}","cost_series":[]}}"#
+        )
+    }
+
+    /// The lanes frame over the runs frame, 120 wide, drawn from one literal feed.
+    fn draw_lanes_and_runs(runs: &[String]) -> Terminal<TestBackend> {
+        let app = feed_app(&runs.join(","), "", "");
+        let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
+        let mut terminal = Terminal::new(TestBackend::new(120, 13)).expect("terminal");
+        terminal
+            .draw(|f| {
+                render_lanes(f, Rect::new(0, 0, 120, 6), &app, &theme);
+                render_runs(
+                    f,
+                    Rect::new(0, 6, 120, 7),
+                    app.snapshot().expect("feed"),
+                    None,
+                    &theme,
+                );
+            })
+            .expect("draw should not fail");
+        terminal
+    }
+
+    #[test]
+    fn the_lanes_and_runs_frames_show_each_runs_stage_and_cost_coloured_by_status() {
+        let terminal = draw_lanes_and_runs(&[
+            stage_run("run-a", "running", "p1-build", "build", 1.37),
+            stage_run("run-b", "paused", "p2-review", "review", 0.5),
+            stage_run("run-c", "needs_person", "p3-land", "land", 12.0),
+        ]);
+        insta::assert_snapshot!(terminal.backend().to_string());
+        let cyan = Some(Color::Rgb(0x56, 0xd4, 0xdd));
+        let magenta = Some(Color::Rgb(0xd2, 0xa8, 0xff));
+        // Lanes run lines sit on rows 1-3, runs rows on rows 8-10.
+        for (lanes_row, runs_row, stage, color) in [
+            (1, 8, "p1-build \u{b7} build", cyan),
+            (2, 9, "p2-review \u{b7} review", Some(MID)),
+            (3, 10, "p3-land \u{b7} land", magenta),
+        ] {
+            assert_eq!(fg_at(&terminal, lanes_row, stage), color);
+            assert_eq!(fg_at(&terminal, runs_row, stage), color);
+        }
+        assert!(row_text(&terminal, 1).contains("$1.37"));
+        assert!(row_text(&terminal, 10).contains("$12.00"));
+    }
+
+    #[test]
+    fn a_run_with_no_cost_series_phase_or_node_shows_starting_and_zero_dollars() {
+        let terminal = draw_lanes_and_runs(&[stage_run("run-a", "running", "", "", 0.0)]);
+        insta::assert_snapshot!(terminal.backend().to_string());
+        for y in [1, 8] {
+            let row = row_text(&terminal, y);
+            assert!(row.contains("starting"), "row {y}: {row:?}");
+            assert!(row.contains("$0.00"), "row {y}: {row:?}");
+        }
+    }
+
+    #[test]
+    fn at_68_columns_the_lanes_axis_keeps_its_peak_and_end_time_beside_the_run_lines() {
+        let app = app_with_fixture();
+        let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
+        let mut terminal = Terminal::new(TestBackend::new(70, 6)).expect("terminal");
+        terminal
+            .draw(|f| render_lanes(f, f.area(), &app, &theme))
+            .expect("draw should not fail");
+        assert!(row_text(&terminal, 1).contains("dash-feed-1"));
+        let axis = row_text(&terminal, 4);
+        assert!(axis.contains("lanes in use \u{b7} peak 2"), "{axis:?}");
+        assert!(axis.ends_with("00:00\u{2502}"), "{axis:?}");
     }
 
     #[test]
