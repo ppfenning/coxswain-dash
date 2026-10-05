@@ -1,9 +1,9 @@
 ---
 source: src/ui/mod.rs
-assertion_line: 1195
+assertion_line: 1289
 expression: text
 ---
-╭ 1 chair ────────────────────────────╮╭ 2 spend ────────────────────────────╮┌ chair ─────────────────────────────────┐
+╭ 1 chair ────────────────────────────╮╭ 2 spend ────────────────────────────╮┌ chair · Ctrl-] leaves ─────────────────┐
 │● chair@omarchy:1 @ omarchy · epoch 1││5 hour ░░░░ 10% · resets 2 AM        ││chair> waiting for you                  │
 │lands today 0 (- phases) · needs you ││week   █░░│ 20% of 90% stop · Sun 4 A││                                        │
 │tick - · idle · 0 refused or failed t││                                     ││                                        │
@@ -42,4 +42,4 @@ expression: text
 │today  0 lands  0 quarantines  $0.00  0 runs                                ││                                        │
 │no runs ended yet                                                           ││                                        │
 ╰────────────────────────────────────────────────────────────────────────────╯│                                        │
-1-9 frames │ p pause  k kill  m move · : palette  w watch  $ spend  h health  └────────────────────────────────────────┘
+chair · Ctrl-] leaves                                                         └────────────────────────────────────────┘

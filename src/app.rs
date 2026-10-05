@@ -352,6 +352,20 @@ impl App {
         }
     }
 
+    /// Whether the chair panel holds focus, with a session or without one.
+    pub fn chair_focused(&self) -> bool {
+        self.chair_panel.focused() || self.chair_panel_focused
+    }
+
+    /// Clears both panel focus flags and moves Regatta focus to `focus` when a frame was hit.
+    pub fn release_chair_focus_to(&mut self, focus: Option<Focus>) {
+        self.chair_panel.set_focus(false);
+        self.chair_panel_focused = false;
+        if let (Some(focus), AppPage::Regatta) = (focus, self.page) {
+            self.focus = focus;
+        }
+    }
+
     pub fn set_chair_panel_focus(&mut self, focused: bool) {
         self.chair_panel_focused = focused && self.chair_panel_shown && !self.chair_panel.is_open();
     }
