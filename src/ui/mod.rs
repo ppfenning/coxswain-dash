@@ -5,6 +5,7 @@ mod chair_card;
 pub mod initiative_drill;
 pub mod machine_drill;
 mod regatta;
+mod run_cost;
 pub mod run_drill;
 mod slipstream;
 
