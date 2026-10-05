@@ -18,14 +18,15 @@ use chrono::{DateTime, FixedOffset};
 use ratatui::{
     Frame,
     layout::Rect,
-    style::Style,
-    text::Line,
+    style::{Color, Style},
+    text::{Line, Span},
     widgets::{Block, BorderType, Borders, Clear, Paragraph},
 };
 
 use crate::actions::{Target, bindings};
 use crate::app::{App, AppPage, DetailKind, Modal};
 use crate::detail::DetailSnapshot;
+use crate::feed::{Run, RunEnd};
 use crate::theme::Theme;
 
 pub use regatta::frame_rects as regatta_frame_rects;
@@ -238,9 +239,332 @@ pub fn local_time(utc: &str, offset: FixedOffset) -> String {
     }
 }
 
+/// Which rule coloured an end chip. `Died` is the only role that may carry `status_failed`
+/// when the run has an end; `Fallback` is today's status-word chip for a run with none.
+#[allow(dead_code)] // consumed by the regatta and slipstream run lists in later tasks
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum EndRole {
+    Landed,
+    Approved,
+    Quarantined,
+    Died,
+    Idle,
+    Stopped,
+    Running,
+    Fallback,
+}
+
+/// A run's end chip. `label` is the bare kind word (the status word for `Fallback`); `spans`
+/// are what a page draws: `● label`, then ` cause` when the end carries one.
+#[allow(dead_code)] // consumed by the regatta and slipstream run lists in later tasks
+#[derive(Debug, Clone, PartialEq)]
+pub struct EndChip {
+    pub label: String,
+    pub role: EndRole,
+    pub spans: Vec<Span<'static>>,
+}
+
+/// The colour today's runs list gives a status word. Mirrors `regatta::status_color`.
+fn status_word_color(theme: &Theme, status: &str) -> Color {
+    match status {
+        "running" => theme.status_running,
+        "approved" => theme.approved,
+        "landed" => theme.landed,
+        "quarantined" => theme.quarantined,
+        "failed" => theme.status_failed,
+        _ => theme.status_waiting,
+    }
+}
+
+fn chip(
+    label: &str,
+    role: EndRole,
+    color: Color,
+    cause: Option<(&str, Color)>,
+    theme: &Theme,
+) -> EndChip {
+    let word = Span::styled(
+        format!("\u{25cf} {label}"),
+        Style::default().fg(color).bg(theme.bg),
+    );
+    let spans = match cause.filter(|(text, _)| !text.is_empty()) {
+        Some((text, cause_color)) => vec![
+            word,
+            Span::styled(
+                format!(" {text}"),
+                Style::default().fg(cause_color).bg(theme.bg),
+            ),
+        ],
+        None => vec![word],
+    };
+    EndChip {
+        label: label.to_string(),
+        role,
+        spans,
+    }
+}
+
+/// The chip for how a run ended. A run with no end gets today's chip: its status word in the
+/// status colour. Only `Died` uses `theme.status_failed`; quarantined has its own role and
+/// shows its cause dim.
+#[allow(dead_code)] // consumed by the regatta and slipstream run lists in later tasks
+pub fn end_chip(end: Option<&RunEnd>, status: &str, theme: &Theme) -> EndChip {
+    match end {
+        Some(RunEnd::Running) => chip(
+            "running",
+            EndRole::Running,
+            theme.status_running,
+            None,
+            theme,
+        ),
+        Some(RunEnd::Landed) => chip("landed", EndRole::Landed, theme.landed, None, theme),
+        Some(RunEnd::Approved) => chip("approved", EndRole::Approved, theme.approved, None, theme),
+        Some(RunEnd::Quarantined { cause }) => chip(
+            "quarantined",
+            EndRole::Quarantined,
+            theme.quarantined,
+            cause.as_deref().map(|c| (c, theme.dim)),
+            theme,
+        ),
+        Some(RunEnd::Idle) => chip("idle", EndRole::Idle, theme.dim, None, theme),
+        Some(RunEnd::Died { cause }) => chip(
+            "died",
+            EndRole::Died,
+            theme.status_failed,
+            cause.as_deref().map(|c| (c, theme.status_failed)),
+            theme,
+        ),
+        Some(RunEnd::Stopped) => chip("stopped", EndRole::Stopped, theme.dim, None, theme),
+        None => chip(
+            status,
+            EndRole::Fallback,
+            status_word_color(theme, status),
+            None,
+            theme,
+        ),
+    }
+}
+
+/// One initiative's row in a collapsed runs list: its newest run and how many runs it had.
+#[allow(dead_code)] // consumed by the regatta and slipstream run lists in later tasks
+#[derive(Debug, Clone, Copy)]
+pub struct CollapsedRun<'a> {
+    pub run: &'a Run,
+    pub count: usize,
+}
+
+/// A run id is `<initiative>-<n>`; the initiative is the id without a trailing `-<digits>`.
+/// An id without that suffix is its own initiative.
+fn initiative_of(run_id: &str) -> &str {
+    match run_id.rsplit_once('-') {
+        Some((initiative, n)) if !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) => {
+            initiative
+        }
+        _ => run_id,
+    }
+}
+
+/// The run's sequence number, the digits after the last `-`. `None` when the id has none, which
+/// sorts older than any number.
+fn run_seq(run_id: &str) -> Option<u64> {
+    run_id.rsplit_once('-').and_then(|(_, n)| n.parse().ok())
+}
+
+/// One row per initiative, in the order each initiative first appears in `runs`. The row holds
+/// the initiative's newest run, the one with the highest sequence number (the later row wins a
+/// tie), and the number of runs the initiative had. The input is not touched.
+#[allow(dead_code)] // consumed by the regatta and slipstream run lists in later tasks
+pub fn collapse_runs(runs: &[Run]) -> Vec<CollapsedRun<'_>> {
+    runs.iter()
+        .enumerate()
+        .filter(|(i, r)| {
+            let initiative = initiative_of(&r.run);
+            !runs[..*i]
+                .iter()
+                .any(|p| initiative_of(&p.run) == initiative)
+        })
+        .map(|(_, first)| {
+            let initiative = initiative_of(&first.run);
+            let group = || runs.iter().filter(|r| initiative_of(&r.run) == initiative);
+            CollapsedRun {
+                run: group().max_by_key(|r| run_seq(&r.run)).unwrap_or(first),
+                count: group().count(),
+            }
+        })
+        .collect()
+}
+
+/// The dim `×N` suffix for a collapsed row, drawn only when more than one run was collapsed.
+#[allow(dead_code)] // consumed by the regatta and slipstream run lists in later tasks
+pub fn count_suffix(count: usize, theme: &Theme) -> Option<Span<'static>> {
+    if count > 1 {
+        Some(Span::styled(
+            format!(" \u{d7}{count}"),
+            Style::default().fg(theme.dim).bg(theme.bg),
+        ))
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn run(id: &str, end: Option<RunEnd>) -> Run {
+        Run {
+            run: id.to_string(),
+            machine: "omarchy".to_string(),
+            phase: "p1".to_string(),
+            node: "build".to_string(),
+            attempt: 1,
+            turns: 0,
+            cost: 0.0,
+            verdict: "none".to_string(),
+            status: "running".to_string(),
+            cost_series: vec![],
+            end,
+        }
+    }
+
+    fn theme() -> Theme {
+        crate::theme::resolve_for(crate::app::ThemeId::Regatta, Some("truecolor"))
+    }
+
+    fn fgs(chip: &EndChip) -> Vec<Option<Color>> {
+        chip.spans.iter().map(|s| s.style.fg).collect()
+    }
+
+    #[test]
+    fn each_end_kind_has_its_label_role_and_colour() {
+        let t = theme();
+        let cases = [
+            (
+                RunEnd::Running,
+                "running",
+                EndRole::Running,
+                t.status_running,
+            ),
+            (RunEnd::Landed, "landed", EndRole::Landed, t.landed),
+            (RunEnd::Approved, "approved", EndRole::Approved, t.approved),
+            (
+                RunEnd::Quarantined { cause: None },
+                "quarantined",
+                EndRole::Quarantined,
+                t.quarantined,
+            ),
+            (RunEnd::Idle, "idle", EndRole::Idle, t.dim),
+            (
+                RunEnd::Died { cause: None },
+                "died",
+                EndRole::Died,
+                t.status_failed,
+            ),
+            (RunEnd::Stopped, "stopped", EndRole::Stopped, t.dim),
+        ];
+        for (end, label, role, color) in cases {
+            let chip = end_chip(Some(&end), "ignored", &t);
+            assert_eq!(chip.label, label);
+            assert_eq!(chip.role, role);
+            assert_eq!(fgs(&chip), vec![Some(color)], "{label}");
+            assert_eq!(chip.spans[0].content, format!("\u{25cf} {label}"));
+        }
+    }
+
+    #[test]
+    fn only_died_yields_the_failed_colour() {
+        let t = theme();
+        let others = [
+            RunEnd::Running,
+            RunEnd::Landed,
+            RunEnd::Approved,
+            RunEnd::Idle,
+            RunEnd::Stopped,
+        ];
+        for end in others {
+            let chip = end_chip(Some(&end), "", &t);
+            assert!(!fgs(&chip).contains(&Some(t.status_failed)), "{end:?}");
+        }
+        // quarantined shares status_failed's RGB in the Regatta theme, so its role is the proof
+        let q = end_chip(Some(&RunEnd::Quarantined { cause: None }), "", &t);
+        assert_eq!(q.role, EndRole::Quarantined);
+        let died = end_chip(Some(&RunEnd::Died { cause: None }), "", &t);
+        assert_eq!(died.role, EndRole::Died);
+        assert_eq!(fgs(&died), vec![Some(t.status_failed)]);
+    }
+
+    #[test]
+    fn quarantined_cause_is_dim_and_died_cause_is_failed() {
+        let t = theme();
+        let q = end_chip(
+            Some(&RunEnd::Quarantined {
+                cause: Some("review rejected twice".to_string()),
+            }),
+            "",
+            &t,
+        );
+        assert_eq!(fgs(&q), vec![Some(t.quarantined), Some(t.dim)]);
+        assert_eq!(q.spans[1].content, " review rejected twice");
+        let d = end_chip(
+            Some(&RunEnd::Died {
+                cause: Some("oom".to_string()),
+            }),
+            "",
+            &t,
+        );
+        assert_eq!(fgs(&d), vec![Some(t.status_failed), Some(t.status_failed)]);
+        assert_eq!(d.spans[1].content, " oom");
+    }
+
+    #[test]
+    fn a_run_with_no_end_keeps_the_status_word_chip() {
+        let t = theme();
+        let running = end_chip(None, "running", &t);
+        assert_eq!(running.label, "running");
+        assert_eq!(running.role, EndRole::Fallback);
+        assert_eq!(fgs(&running), vec![Some(t.status_running)]);
+        assert_eq!(
+            fgs(&end_chip(None, "weird", &t)),
+            vec![Some(t.status_waiting)]
+        );
+    }
+
+    #[test]
+    fn three_runs_of_one_initiative_collapse_to_the_newest_with_a_count_of_three() {
+        let runs = [
+            run("dash-feed-1", None),
+            run("dash-feed-3", None),
+            run("dash-feed-2", None),
+        ];
+        let rows = collapse_runs(&runs);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].run.run, "dash-feed-3");
+        assert_eq!(rows[0].count, 3);
+    }
+
+    #[test]
+    fn collapse_keeps_first_seen_order_and_leaves_the_input_alone() {
+        let runs = [
+            run("beta-4", None),
+            run("alpha-1", None),
+            run("beta-5", None),
+            run("solo", None),
+        ];
+        let rows = collapse_runs(&runs);
+        let got: Vec<(&str, usize)> = rows.iter().map(|r| (r.run.run.as_str(), r.count)).collect();
+        assert_eq!(got, vec![("beta-5", 2), ("alpha-1", 1), ("solo", 1)]);
+        let ids: Vec<&str> = runs.iter().map(|r| r.run.as_str()).collect();
+        assert_eq!(ids, vec!["beta-4", "alpha-1", "beta-5", "solo"]);
+    }
+
+    #[test]
+    fn the_count_suffix_is_dim_and_only_for_more_than_one() {
+        let t = theme();
+        assert!(count_suffix(1, &t).is_none());
+        let suffix = count_suffix(3, &t).expect("suffix");
+        assert_eq!(suffix.content, " \u{d7}3");
+        assert_eq!(suffix.style.fg, Some(t.dim));
+    }
 
     #[test]
     fn local_time_returns_unparseable_input_unchanged() {
