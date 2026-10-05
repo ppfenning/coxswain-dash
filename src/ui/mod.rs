@@ -2,20 +2,14 @@
 //! module owns its own `render`.
 
 mod chair_card;
-// A later task wires the confirm dialog into the app.
-#[allow(dead_code)]
 pub mod confirm_dialog;
 pub mod initiative_drill;
 pub mod machine_drill;
-// A later task wires the palette frame into the app.
-#[allow(dead_code)]
 pub mod palette_frame;
 mod regatta;
 mod run_cost;
 pub mod run_drill;
 mod slipstream;
-// A later task wires the status line into the app.
-#[allow(dead_code)]
 pub mod status_line;
 
 use chrono::{DateTime, FixedOffset};
@@ -28,7 +22,7 @@ use ratatui::{
 };
 
 use crate::actions::{Target, bindings};
-use crate::app::{App, AppPage, DetailKind};
+use crate::app::{App, AppPage, DetailKind, Modal};
 use crate::detail::DetailSnapshot;
 use crate::theme::Theme;
 
@@ -37,7 +31,31 @@ pub use regatta::frame_rects as regatta_frame_rects;
 /// Drawn in every frame but the chair panel while the feed has failed before its first snapshot.
 const NO_FEED: &str = "no feed yet";
 
+/// The page or detail view, then the status line over the footer row, then the open modal.
 pub fn render(f: &mut Frame, app: &App, theme: &Theme) {
+    render_base(f, app, theme);
+    render_status(f, app, theme);
+    render_modal(f, app, theme);
+}
+
+/// While a status shows it replaces the footer row; the page body is never resized.
+fn render_status(f: &mut Frame, app: &App, theme: &Theme) {
+    if app.status().is_some() {
+        let row = last_row(f.area());
+        f.render_widget(Clear, row);
+        status_line::render(f, row, theme, app.status());
+    }
+}
+
+fn render_modal(f: &mut Frame, app: &App, theme: &Theme) {
+    match app.modal() {
+        Some(Modal::Confirm(state)) => confirm_dialog::render(f, f.area(), theme, state),
+        Some(Modal::Palette(state)) => palette_frame::render(f, f.area(), theme, state),
+        None => {}
+    }
+}
+
+fn render_base(f: &mut Frame, app: &App, theme: &Theme) {
     match (app.detail(), app.detail_error()) {
         (Some((kind, id, _)), Some(err)) => render_detail_error(f, *kind, id, err, theme),
         (Some((_, _, Some(DetailSnapshot::Run(detail)))), None) => {
@@ -441,5 +459,122 @@ mod tests {
         let text = screen(&draw(&app, &theme));
         assert!(text.contains("feed error: ValueError: detail boom"));
         assert!(!text.contains("loading"));
+    }
+
+    use crate::app::Origin;
+    use crate::exec::ExecResult;
+    use crossterm::event::{KeyCode, KeyEvent};
+
+    fn app_with_feed() -> App {
+        let snapshot =
+            crate::feed::parse_snapshot(FEED_FIXTURE.trim()).expect("fixture should parse");
+        let mut app = App::new(AppPage::Regatta, ThemeId::Regatta);
+        app.apply_snapshot(snapshot);
+        app
+    }
+
+    fn stop_result(code: Option<i32>, output: &str) -> ExecResult {
+        ExecResult {
+            argv: ["cox", "runs", "stop", "dash-feed-1"]
+                .map(str::to_owned)
+                .to_vec(),
+            code,
+            output: output.to_owned(),
+        }
+    }
+
+    /// The given row ranges of the 120x40 screen, so a snapshot holds the rows a modal or the
+    /// status line can change. The rest of the page is held by the Regatta page's own snapshots.
+    fn excerpt(app: &App, id: ThemeId, ranges: &[std::ops::Range<usize>]) -> String {
+        let theme = crate::theme::resolve_for(id, Some("truecolor"));
+        let all = rows(&draw(app, &theme));
+        ranges
+            .iter()
+            .flat_map(|range| all[range.clone()].iter().cloned())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn type_text(app: &mut App, text: &str) {
+        for c in text.chars() {
+            app.modal_key(KeyEvent::from(KeyCode::Char(c)));
+        }
+    }
+
+    #[test]
+    fn the_confirm_dialog_is_drawn_over_the_regatta_page() {
+        let mut app = app_with_feed();
+        assert!(app.begin_action('k'));
+        let text = excerpt(&app, ThemeId::Regatta, &[15..23, 39..40]);
+        assert!(text.contains("$ cox runs stop dash-feed-1"));
+        insta::assert_snapshot!(text);
+    }
+
+    #[test]
+    fn the_confirm_dialog_is_drawn_in_the_harbor_light_theme() {
+        let mut app = app_with_feed();
+        assert!(app.begin_action('k'));
+        insta::assert_snapshot!(excerpt(&app, ThemeId::HarborLight, &[15..23, 39..40]));
+    }
+
+    #[test]
+    fn the_palette_prompt_is_drawn_over_the_regatta_page() {
+        let mut app = app_with_feed();
+        app.open_palette();
+        type_text(&mut app, "route list");
+        insta::assert_snapshot!(excerpt(&app, ThemeId::Regatta, &[37..39, 39..40]));
+    }
+
+    #[test]
+    fn the_palette_frame_is_drawn_with_its_output() {
+        let mut app = app_with_feed();
+        app.open_palette();
+        type_text(&mut app, "runs stop dash-feed-1");
+        app.modal_key(KeyEvent::from(KeyCode::Enter));
+        assert!(app.take_pending().is_some());
+        app.apply_exec_result(
+            stop_result(Some(0), "stopped dash-feed-1\n"),
+            Origin::Palette,
+        );
+        let text = excerpt(&app, ThemeId::Regatta, &[0..5, 36..40]);
+        assert!(text.contains("stopped dash-feed-1"));
+        insta::assert_snapshot!(text);
+    }
+
+    #[test]
+    fn an_ok_status_replaces_the_key_bar() {
+        let mut app = app_with_feed();
+        app.apply_exec_result(
+            stop_result(Some(0), "stopped dash-feed-1\n"),
+            Origin::Action,
+        );
+        insta::assert_snapshot!(excerpt(&app, ThemeId::Regatta, &[37..39, 39..40]));
+    }
+
+    #[test]
+    fn a_failed_status_replaces_the_key_bar() {
+        let mut app = app_with_feed();
+        app.apply_exec_result(stop_result(Some(2), "no such run\n"), Origin::Action);
+        insta::assert_snapshot!(excerpt(&app, ThemeId::Regatta, &[37..39, 39..40]));
+    }
+
+    #[test]
+    fn a_status_takes_the_footer_row_and_leaves_the_frame_rects_alone() {
+        let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
+        let area = Rect::new(0, 0, 120, 40);
+        let mut app = app_with_feed();
+        let bare = rows(&draw(&app, &theme));
+        assert!(bare[39].contains("1-6 frames"));
+        let rects = regatta_frame_rects(area, &app);
+
+        app.apply_exec_result(
+            stop_result(Some(0), "stopped dash-feed-1\n"),
+            Origin::Action,
+        );
+        let with_status = rows(&draw(&app, &theme));
+        assert_eq!(regatta_frame_rects(area, &app), rects);
+        assert!(with_status[39].starts_with("stopped dash-feed-1"));
+        assert!(!with_status[39].contains("frames"));
+        assert_eq!(with_status[..39], bare[..39]);
     }
 }

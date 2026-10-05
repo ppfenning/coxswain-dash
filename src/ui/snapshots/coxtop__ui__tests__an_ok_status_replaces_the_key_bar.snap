@@ -1,0 +1,8 @@
+---
+source: src/ui/mod.rs
+assertion_line: 551
+expression: "excerpt(&app, ThemeId::Regatta, &[37..40])"
+---
+│no runs ended yet                                                                                                     │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+stopped dash-feed-1

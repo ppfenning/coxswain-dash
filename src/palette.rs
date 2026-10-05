@@ -147,6 +147,8 @@ impl PaletteState {
     }
 
     /// The last parse error, shown in the status area until the next edit.
+    // Drawing the parse error is a later frame task; only tests read it today.
+    #[allow(dead_code)]
     pub fn status(&self) -> Option<&str> {
         self.status.as_deref()
     }

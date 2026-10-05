@@ -2,26 +2,18 @@
 //! rendering by page, and turns Tab/BackTab/t/digit keys into `App` mutations. `q` and Ctrl-C
 //! save the page and theme and exit.
 
-// A later task wires the actions into the app.
-#[allow(dead_code)]
 mod actions;
 mod app;
 // The panel's drawing and `start_session` are not wired yet.
 #[allow(dead_code)]
 mod chair_panel;
 mod config;
-// A later task wires the confirm dialog into the app.
-#[allow(dead_code)]
 mod confirm;
 mod decision_card;
 mod detail;
-// A later task wires the command runner into the app.
-#[allow(dead_code)]
 mod exec;
 mod feed;
 mod input;
-// A later task wires the colon palette into the app.
-#[allow(dead_code)]
 mod palette;
 // Only `RealPty` is used outside tests; `FakePty` is the test seam.
 #[allow(dead_code)]
@@ -29,8 +21,9 @@ mod pty;
 mod theme;
 mod ui;
 
+use std::collections::VecDeque;
 use std::io::{self, BufRead, BufReader, Write};
-use std::sync::mpsc;
+use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
 use crossterm::event::{
@@ -44,7 +37,8 @@ use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::Rect;
 
-use app::{App, AppPage, DetailKind, ThemeId};
+use app::{App, AppPage, DetailKind, Origin, ThemeId};
+use exec::{CmdRunner, ExecResult};
 
 fn version_line() -> String {
     format!("coxtop {}", env!("CARGO_PKG_VERSION"))
@@ -80,13 +74,8 @@ fn spawn_detail_reader(
     (child, rx)
 }
 
-fn main() {
-    eprintln!("{}", version_line());
-
-    let (page, theme_id) =
-        config::load_state(&config::state_path()).unwrap_or((AppPage::Regatta, ThemeId::Regatta));
-    let mut app = App::new(page, theme_id).with_utc_offset(*chrono::Local::now().offset());
-
+/// Spawns `cox dash --feed` and reads its stdout on a thread into a fresh channel.
+fn spawn_feed_reader() -> (std::process::Child, mpsc::Receiver<String>) {
     let mut child = feed::spawn_feed(Some(2));
     let stdout = child.stdout.take().expect("feed stdout should be piped");
     let (tx, rx) = mpsc::channel::<String>();
@@ -98,6 +87,35 @@ fn main() {
             }
         }
     });
+    (child, rx)
+}
+
+/// Replaces the feed child with a fresh one, which emits a snapshot at once. The loop has no
+/// refresh tick of its own: the feed's `--interval` is the tick, so this is the early one.
+fn restart_feed(mut child: std::process::Child) -> (std::process::Child, mpsc::Receiver<String>) {
+    let _ = child.kill();
+    let _ = child.wait();
+    spawn_feed_reader()
+}
+
+/// The origin a finished command's result goes to: the oldest started command still waiting.
+/// `None` when no command is waiting, and the result is dropped.
+fn pair_origin(queue: &mut VecDeque<Origin>, _result: &ExecResult) -> Option<Origin> {
+    queue.pop_front()
+}
+
+fn main() {
+    eprintln!("{}", version_line());
+
+    let (page, theme_id) =
+        config::load_state(&config::state_path()).unwrap_or((AppPage::Regatta, ThemeId::Regatta));
+    let mut app = App::new(page, theme_id).with_utc_offset(*chrono::Local::now().offset());
+
+    let (mut child, mut rx) = spawn_feed_reader();
+
+    let runner: Arc<dyn CmdRunner> = Arc::new(exec::RealRunner::cox());
+    let (exec_tx, exec_rx) = mpsc::channel::<ExecResult>();
+    let mut origins: VecDeque<Origin> = VecDeque::new();
 
     enable_raw_mode().expect("failed to enable raw mode");
     let mut out = io::stdout();
@@ -174,6 +192,25 @@ fn main() {
             }
         }
 
+        if let Some(pending) = app.take_pending() {
+            origins.push_back(pending.origin);
+            exec::start(Arc::clone(&runner), pending.argv, exec_tx.clone());
+            changed = true;
+        }
+
+        let mut refresh = false;
+        while let Ok(result) = exec_rx.try_recv() {
+            let code = result.code;
+            if let Some(origin) = pair_origin(&mut origins, &result) {
+                app.apply_exec_result(result, origin);
+                refresh = refresh || code == Some(0);
+                changed = true;
+            }
+        }
+        if refresh {
+            (child, rx) = restart_feed(child);
+        }
+
         if app.chair_panel().is_open() {
             app.chair_panel_mut().poll();
             changed = true;
@@ -221,6 +258,82 @@ mod tests {
     #[test]
     fn the_version_line_names_the_binary() {
         assert!(version_line().starts_with("coxtop "));
+    }
+
+    fn done() -> ExecResult {
+        ExecResult {
+            argv: vec!["cox".to_owned()],
+            code: Some(0),
+            output: String::new(),
+        }
+    }
+
+    #[test]
+    fn results_pair_with_origins_in_start_order() {
+        let mut queue = VecDeque::from([Origin::Action, Origin::Palette]);
+        assert_eq!(pair_origin(&mut queue, &done()), Some(Origin::Action));
+        assert_eq!(pair_origin(&mut queue, &done()), Some(Origin::Palette));
+    }
+
+    #[test]
+    fn an_extra_result_with_an_empty_queue_has_no_origin() {
+        let mut queue = VecDeque::new();
+        assert_eq!(pair_origin(&mut queue, &done()), None);
+    }
+
+    struct FakeRunner {
+        result: ExecResult,
+        calls: Arc<std::sync::Mutex<Vec<Vec<String>>>>,
+    }
+
+    impl CmdRunner for FakeRunner {
+        fn run(&self, argv: &[String]) -> ExecResult {
+            self.calls.lock().unwrap().push(argv.to_vec());
+            self.result.clone()
+        }
+    }
+
+    #[test]
+    fn a_confirmed_action_runs_once_with_its_argv_and_sets_the_status() {
+        let json = include_str!("../tests/fixtures/dash_feed_v1.json");
+        let mut app = App::new(AppPage::Regatta, ThemeId::Regatta);
+        app.apply_snapshot(feed::parse_snapshot(json).expect("fixture should parse"));
+        assert!(app.begin_action('k'));
+        app.modal_key(crossterm::event::KeyEvent::new(
+            KeyCode::Char('y'),
+            KeyModifiers::NONE,
+        ));
+
+        let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let argv: Vec<String> = ["cox", "runs", "stop", "dash-feed-1"]
+            .map(str::to_owned)
+            .to_vec();
+        let runner: Arc<dyn CmdRunner> = Arc::new(FakeRunner {
+            result: ExecResult {
+                argv: argv.clone(),
+                code: Some(0),
+                output: "stopped dash-feed-1\n".to_owned(),
+            },
+            calls: Arc::clone(&calls),
+        });
+        let (tx, rx) = mpsc::channel::<ExecResult>();
+        let mut origins = VecDeque::new();
+
+        let pending = app.take_pending().expect("a confirmed action is pending");
+        origins.push_back(pending.origin);
+        exec::start(runner, pending.argv, tx);
+        let result = rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the runner should deliver a result");
+        assert_eq!(app.status(), None);
+        let origin = pair_origin(&mut origins, &result).expect("the origin is queued");
+        app.apply_exec_result(result, origin);
+
+        assert_eq!(*calls.lock().unwrap(), vec![argv]);
+        assert_eq!(
+            app.status(),
+            Some(&(exec::StatusLevel::Ok, "stopped dash-feed-1".to_owned()))
+        );
     }
 
     #[test]

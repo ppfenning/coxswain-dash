@@ -2696,6 +2696,8 @@ mod tests {
         use crossterm::event::KeyCode;
         let before = app_with_fixture();
         let mut layout = app_with_fixture();
+        // `p` pauses a run, so the layout toggle is pressed on the queue list.
+        crate::input::handle_key(&mut layout, KeyCode::Right);
         crate::input::handle_key(&mut layout, KeyCode::Char('p'));
         assert_ne!(
             layout.regatta_layout_preset(),
