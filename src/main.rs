@@ -2,15 +2,27 @@
 //! rendering by page, and turns Tab/BackTab/t/digit keys into `App` mutations. `q` and Ctrl-C
 //! save the page and theme and exit.
 
+// A later task wires the actions into the app.
+#[allow(dead_code)]
+mod actions;
 mod app;
 // The panel's drawing and `start_session` are not wired yet.
 #[allow(dead_code)]
 mod chair_panel;
 mod config;
+// A later task wires the confirm dialog into the app.
+#[allow(dead_code)]
+mod confirm;
 mod decision_card;
 mod detail;
+// A later task wires the command runner into the app.
+#[allow(dead_code)]
+mod exec;
 mod feed;
 mod input;
+// A later task wires the colon palette into the app.
+#[allow(dead_code)]
+mod palette;
 // Only `RealPty` is used outside tests; `FakePty` is the test seam.
 #[allow(dead_code)]
 mod pty;
