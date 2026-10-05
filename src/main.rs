@@ -18,6 +18,15 @@ mod palette;
 // Only `RealPty` is used outside tests; `FakePty` is the test seam.
 #[allow(dead_code)]
 mod pty;
+// The settings model is not wired into the `App` yet.
+#[allow(dead_code)]
+mod settings;
+// The settings screen state is not wired into the `App` yet.
+#[allow(dead_code)]
+mod settings_screen;
+// Staged settings edits are not wired into the `App` yet.
+#[allow(dead_code)]
+mod settings_stage;
 mod theme;
 mod ui;
 
