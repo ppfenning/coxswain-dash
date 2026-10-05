@@ -6,9 +6,10 @@ use std::process::{Command, Stdio};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
 
+use crate::actions::Target;
 use crate::app::{App, Focus, PANEL_COLS, PANEL_ROWS};
 use crate::decision_card::KeyOutcome;
-use crate::form::KEY_ADD_MACHINE;
+use crate::form::{KEY_ADD_MACHINE, KEY_EDIT, KEY_NEW, KEY_REMOVE};
 
 /// Runs the card's answer argv without waiting on it. A failed spawn has nowhere to report to
 /// and the decision stays open in the feed, so the error is dropped here at the edge.
@@ -152,7 +153,19 @@ pub fn handle_key(app: &mut App, key: KeyCode) {
         KeyCode::Char(c) if c == KEY_ADD_MACHINE && app.focus() == Focus::Machines => {
             app.open_add_machine()
         }
+        KeyCode::Char(c) if c == KEY_NEW && app.focus() == Focus::Queue => {
+            app.open_new_initiative()
+        }
+        KeyCode::Char(c) if c == KEY_EDIT => on_initiative(app, App::begin_edit),
+        KeyCode::Char(c) if c == KEY_REMOVE => on_initiative(app, App::open_remove_initiative),
         _ => {}
+    }
+}
+
+/// Applies `act` to the initiative `app.target()` names; any other target does nothing.
+fn on_initiative(app: &mut App, act: fn(&mut App, &str)) {
+    if let Some(Target::Initiative(id)) = app.target() {
+        act(app, &id)
     }
 }
 
@@ -1164,5 +1177,81 @@ mod tests {
         handle_key(&mut app, KeyCode::Char('a'));
         assert_eq!(confirm_command(&app), Some("cox host activate m0"));
         assert!(app.form().is_none());
+    }
+
+    /// Two queue rows (`q0`, `q1`), one machine and one inbox item.
+    fn snapshot_with_queue() -> crate::feed::FeedSnapshot {
+        let json = r#"{"schema":1,"at":"2026-09-29T00:00:00Z","chair":{"holder":"h","host":"h","epoch":1,"liveness":"live","beat_age_s":0},"spend":{"five_hour_fraction":0.0,"five_hour_source":"meter","weekly_fraction":0.0,"weekly_source":"meter","hard_stop_fraction":0.0,"five_hour_resets_at":"2026-09-29T00:00:00Z","weekly_resets_at":"2026-09-29T00:00:00Z"},"machines":[{"name":"m0","state":"active","lanes_in_use":0,"capacity":3,"login_ok":true,"login_checked_at":"2026-09-29T00:00:00Z","beat_age_s":0,"checkouts":{}}],"runs":[],"queue":[{"initiative":"q0","priority":1,"phases_landed":0,"phases_total":1,"current_phase":"p1"},{"initiative":"q1","priority":2,"phases_landed":0,"phases_total":1,"current_phase":"p1"}],"inbox":[{"kind":"needs_chair","target":"t-1","reason":"r"}],"watch":[]}"#;
+        crate::feed::parse_snapshot(json).expect("literal snapshot should parse")
+    }
+
+    fn app_with_focus(rights: usize) -> App {
+        let mut app = App::new(AppPage::Regatta, ThemeId::Regatta);
+        app.apply_snapshot(snapshot_with_queue());
+        (0..rights).for_each(|_| handle_key(&mut app, KeyCode::Right));
+        app
+    }
+
+    fn app_on_queue() -> App {
+        let app = app_with_focus(1);
+        assert_eq!(app.focus(), Focus::Queue);
+        app
+    }
+
+    fn nothing_opened(app: &mut App) -> bool {
+        app.form().is_none() && app.modal().is_none() && app.take_detail_request().is_none()
+    }
+
+    #[test]
+    fn the_new_key_on_the_queue_frame_opens_the_new_form() {
+        let mut app = app_on_queue();
+        handle_key(&mut app, KeyCode::Char(KEY_NEW));
+        assert_eq!(app.form().map(|f| f.title.as_str()), Some("New initiative"));
+    }
+
+    #[test]
+    fn the_edit_key_on_a_selected_queue_row_asks_for_that_initiatives_detail() {
+        let mut app = app_on_queue();
+        app.select_next();
+        handle_key(&mut app, KeyCode::Char(KEY_EDIT));
+        assert_eq!(app.take_detail_request(), Some("q1".to_string()));
+    }
+
+    #[test]
+    fn the_edit_key_with_the_drill_down_open_targets_the_drill_down_not_the_selection() {
+        let mut app = app_on_queue();
+        app.open_detail();
+        app.select_next();
+        handle_key(&mut app, KeyCode::Char(KEY_EDIT));
+        assert_eq!(app.take_detail_request(), Some("q0".to_string()));
+    }
+
+    #[test]
+    fn the_remove_key_on_a_queue_row_opens_the_remove_form() {
+        let mut app = app_on_queue();
+        handle_key(&mut app, KeyCode::Char(KEY_REMOVE));
+        assert_eq!(
+            app.form().map(|f| f.title.as_str()),
+            Some("Remove initiative q0")
+        );
+    }
+
+    #[test]
+    fn the_remove_key_on_an_inbox_item_still_opens_the_deny_confirm() {
+        let mut app = app_with_focus(4);
+        assert_eq!(app.focus(), Focus::Inbox);
+        handle_key(&mut app, KeyCode::Char(KEY_REMOVE));
+        assert_eq!(confirm_command(&app), Some("cox inbox deny t-1"));
+        assert!(app.form().is_none());
+    }
+
+    #[test]
+    fn the_new_edit_and_remove_keys_on_the_machines_list_do_nothing_new() {
+        let mut app = app_with_focus(2);
+        assert_eq!(app.focus(), Focus::Machines);
+        [KEY_NEW, KEY_EDIT, KEY_REMOVE]
+            .into_iter()
+            .for_each(|c| handle_key(&mut app, KeyCode::Char(c)));
+        assert!(nothing_opened(&mut app));
     }
 }
