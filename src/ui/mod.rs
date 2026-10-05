@@ -11,7 +11,7 @@ mod slipstream;
 use chrono::{DateTime, FixedOffset};
 use ratatui::{
     Frame,
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::Rect,
     style::Style,
     widgets::{Block, BorderType, Borders, Clear, Paragraph},
 };
@@ -24,10 +24,6 @@ pub use regatta::frame_rects as regatta_frame_rects;
 
 /// Drawn in every frame but the chair panel while the feed has failed before its first snapshot.
 const NO_FEED: &str = "no feed yet";
-
-/// Width of Slipstream's right rail. Mirrors `RAIL_WIDTH` in `slipstream.rs`, which is private;
-/// the error line is drawn into the rail's chair block, so the two must agree.
-const SLIPSTREAM_RAIL_WIDTH: u16 = 32;
 
 pub fn render(f: &mut Frame, app: &App, theme: &Theme) {
     match (app.detail(), app.detail_error()) {
@@ -51,15 +47,16 @@ pub fn render(f: &mut Frame, app: &App, theme: &Theme) {
 fn render_page(f: &mut Frame, app: &App, theme: &Theme) {
     match (app.snapshot(), app.feed_error()) {
         (None, Some(err)) => render_feed_failed(f, app, err, theme),
-        (_, err) => {
-            match app.page() {
-                AppPage::Regatta => regatta::render(f, app, theme),
-                AppPage::Slipstream => slipstream::render(f, app, theme),
+        (_, err) => match app.page() {
+            AppPage::Regatta => {
+                regatta::render(f, app, theme);
+                if let Some(err) = err {
+                    render_error_line(f, last_row(chair_inner(f.area(), app)), err, theme);
+                }
             }
-            if let Some(err) = err {
-                render_error_line(f, last_row(chair_inner(f.area(), app)), err, theme);
-            }
-        }
+            // Slipstream draws its own error line, in its own palette.
+            AppPage::Slipstream => slipstream::render(f, app),
+        },
     }
 }
 
@@ -98,27 +95,9 @@ fn regatta_chair(area: Rect, app: &App) -> Option<Rect> {
     rects[0].or_else(|| rects.into_iter().flatten().next())
 }
 
-/// The inside of the block the chair is drawn in: Regatta's chair frame (the first visible
-/// frame when frame 1 is hidden) or Slipstream's rail chair block.
+/// The inside of Regatta's chair frame (the first visible frame when frame 1 is hidden).
 fn chair_inner(area: Rect, app: &App) -> Rect {
-    let rect = match app.page() {
-        AppPage::Regatta => regatta_chair(area, app),
-        AppPage::Slipstream => {
-            let cols = Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints([
-                    Constraint::Min(1),
-                    Constraint::Length(SLIPSTREAM_RAIL_WIDTH),
-                ])
-                .split(area);
-            let rows = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([Constraint::Ratio(1, 4); 4])
-                .split(cols[1]);
-            Some(rows[3])
-        }
-    };
-    bordered_inner(rect.unwrap_or(area))
+    bordered_inner(regatta_chair(area, app).unwrap_or(area))
 }
 
 /// Draws `feed error: <err>` on one row, in the error status color, clearing what was there.
@@ -353,9 +332,13 @@ mod tests {
         let app = app_from_stub(&script, AppPage::Slipstream);
         let theme = crate::theme::resolve(ThemeId::Regatta);
         let buffer = draw(&app, &theme);
-        assert_drawn_in(&buffer, ERROR_LINE, theme.status_failed);
+        assert_drawn_in(
+            &buffer,
+            ERROR_LINE,
+            slipstream::resolved_palette().failed_chip,
+        );
         let (x, _) = find(&buffer, ERROR_LINE).expect("error line is on screen");
-        assert!(x >= 120 - SLIPSTREAM_RAIL_WIDTH);
+        assert!(x >= 120 - slipstream::RAIL_WIDTH);
     }
 
     #[test]
