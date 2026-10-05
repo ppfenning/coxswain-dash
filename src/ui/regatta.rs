@@ -737,7 +737,7 @@ mod tests {
     fn draw_chair(chair: &str) -> Terminal<TestBackend> {
         let snapshot =
             crate::feed::parse_snapshot(&chair_feed(chair)).expect("literal feed should parse");
-        let theme = crate::theme::resolve(ThemeId::Regatta);
+        let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
         let mut terminal = Terminal::new(TestBackend::new(80, 4)).expect("terminal");
         terminal
             .draw(|f| render_chair(f, f.area(), &snapshot, &theme))
@@ -774,7 +774,7 @@ mod tests {
 
     fn draw_spend(width: u16, height: u16) -> Terminal<TestBackend> {
         let app = app_with_fixture();
-        let theme = crate::theme::resolve(ThemeId::Regatta);
+        let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
         let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
         terminal
             .draw(|f| render_spend(f, f.area(), app.snapshot().expect("snapshot"), &app, &theme))
@@ -850,7 +850,7 @@ mod tests {
 
     #[test]
     fn gradient_color_is_low_below_sixty_mid_below_eighty_five_then_high() {
-        let theme = crate::theme::resolve(ThemeId::Regatta);
+        let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
         assert_eq!(gradient_color(&theme, 0.2), LOW);
         assert_eq!(gradient_color(&theme, 0.6), MID);
         assert_eq!(gradient_color(&theme, 0.7), MID);
@@ -860,7 +860,7 @@ mod tests {
 
     #[test]
     fn a_meter_at_20_percent_fills_five_low_cells_then_track() {
-        let theme = crate::theme::resolve(ThemeId::Regatta);
+        let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
         let colors = cell_colors(&meter_cells(0.20, 26, None, &theme));
         assert_eq!(colors[..5], [Some(LOW); 5]);
         assert_eq!(colors[5..], [Some(TRACK); 21]);
@@ -868,7 +868,7 @@ mod tests {
 
     #[test]
     fn a_meter_at_70_percent_runs_low_then_mid_to_cell_17() {
-        let theme = crate::theme::resolve(ThemeId::Regatta);
+        let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
         let colors = cell_colors(&meter_cells(0.70, 26, None, &theme));
         assert_eq!(colors[..16], [Some(LOW); 16]);
         assert_eq!(colors[16..18], [Some(MID); 2]);
@@ -877,7 +877,7 @@ mod tests {
 
     #[test]
     fn a_meter_at_95_percent_runs_low_mid_then_high_to_cell_24() {
-        let theme = crate::theme::resolve(ThemeId::Regatta);
+        let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
         let colors = cell_colors(&meter_cells(0.95, 26, None, &theme));
         assert_eq!(colors[..16], [Some(LOW); 16]);
         assert_eq!(colors[16..23], [Some(MID); 7]);
@@ -896,7 +896,7 @@ mod tests {
 
     #[test]
     fn the_stop_tick_replaces_one_cell_in_the_stop_tick_color() {
-        let theme = crate::theme::resolve(ThemeId::Regatta);
+        let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
         let cells = meter_cells(0.95, 26, Some(24), &theme);
         assert_eq!(cells[24].content, "\u{2502}");
         assert_eq!(cells[24].style.fg, Some(TICK));
@@ -962,7 +962,7 @@ mod tests {
     #[test]
     fn renders_regatta_snapshot_in_the_regatta_theme() {
         let app = app_with_fixture();
-        let theme = crate::theme::resolve(ThemeId::Regatta);
+        let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
         let backend = TestBackend::new(120, 40);
         let mut terminal = Terminal::new(backend).expect("terminal");
         terminal
@@ -974,7 +974,7 @@ mod tests {
     #[test]
     fn renders_regatta_snapshot_in_the_harbor_light_theme() {
         let app = app_with_fixture();
-        let theme = crate::theme::resolve(ThemeId::HarborLight);
+        let theme = crate::theme::resolve_for(ThemeId::HarborLight, Some("truecolor"));
         let backend = TestBackend::new(120, 40);
         let mut terminal = Terminal::new(backend).expect("terminal");
         terminal
@@ -985,7 +985,7 @@ mod tests {
 
     fn title_cell_fg(theme_id: ThemeId) -> Color {
         let app = app_with_fixture();
-        let theme = crate::theme::resolve(theme_id);
+        let theme = crate::theme::resolve_for(theme_id, Some("truecolor"));
         let area = Rect::new(0, 0, 120, 40);
         let backend = TestBackend::new(120, 40);
         let mut terminal = Terminal::new(backend).expect("terminal");
@@ -1000,7 +1000,7 @@ mod tests {
     fn frame_two_title_uses_the_regatta_title_color() {
         assert_eq!(
             title_cell_fg(ThemeId::Regatta),
-            crate::theme::resolve(ThemeId::Regatta).border_focus
+            crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor")).border_focus
         );
     }
 
@@ -1008,7 +1008,7 @@ mod tests {
     fn frame_two_title_uses_the_harbor_light_title_color() {
         assert_eq!(
             title_cell_fg(ThemeId::HarborLight),
-            crate::theme::resolve(ThemeId::HarborLight).border_focus
+            crate::theme::resolve_for(ThemeId::HarborLight, Some("truecolor")).border_focus
         );
     }
 
@@ -1061,7 +1061,7 @@ mod tests {
         let app = app_with_fixture();
         assert_eq!(app.focus(), Focus::Runs);
         assert_eq!(app.selected(), 0);
-        let theme = crate::theme::resolve(theme_id);
+        let theme = crate::theme::resolve_for(theme_id, Some("truecolor"));
         let area = Rect::new(0, 0, 120, 40);
         let backend = TestBackend::new(120, 40);
         let mut terminal = Terminal::new(backend).expect("terminal");
@@ -1078,7 +1078,7 @@ mod tests {
     #[test]
     fn the_runs_frames_selected_row_is_accent_and_border_is_focus_in_the_regatta_theme() {
         let (row_fg, border_fg) = runs_row_and_border_fg(ThemeId::Regatta);
-        let theme = crate::theme::resolve(ThemeId::Regatta);
+        let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
         assert_eq!(row_fg, theme.accent);
         assert_eq!(border_fg, theme.border_focus);
     }
@@ -1086,7 +1086,7 @@ mod tests {
     #[test]
     fn the_runs_frames_selected_row_is_accent_and_border_is_focus_in_the_harbor_light_theme() {
         let (row_fg, border_fg) = runs_row_and_border_fg(ThemeId::HarborLight);
-        let theme = crate::theme::resolve(ThemeId::HarborLight);
+        let theme = crate::theme::resolve_for(ThemeId::HarborLight, Some("truecolor"));
         assert_eq!(row_fg, theme.accent);
         assert_eq!(border_fg, theme.border_focus);
     }
@@ -1137,7 +1137,7 @@ mod tests {
     #[test]
     fn the_rendered_canvas_at_80x24_gives_the_inbox_at_least_five_rows() {
         let app = app_with_fixture();
-        let theme = crate::theme::resolve(ThemeId::Regatta);
+        let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
         let area = Rect::new(0, 0, 80, 24);
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("terminal");
         terminal
@@ -1163,7 +1163,7 @@ mod tests {
     #[test]
     fn titles_are_bold_padded_in_the_title_color_and_borders_use_the_border_color() {
         let app = app_with_fixture();
-        let theme = crate::theme::resolve(ThemeId::Regatta);
+        let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
         let mut terminal = Terminal::new(TestBackend::new(120, 40)).expect("terminal");
         terminal
             .draw(|f| render(f, &app, &theme))
