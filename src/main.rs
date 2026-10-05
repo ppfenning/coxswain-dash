@@ -51,6 +51,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::Rect;
 
 use app::{App, AppPage, DetailKind, Origin, ThemeId};
+use chair_panel::CloseOutcome;
 use exec::{CmdRunner, ExecResult};
 
 fn version_line() -> String {
@@ -143,6 +144,8 @@ fn main() {
 
     let mut changed = true;
     let mut bells_rung = 0;
+    // Set when `q` met the close prompt; cleared when the answer keeps the session open.
+    let mut quit_pending = false;
     loop {
         while let Ok(line) = rx.try_recv() {
             if let Ok(snapshot) = feed::parse_snapshot(&line) {
@@ -181,13 +184,25 @@ fn main() {
                 Ok(Event::Key(key)) if key.kind == KeyEventKind::Press => {
                     // A focused panel owns every key, `q` and Ctrl-C included.
                     let is_quit = !app.chair_panel().focused()
+                        && !app.chair_panel().confirming_close()
                         && (key.code == KeyCode::Char('q')
                             || (key.code == KeyCode::Char('c')
                                 && key.modifiers.contains(KeyModifiers::CONTROL)));
                     if is_quit {
-                        break;
+                        // A started session asks first, so exit waits for the prompt's answer.
+                        match app.chair_panel_mut().request_close() {
+                            CloseOutcome::Closed => break,
+                            CloseOutcome::NeedsConfirm => quit_pending = true,
+                        }
+                    } else {
+                        input::handle_event(&mut app, key);
                     }
-                    input::handle_event(&mut app, key);
+                    if quit_pending && !app.chair_panel().confirming_close() {
+                        if !app.chair_panel().is_open() {
+                            break;
+                        }
+                        quit_pending = false;
+                    }
                     changed = true;
                 }
                 Ok(Event::Resize(cols, rows)) => {

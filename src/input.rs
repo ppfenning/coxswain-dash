@@ -6,7 +6,7 @@ use std::process::{Command, Stdio};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
 
-use crate::app::{App, Focus};
+use crate::app::{App, Focus, PANEL_COLS, PANEL_ROWS};
 use crate::decision_card::KeyOutcome;
 use crate::form::KEY_ADD_MACHINE;
 
@@ -38,10 +38,29 @@ pub fn handle_event(app: &mut App, key: KeyEvent) {
 
 /// `handle_event` with the answer runner passed in, so a test runs no process.
 pub fn handle_event_with(app: &mut App, key: KeyEvent, run: &mut dyn FnMut(&[String])) {
+    // The close prompt spends every key, so nothing reaches the pty or a handler behind it.
+    if app.chair_panel().confirming_close() {
+        match key.code {
+            KeyCode::Char('y' | 'Y') => app.answer_chair_close(true),
+            KeyCode::Char('n' | 'N') | KeyCode::Esc => app.answer_chair_close(false),
+            _ => {}
+        }
+        return;
+    }
     if app.chair_panel().focused() {
         // `Ctrl-]` makes the panel clear its own focus; either way the key is spent.
         app.chair_panel_mut().handle_key(key);
         return;
+    }
+    // A shown panel with no session keeps focus until `Ctrl-]` or a frame-focus key moves it.
+    if app.chair_panel_focused() {
+        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char(']') {
+            app.set_chair_panel_focus(false);
+            return;
+        }
+        if matches!(key.code, KeyCode::Left | KeyCode::Right) {
+            app.set_chair_panel_focus(false);
+        }
     }
     // An open modal spends every key, so the confirm's `y` never reaches the decision card.
     if app.modal().is_some() {
@@ -117,6 +136,12 @@ pub fn handle_key(app: &mut App, key: KeyCode) {
         // Arrows only: `k` is the kill action, so j/k no longer move the selection.
         KeyCode::Down => app.select_next(),
         KeyCode::Up => app.select_prev(),
+        KeyCode::Enter if app.chair_panel_awaits_start() => {
+            app.chair_panel_mut().start_session(PANEL_ROWS, PANEL_COLS);
+            app.chair_panel_mut().set_focus(true);
+            // The live pty holds focus from here; a failed start drops it back to the frames.
+            app.set_chair_panel_focus(false);
+        }
         KeyCode::Enter => app.open_detail(),
         KeyCode::Esc => app.close_detail(),
         KeyCode::Char(c) if c == KEY_ADD_MACHINE && app.focus() == Focus::Machines => {
@@ -327,6 +352,156 @@ mod tests {
             assert!(!app.chair_panel().is_open());
             assert!(fake.0.borrow().calls().contains(&crate::pty::PtyCall::Kill));
         }
+    }
+
+    /// An app on a shared fake pty with runs and machines rows and no published chair session.
+    fn app_with_rows() -> (App, crate::pty::SharedFakePty) {
+        let fake = crate::pty::SharedFakePty::default();
+        let mut app = App::default().with_pty(Box::new(fake.clone()));
+        app.apply_snapshot(snapshot_with_two_runs());
+        (app, fake)
+    }
+
+    fn spawn_cox_session() -> crate::pty::PtyCall {
+        crate::pty::PtyCall::Spawn {
+            argv: ["cox", "session"].map(String::from).to_vec(),
+            rows: PANEL_ROWS,
+            cols: PANEL_COLS,
+        }
+    }
+
+    fn kills(fake: &crate::pty::SharedFakePty) -> usize {
+        let calls = fake.0.borrow();
+        calls
+            .calls()
+            .iter()
+            .filter(|c| **c == crate::pty::PtyCall::Kill)
+            .count()
+    }
+
+    /// A started session with focus handed back, so the next key reaches `handle_key`.
+    fn app_with_started_session() -> (App, crate::pty::SharedFakePty) {
+        let (mut app, fake) = app_with_rows();
+        handle_event_with(&mut app, press(KeyCode::Char('`')), &mut |_| {});
+        handle_event_with(&mut app, press(KeyCode::Enter), &mut |_| {});
+        let release = KeyEvent::new(KeyCode::Char(']'), KeyModifiers::CONTROL);
+        handle_event_with(&mut app, release, &mut |_| {});
+        (app, fake)
+    }
+
+    #[test]
+    fn enter_on_the_shown_panel_with_no_session_spawns_cox_session_and_takes_focus() {
+        let (mut app, fake) = app_with_rows();
+        handle_event_with(&mut app, press(KeyCode::Char('`')), &mut |_| {});
+        assert!(fake.0.borrow().calls().is_empty());
+        handle_event_with(&mut app, press(KeyCode::Enter), &mut |_| {});
+        assert_eq!(fake.0.borrow().calls(), [spawn_cox_session()]);
+        assert!(app.chair_panel().started());
+        assert!(app.chair_panel().focused());
+    }
+
+    #[test]
+    fn enter_on_a_focused_frame_beside_a_shown_panel_opens_the_drill_down_and_spawns_nothing() {
+        let release = KeyEvent::new(KeyCode::Char(']'), KeyModifiers::CONTROL);
+        for give_back in [release, press(KeyCode::Right)] {
+            let (mut app, fake) = app_with_rows();
+            handle_event_with(&mut app, press(KeyCode::Char('`')), &mut |_| {});
+            assert!(app.chair_panel_focused());
+            handle_event_with(&mut app, give_back, &mut |_| {});
+            if give_back.code == KeyCode::Right {
+                handle_event_with(&mut app, press(KeyCode::Left), &mut |_| {});
+            }
+            handle_event_with(&mut app, press(KeyCode::Down), &mut |_| {});
+            handle_event_with(&mut app, press(KeyCode::Enter), &mut |_| {});
+            assert!(app.chair_panel_shown());
+            assert!(!app.chair_panel_focused());
+            let (kind, id, _) = app.detail().expect("detail should be open");
+            assert_eq!(*kind, crate::app::DetailKind::Run);
+            assert_eq!(id, "r1");
+            assert!(fake.0.borrow().calls().is_empty());
+        }
+    }
+
+    /// `snapshot_with_two_runs` with chair session `s1` published and no decisions.
+    fn snapshot_with_two_runs_and_a_session() -> crate::feed::FeedSnapshot {
+        let snap = snapshot_with_two_runs();
+        crate::feed::FeedSnapshot {
+            chair: crate::feed::Chair {
+                session: "s1".to_string(),
+                ..snap.chair
+            },
+            ..snap
+        }
+    }
+
+    #[test]
+    fn enter_on_the_focused_panel_with_a_published_session_does_not_spawn() {
+        let (mut app, fake) = app_with_rows();
+        handle_event_with(&mut app, press(KeyCode::Char('`')), &mut |_| {});
+        app.apply_snapshot(snapshot_with_two_runs_and_a_session());
+        assert!(app.chair_panel_focused());
+        assert!(!app.chair_panel().is_open());
+        handle_event_with(&mut app, press(KeyCode::Enter), &mut |_| {});
+        assert!(fake.0.borrow().calls().is_empty());
+        handle_event_with(&mut app, press(KeyCode::Char('`')), &mut |_| {});
+        let attach = crate::pty::PtyCall::Spawn {
+            argv: ["claude", "attach", "s1"].map(String::from).to_vec(),
+            rows: PANEL_ROWS,
+            cols: PANEL_COLS,
+        };
+        assert_eq!(fake.0.borrow().calls(), [attach]);
+    }
+
+    #[test]
+    fn backtick_on_a_started_session_asks_and_y_then_kills_once() {
+        let (mut app, fake) = app_with_started_session();
+        handle_event_with(&mut app, press(KeyCode::Char('`')), &mut |_| {});
+        assert_eq!(kills(&fake), 0);
+        assert!(app.chair_panel().confirming_close());
+        assert!(app.chair_panel().is_open());
+        handle_event_with(&mut app, press(KeyCode::Char('y')), &mut |_| {});
+        assert_eq!(kills(&fake), 1);
+        assert!(!app.chair_panel().is_open());
+        assert!(!app.chair_panel_shown());
+    }
+
+    #[test]
+    fn n_and_esc_keep_the_started_session_and_other_keys_are_swallowed() {
+        let (mut app, fake) = app_with_started_session();
+        handle_event_with(&mut app, press(KeyCode::Char('`')), &mut |_| {});
+        handle_event_with(&mut app, press(KeyCode::Char('x')), &mut |_| {});
+        handle_event_with(&mut app, press(KeyCode::Tab), &mut |_| {});
+        assert!(app.chair_panel().confirming_close());
+        assert_eq!(app.page(), AppPage::Regatta);
+        assert!(
+            !fake
+                .0
+                .borrow()
+                .calls()
+                .iter()
+                .any(|c| matches!(c, crate::pty::PtyCall::Write(_)))
+        );
+        handle_event_with(&mut app, press(KeyCode::Char('n')), &mut |_| {});
+        assert!(!app.chair_panel().confirming_close());
+        handle_event_with(&mut app, press(KeyCode::Char('`')), &mut |_| {});
+        handle_event_with(&mut app, press(KeyCode::Esc), &mut |_| {});
+        assert!(!app.chair_panel().confirming_close());
+        assert!(app.chair_panel().is_open());
+        assert!(app.chair_panel_shown());
+        assert_eq!(kills(&fake), 0);
+    }
+
+    #[test]
+    fn an_attach_process_closes_on_backtick_without_asking() {
+        let fake = crate::pty::SharedFakePty::default();
+        let mut app = App::default().with_pty(Box::new(fake.clone()));
+        app.apply_snapshot(snapshot_with_decisions(false));
+        handle_event_with(&mut app, press(KeyCode::Char('`')), &mut |_| {});
+        let release = KeyEvent::new(KeyCode::Char(']'), KeyModifiers::CONTROL);
+        handle_event_with(&mut app, release, &mut |_| {});
+        handle_event_with(&mut app, press(KeyCode::Char('`')), &mut |_| {});
+        assert!(!app.chair_panel().confirming_close());
+        assert_eq!(kills(&fake), 1);
     }
 
     #[test]

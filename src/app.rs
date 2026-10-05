@@ -15,7 +15,7 @@ use chrono::{DateTime, FixedOffset};
 use crossterm::event::KeyEvent;
 
 use crate::actions::{Target, action_for, move_prefill};
-use crate::chair_panel::ChairPanel;
+use crate::chair_panel::{ChairPanel, CloseOutcome};
 use crate::confirm::{ConfirmAnswer, ConfirmState};
 use crate::decision_card::DecisionCard;
 use crate::detail::{DetailSnapshot, InitiativeDetail};
@@ -32,8 +32,8 @@ use crate::settings_stage::{StagedEdit, argv as set_argv, command_string};
 
 /// The pty size the panel opens at. The rendering task sizes it from the layout; until then a
 /// resize event from `main` is the only thing that changes it.
-const PANEL_ROWS: u16 = 24;
-const PANEL_COLS: u16 = 80;
+pub(crate) const PANEL_ROWS: u16 = 24;
+pub(crate) const PANEL_COLS: u16 = 80;
 
 /// How many layout presets the regatta page cycles through.
 const REGATTA_LAYOUT_PRESET_COUNT: usize = 4;
@@ -175,6 +175,11 @@ pub struct App {
     selected: [[usize; 5]; 2],
     detail: Option<(DetailKind, String, Option<DetailSnapshot>)>,
     chair_panel: ChairPanel<Box<dyn PtySession>>,
+    /// Set by the backtick toggle. A shown panel with no open session is where Enter starts one.
+    chair_panel_shown: bool,
+    /// Focus on a shown panel with no session open. `ChairPanel` focus needs a live pty, so the
+    /// focus that lets Enter start a session lives here. Ctrl-], Left, Right and hiding clear it.
+    chair_panel_focused: bool,
     decision_card: DecisionCard,
     card_visible: bool,
     /// How many times a new decision asked for the bell. `main` rings once per increment.
@@ -246,6 +251,8 @@ impl Default for App {
             selected: [[0; 5]; 2],
             detail: None,
             chair_panel: ChairPanel::new(Box::new(RealPty::new())),
+            chair_panel_shown: false,
+            chair_panel_focused: false,
             decision_card: DecisionCard::new(),
             card_visible: false,
             bells: 0,
@@ -310,15 +317,63 @@ impl App {
         self.bells
     }
 
-    /// Closes an open panel, killing only the local attach process. A closed panel attaches to
-    /// the chair's session, if the feed names one, and takes focus.
+    /// Whether the backtick toggle has the panel showing, open or not.
+    pub fn chair_panel_shown(&self) -> bool {
+        self.chair_panel_shown
+    }
+
+    /// Whether a shown panel with no session open holds focus.
+    pub fn chair_panel_focused(&self) -> bool {
+        self.chair_panel_focused
+    }
+
+    /// Hands focus to or from a shown panel with no session. Only a shown, closed panel takes it.
+    pub fn set_chair_panel_focus(&mut self, focused: bool) {
+        self.chair_panel_focused = focused && self.chair_panel_shown && !self.chair_panel.is_open();
+    }
+
+    /// True when Enter should start a session: the panel is shown and focused with nothing
+    /// running, no error, and the feed publishes no chair session to attach to.
+    pub fn chair_panel_awaits_start(&self) -> bool {
+        self.chair_panel_focused
+            && self.chair_panel_shown
+            && !self.chair_panel.is_open()
+            && self.chair_panel.error().is_none()
+            && self.published_session().is_none()
+    }
+
+    fn published_session(&self) -> Option<&str> {
+        self.snapshot.as_ref().and_then(|s| session_id(&s.chair))
+    }
+
+    /// An open panel goes through `request_close`, and a started session waits there for
+    /// `answer_chair_close`. A shown panel with no session attaches if the feed now names one,
+    /// and hides otherwise. A hidden panel attaches to the chair's session, if the feed names
+    /// one, and takes focus either way.
     pub fn toggle_chair_panel(&mut self) {
         if self.chair_panel.is_open() {
-            self.chair_panel.close();
+            if self.chair_panel.request_close() == CloseOutcome::Closed {
+                self.chair_panel_shown = false;
+                self.chair_panel_focused = false;
+            }
+        } else if self.chair_panel_shown && self.published_session().is_none() {
+            self.chair_panel_shown = false;
+            self.chair_panel_focused = false;
         } else {
-            let id = self.snapshot.as_ref().and_then(|s| session_id(&s.chair));
-            self.chair_panel.open(id, PANEL_ROWS, PANEL_COLS);
+            self.chair_panel_shown = true;
+            let id = self.published_session().map(str::to_string);
+            self.chair_panel.open(id.as_deref(), PANEL_ROWS, PANEL_COLS);
             self.chair_panel.set_focus(true);
+            self.set_chair_panel_focus(true);
+        }
+    }
+
+    /// Answers the close prompt. Yes closes the session and hides the panel.
+    pub fn answer_chair_close(&mut self, close: bool) {
+        self.chair_panel.answer_close(close);
+        if close {
+            self.chair_panel_shown = false;
+            self.chair_panel_focused = false;
         }
     }
 
