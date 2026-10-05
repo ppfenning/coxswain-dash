@@ -1,8 +1,9 @@
 ---
 source: src/ui/regatta.rs
+assertion_line: 3113
 expression: terminal.backend().to_string()
 ---
-"╭ history ─────────────────────────────────────────────────────────────────────╮"
+"╭ 7 history ───────────────────────────────────────────────────────────────────╮"
 "│today  3 lands  1 quarantines  $4.20  5 runs                                  │"
 "│no runs ended yet                                                             │"
 "│                                                                              │"

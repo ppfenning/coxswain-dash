@@ -55,13 +55,15 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
             render_frame(f, rect, idx, snapshot, app, theme);
         }
     }
-    render_inbox(
-        f,
-        inbox_area,
-        snapshot,
-        frame_selection(app, Focus::Inbox),
-        theme,
-    );
+    if app.regatta_inbox_visible() {
+        render_inbox(
+            f,
+            inbox_area,
+            snapshot,
+            frame_selection(app, Focus::Inbox),
+            theme,
+        );
+    }
     if let Some(rect) = history_rect(area, app) {
         render_history(
             f,
@@ -168,15 +170,26 @@ fn split_pair(
     }
 }
 
+/// Rows the inbox keeps while it is shown, and none once it is hidden.
+fn inbox_floor(inbox_visible: bool) -> u16 {
+    if inbox_visible { CANVAS_INBOX_MIN } else { 0 }
+}
+
 /// Preset 0, the canvas: chair|spend, machines|lanes, runs, then queue|inbox, top to bottom.
-/// Returns the rects of frames 1-6 (`None` when hidden) and the inbox rect. The inbox is never
-/// shorter than `CANVAS_INBOX_MIN` rows (unless `area` itself is), so the rows above it give up
-/// height first, top to bottom. `runs_len` is the runs list length; frame 5 is as tall as its
-/// rows, its header row and its borders need, at most half of the height left after the first
-/// two rows.
-fn canvas_layout(area: Rect, visible: [bool; 6], runs_len: usize) -> ([Option<Rect>; 6], Rect) {
+/// Returns the rects of frames 1-6 (`None` when hidden) and the inbox rect. A shown inbox is
+/// never shorter than `CANVAS_INBOX_MIN` rows (unless `area` itself is), so the rows above it
+/// give up height first, top to bottom. A hidden inbox has no floor, the queue takes the whole
+/// bottom row, and the returned inbox rect is empty. `runs_len` is the runs list length; frame 5
+/// is as tall as its rows, its header row and its borders need, at most half of the height left
+/// after the first two rows.
+fn canvas_layout(
+    area: Rect,
+    visible: [bool; 6],
+    inbox_visible: bool,
+    runs_len: usize,
+) -> ([Option<Rect>; 6], Rect) {
     let rows_of = |shown: bool, rows: u16| if shown { rows } else { 0 };
-    let budget = area.height.saturating_sub(CANVAS_INBOX_MIN);
+    let budget = area.height.saturating_sub(inbox_floor(inbox_visible));
     let top_h = rows_of(visible[0] || visible[1], CANVAS_TOP_ROWS).min(budget);
     let middle_h = rows_of(visible[2] || visible[3], CANVAS_MIDDLE_ROWS).min(budget - top_h);
     let left = area.height - top_h - middle_h;
@@ -192,7 +205,7 @@ fn canvas_layout(area: Rect, visible: [bool; 6], runs_len: usize) -> ([Option<Re
     let bottom = row(area.y + top_h + middle_h + runs_h, bottom_h);
     let (chair, spend) = split_pair(top, top.width / 2, visible[0], visible[1]);
     let (machines, lanes) = split_pair(middle, CANVAS_MACHINES_WIDTH, visible[2], visible[3]);
-    let (queue, inbox) = split_pair(bottom, bottom.width * 58 / 100, visible[5], true);
+    let (queue, inbox) = split_pair(bottom, bottom.width * 58 / 100, visible[5], inbox_visible);
     (
         [
             chair,
@@ -202,7 +215,11 @@ fn canvas_layout(area: Rect, visible: [bool; 6], runs_len: usize) -> ([Option<Re
             visible[4].then_some(runs),
             queue,
         ],
-        inbox.unwrap_or(bottom),
+        inbox.unwrap_or(Rect {
+            width: 0,
+            height: 0,
+            ..bottom
+        }),
     )
 }
 
@@ -288,11 +305,12 @@ fn rows_above_run_cost(app: &App) -> u16 {
     let rows_of = |shown: bool, rows: u16| if shown { rows } else { 0 };
     let shown = u16::try_from(visible.iter().filter(|v| **v).count()).unwrap_or(0);
     let floor = SHARED_FRAME_FLOOR;
+    let inbox_rows = inbox_floor(app.regatta_inbox_visible());
     match app.regatta_layout_preset() {
         0 => {
             let runs = u16::try_from(runs_len.saturating_add(3)).unwrap_or(u16::MAX);
             let queue = u16::try_from(queue_len.saturating_add(2)).unwrap_or(u16::MAX);
-            let bottom = CANVAS_INBOX_MIN.max(rows_of(visible[5], queue));
+            let bottom = inbox_rows.max(rows_of(visible[5], queue));
             let left = if visible[4] {
                 runs.saturating_mul(2).max(runs.saturating_add(bottom))
             } else {
@@ -302,9 +320,9 @@ fn rows_above_run_cost(app: &App) -> u16 {
                 .saturating_add(rows_of(visible[2] || visible[3], CANVAS_MIDDLE_ROWS))
                 .saturating_add(left)
         }
-        1 => (floor * shown.div_ceil(2)).saturating_add(CANVAS_INBOX_MIN),
-        2 => (floor * shown).saturating_add(CANVAS_INBOX_MIN),
-        _ => (floor * shown.saturating_sub(1).max(shown.min(1))).saturating_add(CANVAS_INBOX_MIN),
+        1 => (floor * shown.div_ceil(2)).saturating_add(inbox_rows),
+        2 => (floor * shown).saturating_add(inbox_rows),
+        _ => (floor * shown.saturating_sub(1).max(shown.min(1))).saturating_add(inbox_rows),
     }
 }
 
@@ -343,14 +361,22 @@ fn layout_rects(full: Rect, app: &App) -> ([Option<Rect>; 6], Rect) {
     let (area, _) = split_run_cost(split_history(split_key_bar(full).0, app).0, app);
     if app.regatta_layout_preset() == 0 {
         let runs_len = app.snapshot().map_or(0, |s| s.runs.len());
-        return canvas_layout(area, app.regatta_frames_visible(), runs_len);
+        return canvas_layout(
+            area,
+            app.regatta_frames_visible(),
+            app.regatta_inbox_visible(),
+            runs_len,
+        );
     }
     let visible = visible_frame_indices(app);
     let mut rects: [Option<Rect>; 6] = [None; 6];
     let [grid_area, inbox_area] = {
         let split = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Min(3), Constraint::Length(5)])
+            .constraints([
+                Constraint::Min(3),
+                Constraint::Length(inbox_floor(app.regatta_inbox_visible())),
+            ])
             .split(area);
         [split[0], split[1]]
     };
@@ -1283,7 +1309,7 @@ fn render_history(
     offset: FixedOffset,
     theme: &Theme,
 ) {
-    let block = framed("history", theme, selected.is_some());
+    let block = numbered_block(7, "history", theme, selected.is_some());
     let inner = block.inner(rect);
     let shown = selected.filter(|i| *i < snapshot.history.len());
     let rows = usize::from(inner.height).saturating_sub(1);
@@ -1419,7 +1445,7 @@ fn render_inbox(
     selected: Option<usize>,
     theme: &Theme,
 ) {
-    let block = framed("inbox", theme, false);
+    let block = numbered_block(9, "inbox", theme, false);
     let inner = block.inner(rect);
     let rows = usize::from(inner.height);
     let (shown, more) = overflow_split(snapshot.inbox.len(), INBOX_ITEMS, rows);
@@ -1543,7 +1569,7 @@ fn render_run_cost(
 
 /// Key and label pairs of the key bar: exactly the keys `input::handle_key` and `main` act on.
 const KEY_BAR: [(&str, &str); 7] = [
-    ("1-6", "frames"),
+    ("1-9", "frames"),
     ("\u{2190}\u{2192}", "focus"),
     ("\u{2191}\u{2193}", "select"),
     ("\u{23ce}", "drill down"),
@@ -2287,7 +2313,7 @@ mod tests {
         let area = Rect::new(0, 0, 120, 40);
         let (rest, _) = split_history(Rect::new(0, 0, 120, 39), &app);
         let (body, _) = split_run_cost(rest, &app);
-        assert_eq!(layout_rects(area, &app), canvas_layout(body, ALL, 0));
+        assert_eq!(layout_rects(area, &app), canvas_layout(body, ALL, true, 0));
     }
 
     #[test]
@@ -2300,7 +2326,7 @@ mod tests {
 
     #[test]
     fn canvas_layout_places_every_row_at_120x40_with_one_run() {
-        let (rects, inbox) = canvas_layout(Rect::new(0, 0, 120, 40), ALL, 1);
+        let (rects, inbox) = canvas_layout(Rect::new(0, 0, 120, 40), ALL, true, 1);
         assert_eq!(rects[0], Some(Rect::new(0, 0, 60, 5)));
         assert_eq!(rects[1], Some(Rect::new(60, 0, 60, 5)));
         assert_eq!(rects[2], Some(Rect::new(0, 5, 48, 6)));
@@ -2312,7 +2338,7 @@ mod tests {
 
     #[test]
     fn canvas_layout_caps_runs_at_half_of_what_is_left() {
-        let (rects, inbox) = canvas_layout(Rect::new(0, 0, 120, 40), ALL, 100);
+        let (rects, inbox) = canvas_layout(Rect::new(0, 0, 120, 40), ALL, true, 100);
         assert_eq!(rects[4], Some(Rect::new(0, 11, 120, 14)));
         assert_eq!(inbox.height, 15);
     }
@@ -2320,7 +2346,7 @@ mod tests {
     #[test]
     fn canvas_layout_keeps_the_inbox_at_five_rows_down_to_a_short_terminal() {
         for height in [24, 16, 12, 9] {
-            let (rects, inbox) = canvas_layout(Rect::new(0, 0, 80, height), ALL, 100);
+            let (rects, inbox) = canvas_layout(Rect::new(0, 0, 80, height), ALL, true, 100);
             assert!(inbox.height >= 5, "height {height}: inbox {inbox:?}");
             let bottom = rects
                 .iter()
@@ -2350,13 +2376,65 @@ mod tests {
     #[test]
     fn canvas_layout_gives_a_hidden_frames_share_to_its_neighbour() {
         let hidden = [false, true, false, true, true, false];
-        let (rects, inbox) = canvas_layout(Rect::new(0, 0, 100, 30), hidden, 3);
+        let (rects, inbox) = canvas_layout(Rect::new(0, 0, 100, 30), hidden, true, 3);
         assert_eq!(rects[0], None);
         assert_eq!(rects[1], Some(Rect::new(0, 0, 100, 5)));
         assert_eq!(rects[2], None);
         assert_eq!(rects[3], Some(Rect::new(0, 5, 100, 6)));
         assert_eq!(rects[5], None);
         assert_eq!(inbox.width, 100);
+    }
+
+    #[test]
+    fn a_hidden_inbox_gives_the_queue_the_whole_bottom_row() {
+        let area = Rect::new(0, 0, 120, 40);
+        let mut app = app_with_fixture();
+        let shown = frame_rects(area, &app)[5].expect("queue rect");
+        assert!(shown.width < area.width, "{shown:?}");
+        app.toggle_inbox_frame();
+        let hidden = frame_rects(area, &app)[5].expect("queue rect");
+        assert_eq!((hidden.x, hidden.width), (0, area.width));
+        assert_eq!(hidden.y + hidden.height, shown.y + shown.height);
+        app.toggle_inbox_frame();
+        assert_eq!(frame_rects(area, &app)[5], Some(shown));
+    }
+
+    #[test]
+    fn a_hidden_inbox_drops_its_five_row_floor() {
+        let (rects, inbox) = canvas_layout(Rect::new(0, 0, 80, 8), ALL, false, 100);
+        assert_eq!(inbox.height, 0);
+        assert_eq!(rects[5].map(|r| r.width), Some(80));
+        let (_, shown) = canvas_layout(Rect::new(0, 0, 80, 8), ALL, true, 100);
+        assert_eq!(shown.height, CANVAS_INBOX_MIN);
+    }
+
+    #[test]
+    fn every_frame_title_begins_with_its_toggle_digit() {
+        let terminal = draw_page(&two_run_app(), ThemeId::Regatta, 120, 40);
+        let screen: String = (0..40)
+            .map(|y| row_text(&terminal, y))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let titles: Vec<&str> = screen.split('\u{256d}').skip(1).collect();
+        assert_eq!(titles.len(), 9, "{screen}");
+        let names = [
+            "chair",
+            "spend",
+            "machines",
+            "lanes over 24h",
+            "runs",
+            "queue",
+            "history",
+            "run cost",
+            "inbox",
+        ];
+        for (i, name) in names.iter().enumerate() {
+            let want = format!(" {} {name} ", i + 1);
+            assert!(
+                titles.iter().any(|t| t.starts_with(&want)),
+                "no title {want:?} in {screen}"
+            );
+        }
     }
 
     #[test]
@@ -2757,10 +2835,10 @@ mod tests {
         let row = row_text(&terminal, 39);
         assert_eq!(
             row.trim_end(),
-            "1-6 frames \u{b7} \u{2190}\u{2192} focus \u{b7} \u{2191}\u{2193} select \u{b7} \u{23ce} drill down \u{b7} t theme \u{b7} v layout \u{b7} q quit \u{2502} p pause  k kill  m move \u{b7} : palette"
+            "1-9 frames \u{b7} \u{2190}\u{2192} focus \u{b7} \u{2191}\u{2193} select \u{b7} \u{23ce} drill down \u{b7} t theme \u{b7} v layout \u{b7} q quit \u{2502} p pause  k kill  m move \u{b7} : palette"
         );
         assert_eq!(
-            fg_at(&terminal, 39, "1-6"),
+            fg_at(&terminal, 39, "1-9"),
             Some(Color::Rgb(0x79, 0xc0, 0xff))
         );
         assert_eq!(
@@ -2808,7 +2886,7 @@ mod tests {
         row_text(&terminal, 39).trim_end().to_string()
     }
 
-    const FIXED_KEYS: &str = "1-6 frames \u{b7} \u{2190}\u{2192} focus \u{b7} \u{2191}\u{2193} select \u{b7} \u{23ce} drill down \u{b7} t theme \u{b7} v layout \u{b7} q quit";
+    const FIXED_KEYS: &str = "1-9 frames \u{b7} \u{2190}\u{2192} focus \u{b7} \u{2191}\u{2193} select \u{b7} \u{23ce} drill down \u{b7} t theme \u{b7} v layout \u{b7} q quit";
 
     const FOCUS_ACTIONS: [(Focus, &str); 4] = [
         (Focus::Runs, "p pause  k kill  m move"),
@@ -2831,7 +2909,7 @@ mod tests {
                 row.ends_with(&format!(" \u{2502} {actions} \u{b7} : palette")),
                 "{row}"
             );
-            assert!(row.starts_with("1-6 frames"), "{row}");
+            assert!(row.starts_with("1-9 frames"), "{row}");
         }
     }
 
@@ -2839,11 +2917,11 @@ mod tests {
     fn a_fixed_key_that_does_not_fit_is_dropped_whole_from_the_end() {
         assert_eq!(
             key_bar_row(Focus::Machines, 120),
-            "1-6 frames \u{b7} \u{2190}\u{2192} focus \u{b7} \u{2191}\u{2193} select \u{2502} + lanes up  - lanes down  d drain  a activate  A add machine \u{b7} : palette"
+            "1-9 frames \u{b7} \u{2190}\u{2192} focus \u{b7} \u{2191}\u{2193} select \u{2502} + lanes up  - lanes down  d drain  a activate  A add machine \u{b7} : palette"
         );
         assert_eq!(
             key_bar_row(Focus::Queue, 120),
-            "1-6 frames \u{b7} \u{2190}\u{2192} focus \u{b7} \u{2191}\u{2193} select \u{b7} \u{23ce} drill down \u{2502} ] priority up  [ priority down  n new  e edit  x remove \u{b7} : palette"
+            "1-9 frames \u{b7} \u{2190}\u{2192} focus \u{b7} \u{2191}\u{2193} select \u{b7} \u{23ce} drill down \u{2502} ] priority up  [ priority down  n new  e edit  x remove \u{b7} : palette"
         );
     }
 

@@ -985,7 +985,7 @@ mod tests {
         let area = Rect::new(0, 0, 120, 40);
         let mut app = app_with_feed();
         let bare = rows(&draw(&app, &theme));
-        assert!(bare[39].contains("1-6 frames"));
+        assert!(bare[39].contains("1-9 frames"));
         let rects = regatta_frame_rects(area, &app);
 
         app.apply_exec_result(
@@ -1066,7 +1066,7 @@ mod tests {
         let text = settings_text(&app);
         assert!(text.contains("budgets"));
         assert!(text.contains("max_usd"));
-        assert!(!text.contains("1-6 frames"));
+        assert!(!text.contains("1-9 frames"));
         insta::assert_snapshot!(text);
     }
 
