@@ -1,0 +1,45 @@
+---
+source: src/ui/mod.rs
+assertion_line: 696
+expression: text
+---
+> budgets              budgets
+                       > max_usd  20  f.toml  git-tracked
+
+                       staged
+                       > $ cox settings set budgets max_usd 40 --dry-run
+
+
+
+
+
+
+
+
+
+
+
+
+                              ┌Apply budgets max_usd─────────────────────────────────────┐
+                              │ $ cox settings set budgets max_usd 40                    │
+                              │                                                          │
+                              │ y run    n cancel                                        │
+                              └──────────────────────────────────────────────────────────┘
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Up/Down entry   a apply   x unstage   Tab next pane   r reload   Esc close
