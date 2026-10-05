@@ -15,6 +15,7 @@ use ratatui::{
     widgets::{Axis, Block, BorderType, Borders, Chart, Dataset, GraphType, Paragraph},
 };
 
+use crate::actions::{Target, bindings};
 use crate::app::{App, Focus};
 use crate::feed::{
     Chair, FeedSnapshot, HistoryRow, HistoryToday, InboxEntry, Machine, Outcome, QueueEntry, Run,
@@ -53,7 +54,13 @@ pub fn render(f: &mut Frame, app: &App, theme: &Theme) {
             render_frame(f, rect, idx, snapshot, app, theme);
         }
     }
-    render_inbox(f, inbox_area, snapshot, theme);
+    render_inbox(
+        f,
+        inbox_area,
+        snapshot,
+        frame_selection(app, Focus::Inbox),
+        theme,
+    );
     if let Some(rect) = history_rect(area, app) {
         render_history(
             f,
@@ -67,7 +74,7 @@ pub fn render(f: &mut Frame, app: &App, theme: &Theme) {
     if let Some(rect) = run_cost_rect(area, app) {
         render_run_cost(f, rect, snapshot, app.utc_offset(), theme);
     }
-    render_key_bar(f, split_key_bar(area).1, theme);
+    render_key_bar(f, split_key_bar(area).1, app.focus(), theme);
 }
 
 /// The rects frames 1-6 render into (`None` for a hidden frame), exactly as `render` lays
@@ -1323,9 +1330,16 @@ fn inbox_line(i: &InboxEntry, theme: &Theme) -> Line<'static> {
     ])
 }
 
-fn render_inbox(f: &mut Frame, rect: Rect, snapshot: &FeedSnapshot, theme: &Theme) {
+fn render_inbox(
+    f: &mut Frame,
+    rect: Rect,
+    snapshot: &FeedSnapshot,
+    selected: Option<usize>,
+    theme: &Theme,
+) {
     let block = framed("inbox", theme, false);
-    let rows = usize::from(block.inner(rect).height);
+    let inner = block.inner(rect);
+    let rows = usize::from(inner.height);
     let (shown, more) = overflow_split(snapshot.inbox.len(), INBOX_ITEMS, rows);
     let lines: Vec<Line> = if snapshot.inbox.is_empty() {
         vec![Line::styled(
@@ -1343,6 +1357,7 @@ fn render_inbox(f: &mut Frame, rect: Rect, snapshot: &FeedSnapshot, theme: &Them
     };
     let paragraph = Paragraph::new(lines).block(block).style(base_style(theme));
     f.render_widget(paragraph, rect);
+    paint_selected_row(f, inner, selected.filter(|i| *i < shown), theme);
 }
 
 /// The frame's number key and title: it follows history (7) as the eighth frame.
@@ -1455,20 +1470,78 @@ const KEY_BAR: [(&str, &str); 7] = [
     ("q", "quit"),
 ];
 
-fn key_bar_line(theme: &Theme) -> Line<'static> {
-    let key = Style::default().fg(theme.border_focus);
-    let label = Style::default().fg(theme.dim);
-    let spans = KEY_BAR.iter().enumerate().flat_map(|(i, (k, l))| {
-        let sep = (i > 0).then(|| Span::styled(" \u{b7} ", label));
-        sep.into_iter()
-            .chain([Span::styled(*k, key), Span::styled(format!(" {l}"), label)])
-    });
-    Line::from(spans.collect::<Vec<_>>())
+/// The action keys of the list in `focus`, from `actions::bindings`. History has no actions.
+/// The placeholder id is never read: `bindings` keys on the kind of target alone.
+pub(super) fn action_hints(focus: Focus) -> Vec<(char, &'static str)> {
+    let target = match focus {
+        Focus::Runs => Target::Run(String::new()),
+        Focus::Machines => Target::Machine(String::new()),
+        Focus::Queue => Target::Initiative(String::new()),
+        Focus::Inbox => Target::InboxItem(String::new()),
+        Focus::History => return Vec::new(),
+    };
+    bindings(&target)
+        .into_iter()
+        .map(|b| (b.key, b.label))
+        .collect()
 }
 
-fn render_key_bar(f: &mut Frame, rect: Rect, theme: &Theme) {
+/// The key bar for a `width`-column row: the fixed keys, a `│`, the focused list's action keys,
+/// then `:` for the palette. The part after the `│` always shows. When the row is too narrow
+/// for everything, fixed keys are dropped whole from the end instead of the row being cut mid-word.
+fn key_bar_line(focus: Focus, width: u16, theme: &Theme) -> Line<'static> {
+    let key = Style::default().fg(theme.border_focus);
+    let label = Style::default().fg(theme.dim);
+    let pair = |k: String, l: &str| [Span::styled(k, key), Span::styled(format!(" {l}"), label)];
+    let actions = action_hints(focus)
+        .into_iter()
+        .enumerate()
+        .flat_map(|(i, (k, l))| {
+            (i > 0)
+                .then(|| Span::styled("  ", label))
+                .into_iter()
+                .chain(pair(k.to_string(), l))
+        })
+        .collect::<Vec<_>>();
+    let palette_sep = (!actions.is_empty()).then(|| Span::styled(" \u{b7} ", label));
+    let tail: Vec<Span<'static>> = std::iter::once(Span::styled(" \u{2502} ", label))
+        .chain(actions)
+        .chain(palette_sep)
+        .chain(pair(":".to_string(), "palette"))
+        .collect();
+    let fixed: Vec<Vec<Span<'static>>> = KEY_BAR
+        .iter()
+        .enumerate()
+        .map(|(i, (k, l))| {
+            (i > 0)
+                .then(|| Span::styled(" \u{b7} ", label))
+                .into_iter()
+                .chain(pair((*k).to_string(), l))
+                .collect()
+        })
+        .collect();
+    let room = usize::from(width).saturating_sub(Line::from(tail.clone()).width());
+    let fit = fixed
+        .iter()
+        .scan(0, |used, item| {
+            *used += Line::from(item.clone()).width();
+            Some(*used)
+        })
+        .take_while(|used| *used <= room)
+        .count();
+    Line::from(
+        fixed
+            .into_iter()
+            .take(fit)
+            .flatten()
+            .chain(tail)
+            .collect::<Vec<_>>(),
+    )
+}
+
+fn render_key_bar(f: &mut Frame, rect: Rect, focus: Focus, theme: &Theme) {
     f.render_widget(
-        Paragraph::new(key_bar_line(theme)).style(base_style(theme)),
+        Paragraph::new(key_bar_line(focus, rect.width, theme)).style(base_style(theme)),
         rect,
     );
 }
@@ -2444,7 +2517,7 @@ mod tests {
         let row = row_text(&terminal, 39);
         assert_eq!(
             row.trim_end(),
-            "1-6 frames \u{b7} \u{2190}\u{2192} focus \u{b7} \u{2191}\u{2193} select \u{b7} \u{23ce} drill down \u{b7} t theme \u{b7} p layout \u{b7} q quit"
+            "1-6 frames \u{b7} \u{2190}\u{2192} focus \u{b7} \u{2191}\u{2193} select \u{b7} \u{23ce} drill down \u{b7} t theme \u{b7} p layout \u{b7} q quit \u{2502} p pause  k kill  m move \u{b7} : palette"
         );
         assert_eq!(
             fg_at(&terminal, 39, "1-6"),
@@ -2458,6 +2531,164 @@ mod tests {
             fg_at(&terminal, 39, "quit"),
             Some(Color::Rgb(0x8b, 0x94, 0x9e))
         );
+        assert_eq!(
+            fg_at(&terminal, 39, "k kill"),
+            Some(Color::Rgb(0x79, 0xc0, 0xff))
+        );
+        assert_eq!(
+            fg_at(&terminal, 39, "kill"),
+            Some(Color::Rgb(0x8b, 0x94, 0x9e))
+        );
+        assert_eq!(
+            fg_at(&terminal, 39, ": palette"),
+            Some(Color::Rgb(0x79, 0xc0, 0xff))
+        );
+    }
+
+    /// A feed with a run, a queue entry and two inbox items, focused on `focus` by pressing Right.
+    fn app_focused_on(focus: Focus) -> App {
+        use crossterm::event::KeyCode;
+        let mut app = feed_app(
+            &run_json("r0", "running"),
+            &queue_json(1, 0, 2),
+            &inbox_json(2),
+        );
+        for _ in 0..5 {
+            if app.focus() != focus {
+                crate::input::handle_key(&mut app, KeyCode::Right);
+            }
+        }
+        assert_eq!(app.focus(), focus);
+        app
+    }
+
+    /// The key bar row of a `width`x40 page.
+    fn key_bar_row(focus: Focus, width: u16) -> String {
+        let terminal = draw_page(&app_focused_on(focus), ThemeId::Regatta, width, 40);
+        row_text(&terminal, 39).trim_end().to_string()
+    }
+
+    const FIXED_KEYS: &str = "1-6 frames \u{b7} \u{2190}\u{2192} focus \u{b7} \u{2191}\u{2193} select \u{b7} \u{23ce} drill down \u{b7} t theme \u{b7} p layout \u{b7} q quit";
+
+    const FOCUS_ACTIONS: [(Focus, &str); 4] = [
+        (Focus::Runs, "p pause  k kill  m move"),
+        (
+            Focus::Machines,
+            "+ lanes up  - lanes down  d drain  a activate",
+        ),
+        (Focus::Queue, "] priority up  [ priority down"),
+        (Focus::Inbox, "a accept  x deny"),
+    ];
+
+    #[test]
+    fn at_120_columns_every_focus_shows_all_its_actions_and_the_palette() {
+        for (focus, actions) in FOCUS_ACTIONS {
+            let row = key_bar_row(focus, 120);
+            assert!(
+                row.ends_with(&format!(" \u{2502} {actions} \u{b7} : palette")),
+                "{row}"
+            );
+            assert!(row.starts_with("1-6 frames"), "{row}");
+        }
+    }
+
+    #[test]
+    fn a_fixed_key_that_does_not_fit_is_dropped_whole_from_the_end() {
+        assert_eq!(
+            key_bar_row(Focus::Machines, 120),
+            "1-6 frames \u{b7} \u{2190}\u{2192} focus \u{b7} \u{2191}\u{2193} select \u{b7} \u{23ce} drill down \u{b7} t theme \u{2502} + lanes up  - lanes down  d drain  a activate \u{b7} : palette"
+        );
+        assert_eq!(
+            key_bar_row(Focus::Queue, 120),
+            "1-6 frames \u{b7} \u{2190}\u{2192} focus \u{b7} \u{2191}\u{2193} select \u{b7} \u{23ce} drill down \u{b7} t theme \u{b7} p layout \u{2502} ] priority up  [ priority down \u{b7} : palette"
+        );
+    }
+
+    #[test]
+    fn action_hints_name_each_lists_bindings() {
+        assert_eq!(
+            action_hints(Focus::Runs),
+            [('p', "pause"), ('k', "kill"), ('m', "move")]
+        );
+        assert_eq!(
+            action_hints(Focus::Machines),
+            [
+                ('+', "lanes up"),
+                ('-', "lanes down"),
+                ('d', "drain"),
+                ('a', "activate")
+            ]
+        );
+        assert_eq!(
+            action_hints(Focus::Queue),
+            [(']', "priority up"), ('[', "priority down")]
+        );
+        assert_eq!(action_hints(Focus::Inbox), [('a', "accept"), ('x', "deny")]);
+        assert_eq!(action_hints(Focus::History), []);
+    }
+
+    #[test]
+    fn the_key_bar_keeps_its_fixed_keys_and_adds_the_focused_lists_actions() {
+        for (focus, actions) in FOCUS_ACTIONS {
+            assert_eq!(
+                key_bar_row(focus, 160),
+                format!("{FIXED_KEYS} \u{2502} {actions} \u{b7} : palette")
+            );
+        }
+        assert_eq!(
+            key_bar_row(Focus::History, 160),
+            format!("{FIXED_KEYS} \u{2502} : palette")
+        );
+    }
+
+    #[test]
+    fn the_key_bar_snapshot_with_runs_focus() {
+        insta::assert_snapshot!(key_bar_row(Focus::Runs, 120));
+    }
+
+    #[test]
+    fn the_key_bar_snapshot_with_machines_focus() {
+        insta::assert_snapshot!(key_bar_row(Focus::Machines, 120));
+    }
+
+    #[test]
+    fn the_key_bar_snapshot_with_queue_focus() {
+        insta::assert_snapshot!(key_bar_row(Focus::Queue, 120));
+    }
+
+    #[test]
+    fn the_key_bar_snapshot_with_inbox_focus() {
+        insta::assert_snapshot!(key_bar_row(Focus::Inbox, 120));
+    }
+
+    fn bg_at_inbox_row(terminal: &Terminal<TestBackend>, app: &App, row: u16) -> Color {
+        let rect = inbox_rect(app);
+        terminal.backend().buffer()[(rect.x + 1, rect.y + 1 + row)].bg
+    }
+
+    #[test]
+    fn the_inbox_highlights_its_selected_row_only_while_it_holds_focus() {
+        let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
+        let inbox = app_focused_on(Focus::Inbox);
+        assert_eq!(inbox.selected(), 0);
+        let terminal = draw_page(&inbox, ThemeId::Regatta, 120, 40);
+        assert_eq!(bg_at_inbox_row(&terminal, &inbox, 0), theme.selected_row);
+        assert_ne!(bg_at_inbox_row(&terminal, &inbox, 1), theme.selected_row);
+        let runs = app_focused_on(Focus::Runs);
+        let terminal = draw_page(&runs, ThemeId::Regatta, 120, 40);
+        assert_ne!(bg_at_inbox_row(&terminal, &runs, 0), theme.selected_row);
+    }
+
+    #[test]
+    fn the_inbox_highlight_follows_the_selection_down() {
+        use crossterm::event::KeyCode;
+        let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
+        let mut app = app_focused_on(Focus::Inbox);
+        crate::input::handle_key(&mut app, KeyCode::Down);
+        assert_eq!(app.selected(), 1);
+        let terminal = draw_page(&app, ThemeId::Regatta, 120, 40);
+        assert_ne!(bg_at_inbox_row(&terminal, &app, 0), theme.selected_row);
+        assert_eq!(bg_at_inbox_row(&terminal, &app, 1), theme.selected_row);
     }
 
     #[test]
