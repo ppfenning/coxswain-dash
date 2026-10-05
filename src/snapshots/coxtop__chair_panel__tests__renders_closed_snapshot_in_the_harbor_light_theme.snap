@@ -5,7 +5,7 @@ expression: "drawn(&panel, ThemeId::HarborLight)"
 ---
 "┌ chair ─────────────────────┐"
 "│no session published        │"
-"│                            │"
+"│Enter starts a session      │"
 "│                            │"
 "│                            │"
 "└────────────────────────────┘"
