@@ -18,7 +18,8 @@ use ratatui::{
 use crate::actions::{Target, bindings};
 use crate::app::{App, Focus};
 use crate::feed::{
-    Chair, FeedSnapshot, HistoryRow, HistoryToday, InboxEntry, Machine, Outcome, QueueEntry, Run,
+    Chair, CurrentAction, FeedSnapshot, HistoryRow, HistoryToday, InboxEntry, Machine, Outcome,
+    QueueEntry, Run,
 };
 use crate::form::{KEY_ADD_MACHINE, KEY_EDIT, KEY_NEW, KEY_REMOVE};
 use crate::theme::Theme;
@@ -135,7 +136,7 @@ fn visible_frame_indices(app: &App) -> Vec<usize> {
 }
 
 /// Canvas layout row heights: chair|spend, machines|lanes, and the inbox's floor.
-const CANVAS_TOP_ROWS: u16 = 4;
+const CANVAS_TOP_ROWS: u16 = 5;
 const CANVAS_MIDDLE_ROWS: u16 = 6;
 const CANVAS_INBOX_MIN: u16 = 5;
 /// Width of the machines frame; lanes take the rest of its row.
@@ -535,9 +536,47 @@ fn chair_counts_text(
     )
 }
 
-/// The chair card's two canvas lines. A stale beat is drawn in `meter_high`: the theme has no
-/// warning role.
-fn chair_lines(chair: &Chair, theme: &Theme) -> Vec<Line<'static>> {
+/// A tick older than this many tick intervals is stalled.
+const STALLED_TICK_INTERVALS: u64 = 3;
+
+fn tick_stalled(tick_age_s: Option<u64>) -> bool {
+    tick_age_s.is_some_and(|age| age > STALLED_TICK_INTERVALS * TICK_INTERVAL_S)
+}
+
+/// The tick part of line three. `None` is a feed that does not carry `tick_age_s`.
+fn tick_text(tick_age_s: Option<u64>) -> String {
+    tick_age_s.map_or_else(
+        || "tick -".to_string(),
+        |age| format!("tick {} ago", short_age(age)),
+    )
+}
+
+/// The action part of line three. `age_s` is `None` when the action's start time is unusable.
+fn action_text(action: Option<&CurrentAction>, age_s: Option<u64>) -> String {
+    action.map_or_else(
+        || "idle".to_string(),
+        |a| {
+            format!(
+                "{} {} \u{b7} {}",
+                a.kind,
+                a.target,
+                age_s.map_or_else(|| "-".to_string(), short_age)
+            )
+        },
+    )
+}
+
+/// Whole seconds from `since` to `at`, both RFC 3339; `None` when either is unparseable or
+/// `since` is after `at`.
+fn action_age_s(at: &str, since: &str) -> Option<u64> {
+    let at = DateTime::parse_from_rfc3339(at).ok()?;
+    let since = DateTime::parse_from_rfc3339(since).ok()?;
+    u64::try_from((at - since).num_seconds()).ok()
+}
+
+/// The chair card's three canvas lines. A stale beat or tick is drawn in `meter_high`: the theme
+/// has no warning role. `action_age_s` is the current action's age at the feed's `at`.
+fn chair_lines(chair: &Chair, action_age_s: Option<u64>, theme: &Theme) -> Vec<Line<'static>> {
     let beat_style = match beat_freshness(chair.beat_age_s, TICK_INTERVAL_S) {
         Freshness::Stale => Style::default().fg(theme.meter_high),
         Freshness::Fresh => Style::default(),
@@ -562,12 +601,49 @@ fn chair_lines(chair: &Chair, theme: &Theme) -> Vec<Line<'static>> {
         chair.drafts,
         chair.housekeeping_age_s.map(|s| s / 3600),
     ));
-    vec![holder_line, counts_line]
+    let stale_style = Style::default().fg(theme.meter_high);
+    let stalled = tick_stalled(chair.tick_age_s);
+    let tick_style = if stalled {
+        stale_style
+    } else {
+        Style::default()
+    };
+    let failed_style = if chair.today.refused_or_failed > 0 {
+        Style::default().fg(theme.status_failed)
+    } else {
+        Style::default()
+    };
+    let tick_spans = [
+        Some(Span::styled(tick_text(chair.tick_age_s), tick_style)),
+        stalled.then(|| Span::styled(" stalled", stale_style)),
+    ]
+    .into_iter()
+    .flatten();
+    let tick_line = Line::from(
+        tick_spans
+            .chain([
+                Span::raw(format!(
+                    " \u{b7} {} \u{b7} ",
+                    action_text(chair.current_action.as_ref(), action_age_s)
+                )),
+                Span::styled(
+                    format!("{} refused or failed today", chair.today.refused_or_failed),
+                    failed_style,
+                ),
+            ])
+            .collect::<Vec<_>>(),
+    );
+    vec![holder_line, counts_line, tick_line]
 }
 
 fn render_chair(f: &mut Frame, rect: Rect, snapshot: &FeedSnapshot, theme: &Theme) {
     let block = numbered_block(1, FRAME_NAMES[0], theme, false);
-    let paragraph = Paragraph::new(chair_lines(&snapshot.chair, theme))
+    let age_s = snapshot
+        .chair
+        .current_action
+        .as_ref()
+        .and_then(|a| action_age_s(&snapshot.at, &a.since));
+    let paragraph = Paragraph::new(chair_lines(&snapshot.chair, age_s, theme))
         .block(block)
         .style(base_style(theme));
     f.render_widget(paragraph, rect);
@@ -1584,15 +1660,19 @@ mod tests {
         )
     }
 
-    fn draw_chair(chair: &str) -> Terminal<TestBackend> {
+    fn draw_chair_in(chair: &str, id: ThemeId, width: u16) -> Terminal<TestBackend> {
         let snapshot =
             crate::feed::parse_snapshot(&chair_feed(chair)).expect("literal feed should parse");
-        let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
-        let mut terminal = Terminal::new(TestBackend::new(80, 4)).expect("terminal");
+        let theme = crate::theme::resolve_for(id, Some("truecolor"));
+        let mut terminal = Terminal::new(TestBackend::new(width, 5)).expect("terminal");
         terminal
             .draw(|f| render_chair(f, f.area(), &snapshot, &theme))
             .expect("draw should not fail");
         terminal
+    }
+
+    fn draw_chair(chair: &str) -> Terminal<TestBackend> {
+        draw_chair_in(chair, ThemeId::Regatta, 80)
     }
 
     /// The text of buffer row `y`. Every cell holds one char, so a char index is a column.
@@ -1658,6 +1738,105 @@ mod tests {
         let buffer = terminal.backend().buffer();
         assert_eq!(buffer[(beat, 1)].fg, HIGH);
         assert_eq!(buffer[(beat + 8, 1)].fg, HIGH);
+    }
+
+    const TICK_FRESH: &str = r#"{"holder": "chair@omarchy:12345", "host": "omarchy", "epoch": 7, "liveness": "live", "beat_age_s": 4, "tick_age_s": 12, "last_tick_at": "2026-09-28T23:59:48Z", "last_status": "landing", "current_action": {"kind": "land_phase", "target": "api-runners/runner-parity", "since": "2026-09-28T23:58:30Z"}, "today": {"lands": 2, "launches": 1, "refused_or_failed": 0, "needs_chair_open": 0}}"#;
+
+    const TICK_STALLED: &str = r#"{"holder": "chair@omarchy:12345", "host": "omarchy", "epoch": 7, "liveness": "live", "beat_age_s": 20, "tick_age_s": 400, "last_tick_at": "2026-09-28T23:53:20Z", "last_status": "chair idle", "current_action": null, "today": {"lands": 1, "launches": 0, "refused_or_failed": 3, "needs_chair_open": 1}}"#;
+
+    const BOTH_THEMES: [(ThemeId, &str); 2] = [
+        (ThemeId::Regatta, "regatta"),
+        (ThemeId::HarborLight, "harbor_light"),
+    ];
+
+    /// The foreground of the first cell of `needle` on row `y`.
+    fn fg_of(terminal: &Terminal<TestBackend>, y: u16, needle: &str) -> Color {
+        terminal.backend().buffer()[(col_of(terminal, y, needle), y)].fg
+    }
+
+    #[test]
+    fn chair_tick_fresh_with_a_current_action() {
+        for (id, name) in BOTH_THEMES {
+            let theme = crate::theme::resolve_for(id, Some("truecolor"));
+            let terminal = draw_chair_in(TICK_FRESH, id, 100);
+            insta::assert_snapshot!(
+                format!("chair_tick_fresh_{name}"),
+                terminal.backend().to_string()
+            );
+            assert!(row_text(&terminal, 3).contains("tick 12s ago"));
+            assert!(!row_text(&terminal, 3).contains("stalled"));
+            assert!(
+                row_text(&terminal, 3).contains("land_phase api-runners/runner-parity \u{b7} 1m")
+            );
+            assert_ne!(fg_of(&terminal, 3, "tick 12s ago"), theme.meter_high);
+            assert_ne!(fg_of(&terminal, 3, "0 refused"), theme.status_failed);
+        }
+    }
+
+    #[test]
+    fn chair_tick_stalled_is_drawn_in_the_stale_colour_and_failures_in_the_failed_colour() {
+        for (id, name) in BOTH_THEMES {
+            let theme = crate::theme::resolve_for(id, Some("truecolor"));
+            let terminal = draw_chair_in(TICK_STALLED, id, 100);
+            insta::assert_snapshot!(
+                format!("chair_tick_stalled_{name}"),
+                terminal.backend().to_string()
+            );
+            assert!(row_text(&terminal, 3).contains("tick 6m ago stalled \u{b7} idle"));
+            assert_eq!(fg_of(&terminal, 3, "tick 6m ago"), theme.meter_high);
+            assert_eq!(fg_of(&terminal, 3, "stalled"), theme.meter_high);
+            assert_eq!(fg_of(&terminal, 3, "3 refused"), theme.status_failed);
+        }
+    }
+
+    #[test]
+    fn chair_tick_absent_starts_with_a_dash_and_does_not_claim_stalled() {
+        for (id, name) in BOTH_THEMES {
+            let terminal = draw_chair_in(IDLE, id, 100);
+            insta::assert_snapshot!(
+                format!("chair_tick_absent_{name}"),
+                terminal.backend().to_string()
+            );
+            assert!(row_text(&terminal, 3).starts_with("\u{2502}tick - \u{b7} idle"));
+            assert!(!row_text(&terminal, 3).contains("stalled"));
+        }
+    }
+
+    #[test]
+    fn a_tick_is_stalled_only_past_three_tick_intervals() {
+        assert!(!tick_stalled(None));
+        assert!(!tick_stalled(Some(180)));
+        assert!(tick_stalled(Some(181)));
+    }
+
+    #[test]
+    fn tick_text_reads_the_age_or_a_dash() {
+        assert_eq!(tick_text(Some(12)), "tick 12s ago");
+        assert_eq!(tick_text(Some(400)), "tick 6m ago");
+        assert_eq!(tick_text(None), "tick -");
+    }
+
+    #[test]
+    fn action_text_reads_kind_target_and_age_or_idle() {
+        let action = CurrentAction {
+            kind: "land_phase".to_string(),
+            target: "a/b".to_string(),
+            since: "2026-09-28T23:58:30Z".to_string(),
+        };
+        assert_eq!(
+            action_text(Some(&action), Some(90)),
+            "land_phase a/b \u{b7} 1m"
+        );
+        assert_eq!(action_text(Some(&action), None), "land_phase a/b \u{b7} -");
+        assert_eq!(action_text(None, Some(90)), "idle");
+    }
+
+    #[test]
+    fn action_age_is_the_seconds_from_since_to_at_or_none() {
+        let at = "2026-09-29T00:00:00Z";
+        assert_eq!(action_age_s(at, "2026-09-28T23:58:30Z"), Some(90));
+        assert_eq!(action_age_s(at, "2026-09-29T00:00:10Z"), None);
+        assert_eq!(action_age_s(at, "not a time"), None);
     }
 
     #[test]
@@ -2123,19 +2302,19 @@ mod tests {
     #[test]
     fn canvas_layout_places_every_row_at_120x40_with_one_run() {
         let (rects, inbox) = canvas_layout(Rect::new(0, 0, 120, 40), ALL, 1);
-        assert_eq!(rects[0], Some(Rect::new(0, 0, 60, 4)));
-        assert_eq!(rects[1], Some(Rect::new(60, 0, 60, 4)));
-        assert_eq!(rects[2], Some(Rect::new(0, 4, 48, 6)));
-        assert_eq!(rects[3], Some(Rect::new(48, 4, 72, 6)));
-        assert_eq!(rects[4], Some(Rect::new(0, 10, 120, 4)));
-        assert_eq!(rects[5], Some(Rect::new(0, 14, 69, 26)));
-        assert_eq!(inbox, Rect::new(69, 14, 51, 26));
+        assert_eq!(rects[0], Some(Rect::new(0, 0, 60, 5)));
+        assert_eq!(rects[1], Some(Rect::new(60, 0, 60, 5)));
+        assert_eq!(rects[2], Some(Rect::new(0, 5, 48, 6)));
+        assert_eq!(rects[3], Some(Rect::new(48, 5, 72, 6)));
+        assert_eq!(rects[4], Some(Rect::new(0, 11, 120, 4)));
+        assert_eq!(rects[5], Some(Rect::new(0, 15, 69, 25)));
+        assert_eq!(inbox, Rect::new(69, 15, 51, 25));
     }
 
     #[test]
     fn canvas_layout_caps_runs_at_half_of_what_is_left() {
         let (rects, inbox) = canvas_layout(Rect::new(0, 0, 120, 40), ALL, 100);
-        assert_eq!(rects[4], Some(Rect::new(0, 10, 120, 15)));
+        assert_eq!(rects[4], Some(Rect::new(0, 11, 120, 14)));
         assert_eq!(inbox.height, 15);
     }
 
@@ -2174,9 +2353,9 @@ mod tests {
         let hidden = [false, true, false, true, true, false];
         let (rects, inbox) = canvas_layout(Rect::new(0, 0, 100, 30), hidden, 3);
         assert_eq!(rects[0], None);
-        assert_eq!(rects[1], Some(Rect::new(0, 0, 100, 4)));
+        assert_eq!(rects[1], Some(Rect::new(0, 0, 100, 5)));
         assert_eq!(rects[2], None);
-        assert_eq!(rects[3], Some(Rect::new(0, 4, 100, 6)));
+        assert_eq!(rects[3], Some(Rect::new(0, 5, 100, 6)));
         assert_eq!(rects[5], None);
         assert_eq!(inbox.width, 100);
     }

@@ -1,12 +1,12 @@
 ---
 source: src/ui/mod.rs
-assertion_line: 552
+assertion_line: 878
 expression: text
 ---
+│                                                                                                                      │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
-╭ 6 queue ──────────────────────────────────────────────────────────╮╭ inbox ──────────────────────────────────────────╮
-│  dash-feed-streams-a-versi┌Add machine───────────────────────────────────────────────────┐budget stop after 2 attempt│
-│                           │ ┌Add machine edge-1, then run cox host doctor edge-1───────┐ │                           │
+╭ 6 queue ──────────────────┌Add machine───────────────────────────────────────────────────┐───────────────────────────╮
+│  dash-feed-streams-a-versi│ ┌Add machine edge-1, then run cox host doctor edge-1───────┐ │budget stop after 2 attempt│
 │                           │ │ $ cox host add edge-1 --ssh pat@edge-1 --capacity 4      │ │                           │
 │                           │ │                                                          │ │                           │
 │                           │ │ y run    n cancel                                        │ │                           │

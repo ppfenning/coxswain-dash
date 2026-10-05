@@ -1,0 +1,10 @@
+---
+source: src/ui/regatta.rs
+assertion_line: 1781
+expression: terminal.backend().to_string()
+---
+"╭ 1 chair ─────────────────────────────────────────────────────────────────────────────────────────╮"
+"│● chair@omarchy:12345 @ omarchy · epoch 7 · beat 20s · live                                       │"
+"│lands today 1 (- phases) · needs you 1 · drafts - · housekeeping -                                │"
+"│tick 6m ago stalled · idle · 3 refused or failed today                                            │"
+"╰──────────────────────────────────────────────────────────────────────────────────────────────────╯"

@@ -1,0 +1,10 @@
+---
+source: src/ui/regatta.rs
+assertion_line: 1762
+expression: terminal.backend().to_string()
+---
+"╭ 1 chair ─────────────────────────────────────────────────────────────────────────────────────────╮"
+"│● chair@omarchy:12345 @ omarchy · epoch 7 · beat 4s · live                                        │"
+"│lands today 2 (- phases) · needs you 0 · drafts - · housekeeping -                                │"
+"│tick 12s ago · land_phase api-runners/runner-parity · 1m · 0 refused or failed today              │"
+"╰──────────────────────────────────────────────────────────────────────────────────────────────────╯"
