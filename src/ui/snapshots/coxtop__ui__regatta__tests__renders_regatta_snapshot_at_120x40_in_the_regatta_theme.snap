@@ -1,6 +1,6 @@
 ---
 source: src/ui/regatta.rs
-assertion_line: 1249
+assertion_line: 1398
 expression: terminal.backend().to_string()
 ---
 "╭ 1 chair ─────────────────────────────────────────────────╮╭ 2 spend ─────────────────────────────────────────────────╮"
@@ -14,13 +14,12 @@ expression: terminal.backend().to_string()
 "│                                              ││00:00                   lanes in use · peak 2                    00:00│"
 "╰──────────────────────────────────────────────╯╰──────────────────────────────────────────────────────────────────────╯"
 "╭ 5 runs ──────────────────────────────────────────────────────────────────────────────────────────────────────────────╮"
-"│▶ dash-feed-1 omarchy p1-foundations build 0.84                                                                       │"
-"│  dash-feed-2 omarchy p1-foundations plan 0.00                                                                        │"
+"│  RUN          MACHINE    PHASE                  NODE         ATT    COST STATUS                                      │"
+"│▶ dash-feed-1  omarchy    p1-foundations         build          1    0.84 ● running                                   │"
+"│  dash-feed-2  omarchy    p1-foundations         plan           1    0.00 ● running                                   │"
 "╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯"
 "╭ 6 queue ──────────────────────────────────────────────────────────╮╭ inbox ──────────────────────────────────────────╮"
-"│  dash-feed-streams-a-versioned-json-snapshot-of 0/3 p1-foundations││needs_chair some-task budget stop after 2 attempt│"
-"│                                                                   ││                                                 │"
-"│                                                                   ││                                                 │"
+"│  dash-feed-streams-a-versioned-json-snaps… ████████████ 0/3 phases││needs_chair some-task budget stop after 2 attempt│"
 "│                                                                   ││                                                 │"
 "│                                                                   ││                                                 │"
 "│                                                                   ││                                                 │"
@@ -43,3 +42,4 @@ expression: terminal.backend().to_string()
 "│                                                                   ││                                                 │"
 "│                                                                   ││                                                 │"
 "╰───────────────────────────────────────────────────────────────────╯╰─────────────────────────────────────────────────╯"
+"1-6 frames · ←→ focus · ↑↓ select · ⏎ drill down · t theme · p layout · q quit                                          "

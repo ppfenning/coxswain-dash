@@ -14,7 +14,7 @@ use ratatui::{
 };
 
 use crate::app::{App, Focus};
-use crate::feed::{Chair, FeedSnapshot, Machine, Run};
+use crate::feed::{Chair, FeedSnapshot, InboxEntry, Machine, QueueEntry, Run};
 use crate::theme::Theme;
 
 use super::chair_card::{Freshness, TICK_INTERVAL_S, beat_freshness, short_age};
@@ -49,6 +49,7 @@ pub fn render(f: &mut Frame, app: &App, theme: &Theme) {
         }
     }
     render_inbox(f, inbox_area, snapshot, theme);
+    render_key_bar(f, split_key_bar(area).1, theme);
 }
 
 /// The rects frames 1-6 render into (`None` for a hidden frame), exactly as `render` lays
@@ -145,16 +146,15 @@ fn split_pair(
 /// Returns the rects of frames 1-6 (`None` when hidden) and the inbox rect. The inbox is never
 /// shorter than `CANVAS_INBOX_MIN` rows (unless `area` itself is), so the rows above it give up
 /// height first, top to bottom. `runs_len` is the runs list length; frame 5 is as tall as its
-/// rows and borders need, at most half of the height left after the first two rows.
+/// rows, its header row and its borders need, at most half of the height left after the first
+/// two rows.
 fn canvas_layout(area: Rect, visible: [bool; 6], runs_len: usize) -> ([Option<Rect>; 6], Rect) {
     let rows_of = |shown: bool, rows: u16| if shown { rows } else { 0 };
     let budget = area.height.saturating_sub(CANVAS_INBOX_MIN);
     let top_h = rows_of(visible[0] || visible[1], CANVAS_TOP_ROWS).min(budget);
     let middle_h = rows_of(visible[2] || visible[3], CANVAS_MIDDLE_ROWS).min(budget - top_h);
     let left = area.height - top_h - middle_h;
-    let runs_need = u16::try_from(runs_len.saturating_add(2))
-        .unwrap_or(u16::MAX)
-        .max(3);
+    let runs_need = u16::try_from(runs_len.saturating_add(3)).unwrap_or(u16::MAX);
     let runs_h = rows_of(visible[4], runs_need)
         .min(left / 2)
         .min(budget - top_h - middle_h);
@@ -180,7 +180,25 @@ fn canvas_layout(area: Rect, visible: [bool; 6], runs_len: usize) -> ([Option<Re
     )
 }
 
-fn layout_rects(area: Rect, app: &App) -> ([Option<Rect>; 6], Rect) {
+/// `area` split into the frames' body and the one-line key bar under it. A one-row `area` is all
+/// key bar, and an empty one is neither.
+fn split_key_bar(area: Rect) -> (Rect, Rect) {
+    let body_h = area.height.saturating_sub(1);
+    (
+        Rect {
+            height: body_h,
+            ..area
+        },
+        Rect {
+            y: area.y + body_h,
+            height: area.height - body_h,
+            ..area
+        },
+    )
+}
+
+fn layout_rects(full: Rect, app: &App) -> ([Option<Rect>; 6], Rect) {
+    let (area, _) = split_key_bar(full);
     if app.regatta_layout_preset() == 0 {
         let runs_len = app.snapshot().map_or(0, |s| s.runs.len());
         return canvas_layout(area, app.regatta_frames_visible(), runs_len);
@@ -729,15 +747,74 @@ fn render_lanes(f: &mut Frame, rect: Rect, app: &App, theme: &Theme) {
     f.render_widget(Paragraph::new(lines).style(base_style(theme)), inner);
 }
 
-fn run_color(theme: &Theme, run: &Run) -> Color {
-    if run.status == "quarantined" || run.status == "failed" {
-        theme.status_failed
-    } else if run.verdict == "approve" {
-        theme.status_done
-    } else if run.status == "running" {
-        theme.status_running
+/// A run's status word's color. The four terminal-ish statuses have their own roles; anything
+/// else is waiting.
+fn status_color(theme: &Theme, status: &str) -> Color {
+    match status {
+        "running" => theme.status_running,
+        "approved" => theme.approved,
+        "landed" => theme.landed,
+        "quarantined" => theme.quarantined,
+        "failed" => theme.status_failed,
+        _ => theme.status_waiting,
+    }
+}
+
+/// Widths of the runs columns, left to right: run, machine, phase, node. ATT and COST are
+/// right-aligned in `ATT_WIDTH` and `COST_WIDTH`.
+const RUN_COLUMNS: [usize; 4] = [12, 10, 22, 12];
+const ATT_WIDTH: usize = 3;
+const COST_WIDTH: usize = 7;
+
+/// `text` cut to `width` chars with a trailing `…` when it was longer, then padded to `width`.
+fn fit_cell(text: &str, width: usize) -> String {
+    let cut: String = if text.chars().count() > width {
+        text.chars()
+            .take(width.saturating_sub(1))
+            .chain(['\u{2026}'])
+            .collect()
     } else {
-        theme.status_waiting
+        text.to_string()
+    };
+    format!("{cut:<width$}")
+}
+
+/// One runs line up to the status column; the header and the rows share it so they align.
+fn run_columns(prefix: &str, cells: [&str; 4], att: &str, cost: &str) -> String {
+    let [run, machine, phase, node] = cells;
+    let [run_w, machine_w, phase_w, node_w] = RUN_COLUMNS;
+    format!(
+        "{prefix}{} {} {} {} {att:>ATT_WIDTH$} {cost:>COST_WIDTH$} ",
+        fit_cell(run, run_w),
+        fit_cell(machine, machine_w),
+        fit_cell(phase, phase_w),
+        fit_cell(node, node_w),
+    )
+}
+
+fn run_header(theme: &Theme) -> Line<'static> {
+    let columns = run_columns("  ", ["RUN", "MACHINE", "PHASE", "NODE"], "ATT", "COST");
+    Line::styled(format!("{columns}STATUS"), Style::default().fg(theme.dim))
+}
+
+/// One run's row. A selected row is prefixed `▶` and sits on `theme.selected_row`.
+fn run_row(r: &Run, selected: bool, theme: &Theme) -> Line<'static> {
+    let prefix = if selected { "\u{25b6} " } else { "  " };
+    let columns = run_columns(
+        prefix,
+        [&r.run, &r.machine, &r.phase, &r.node],
+        &r.attempt.to_string(),
+        &format!("{:.2}", r.cost),
+    );
+    let status = Span::styled(
+        format!("\u{25cf} {}", r.status),
+        Style::default().fg(status_color(theme, &r.status)),
+    );
+    let line = Line::from(vec![Span::raw(columns), status]);
+    if selected {
+        line.style(Style::default().fg(theme.accent).bg(theme.selected_row))
+    } else {
+        line
     }
 }
 
@@ -748,33 +825,98 @@ fn render_runs(
     selected: Option<usize>,
     theme: &Theme,
 ) {
-    let lines: Vec<Line> = snapshot
+    let block = numbered_block(5, FRAME_NAMES[4], theme, selected.is_some());
+    let inner = block.inner(rect);
+    let header = std::iter::once(run_header(theme));
+    let rows = snapshot
         .runs
         .iter()
         .enumerate()
-        .map(|(i, r)| {
-            let is_selected = selected == Some(i);
-            let prefix = if is_selected { "\u{25b6} " } else { "  " };
-            let color = if is_selected {
-                theme.accent
-            } else {
-                run_color(theme, r)
-            };
-            let run = &r.run;
-            let machine = &r.machine;
-            let phase = &r.phase;
-            let node = &r.node;
-            let cost = r.cost;
-            Line::styled(
-                format!("{prefix}{run} {machine} {phase} {node} {cost:.2}"),
-                Style::default().fg(color),
-            )
-        })
-        .collect();
-    let paragraph = Paragraph::new(lines)
-        .block(numbered_block(5, FRAME_NAMES[4], theme, selected.is_some()))
+        .map(|(i, r)| run_row(r, selected == Some(i), theme));
+    let paragraph = Paragraph::new(header.chain(rows).collect::<Vec<_>>())
+        .block(block)
         .style(base_style(theme));
     f.render_widget(paragraph, rect);
+    // The header takes the first inner row.
+    paint_selected_row(f, inner, selected.map(|i| i + 1), theme);
+}
+
+/// Fills row `row` of `inner` with `theme.selected_row`, keeping what is drawn on it. A line's own
+/// style stops at its text, so the rest of the row needs this.
+fn paint_selected_row(f: &mut Frame, inner: Rect, row: Option<usize>, theme: &Theme) {
+    let dy = row.and_then(|r| u16::try_from(r).ok());
+    if let Some(dy) = dy.filter(|dy| *dy < inner.height) {
+        let area = Rect {
+            y: inner.y + dy,
+            height: 1,
+            ..inner
+        };
+        f.buffer_mut()
+            .set_style(area, Style::default().bg(theme.selected_row));
+    }
+}
+
+/// Cells in a queue progress bar.
+const QUEUE_BAR_CELLS: usize = 12;
+
+/// Filled cells of the queue bar for `landed` of `total` phases, rounded to the nearest cell and
+/// never past the bar.
+fn queue_bar_filled(landed: u32, total: u32) -> usize {
+    if total == 0 {
+        return 0;
+    }
+    let cells = QUEUE_BAR_CELLS as u64;
+    let filled = (u64::from(landed) * cells + u64::from(total) / 2) / u64::from(total);
+    (filled as usize).min(QUEUE_BAR_CELLS)
+}
+
+/// The bar's fill color: landed at 75% done or more, running before that.
+fn queue_bar_color(theme: &Theme, landed: u32, total: u32) -> Color {
+    if u64::from(landed) * 4 >= u64::from(total) * 3 {
+        theme.landed
+    } else {
+        theme.status_running
+    }
+}
+
+/// How many of `len` items to draw and how many to fold into `+ N more`, given at most
+/// `max_items` and `rows` lines. A fold takes one line, so it costs one item.
+fn overflow_split(len: usize, max_items: usize, rows: usize) -> (usize, usize) {
+    if len <= max_items.min(rows) {
+        (len, 0)
+    } else {
+        let shown = max_items.min(rows.saturating_sub(1));
+        (shown, len - shown)
+    }
+}
+
+fn more_line(more: usize, theme: &Theme) -> Line<'static> {
+    Line::styled(format!("+ {more} more"), Style::default().fg(theme.dim))
+}
+
+fn queue_line(q: &QueueEntry, selected: bool, width: usize, theme: &Theme) -> Line<'static> {
+    let prefix = if selected { "\u{25b6} " } else { "  " };
+    let tail = format!(" {}/{} phases", q.phases_landed, q.phases_total);
+    let initiative_w = width.saturating_sub(2 + 1 + QUEUE_BAR_CELLS + tail.chars().count());
+    let filled = queue_bar_filled(q.phases_landed, q.phases_total);
+    let bar_color = queue_bar_color(theme, q.phases_landed, q.phases_total);
+    let bar = |cells: usize, color: Color| {
+        Span::styled("\u{2588}".repeat(cells), Style::default().fg(color))
+    };
+    let line = Line::from(vec![
+        Span::raw(format!(
+            "{prefix}{} ",
+            fit_cell(&q.initiative, initiative_w)
+        )),
+        bar(filled, bar_color),
+        bar(QUEUE_BAR_CELLS - filled, theme.track),
+        Span::raw(tail),
+    ]);
+    if selected {
+        line.style(Style::default().fg(theme.accent).bg(theme.selected_row))
+    } else {
+        line
+    }
 }
 
 fn render_queue(
@@ -784,46 +926,82 @@ fn render_queue(
     selected: Option<usize>,
     theme: &Theme,
 ) {
-    let lines: Vec<Line> = snapshot
+    let block = numbered_block(6, FRAME_NAMES[5], theme, selected.is_some());
+    let inner = block.inner(rect);
+    let (shown, more) = overflow_split(snapshot.queue.len(), usize::MAX, usize::from(inner.height));
+    let rows = snapshot
         .queue
         .iter()
+        .take(shown)
         .enumerate()
-        .map(|(i, q)| {
-            let is_selected = selected == Some(i);
-            let prefix = if is_selected { "\u{25b6} " } else { "  " };
-            let initiative = &q.initiative;
-            let phases_landed = q.phases_landed;
-            let phases_total = q.phases_total;
-            let current_phase = &q.current_phase;
-            let text =
-                format!("{prefix}{initiative} {phases_landed}/{phases_total} {current_phase}");
-            if is_selected {
-                Line::styled(text, Style::default().fg(theme.accent))
-            } else {
-                Line::from(text)
-            }
-        })
+        .map(|(i, q)| queue_line(q, selected == Some(i), usize::from(inner.width), theme));
+    let lines: Vec<Line> = rows
+        .chain((more > 0).then(|| more_line(more, theme)))
         .collect();
-    let paragraph = Paragraph::new(lines)
-        .block(numbered_block(6, FRAME_NAMES[5], theme, selected.is_some()))
-        .style(base_style(theme));
+    let paragraph = Paragraph::new(lines).block(block).style(base_style(theme));
     f.render_widget(paragraph, rect);
+    paint_selected_row(f, inner, selected.filter(|i| *i < shown), theme);
+}
+
+/// Inbox items drawn before the rest fold into `+ N more`.
+const INBOX_ITEMS: usize = 3;
+
+fn inbox_line(i: &InboxEntry, theme: &Theme) -> Line<'static> {
+    Line::from(vec![
+        Span::raw(format!("{} {} ", i.kind, i.target)),
+        Span::styled(i.reason.clone(), Style::default().fg(theme.dim)),
+    ])
 }
 
 fn render_inbox(f: &mut Frame, rect: Rect, snapshot: &FeedSnapshot, theme: &Theme) {
     let block = framed("inbox", theme, false);
-    let lines: Vec<Line> = snapshot
-        .inbox
-        .iter()
-        .map(|i| {
-            let kind = &i.kind;
-            let target = &i.target;
-            let reason = &i.reason;
-            Line::from(format!("{kind} {target} {reason}"))
-        })
-        .collect();
+    let rows = usize::from(block.inner(rect).height);
+    let (shown, more) = overflow_split(snapshot.inbox.len(), INBOX_ITEMS, rows);
+    let lines: Vec<Line> = if snapshot.inbox.is_empty() {
+        vec![Line::styled(
+            "\u{2713} nothing waiting on you",
+            Style::default().fg(theme.landed),
+        )]
+    } else {
+        snapshot
+            .inbox
+            .iter()
+            .take(shown)
+            .map(|i| inbox_line(i, theme))
+            .chain((more > 0).then(|| more_line(more, theme)))
+            .collect()
+    };
     let paragraph = Paragraph::new(lines).block(block).style(base_style(theme));
     f.render_widget(paragraph, rect);
+}
+
+/// Key and label pairs of the key bar: exactly the keys `input::handle_key` and `main` act on.
+const KEY_BAR: [(&str, &str); 7] = [
+    ("1-6", "frames"),
+    ("\u{2190}\u{2192}", "focus"),
+    ("\u{2191}\u{2193}", "select"),
+    ("\u{23ce}", "drill down"),
+    ("t", "theme"),
+    ("p", "layout"),
+    ("q", "quit"),
+];
+
+fn key_bar_line(theme: &Theme) -> Line<'static> {
+    let key = Style::default().fg(theme.border_focus);
+    let label = Style::default().fg(theme.dim);
+    let spans = KEY_BAR.iter().enumerate().flat_map(|(i, (k, l))| {
+        let sep = (i > 0).then(|| Span::styled(" \u{b7} ", label));
+        sep.into_iter()
+            .chain([Span::styled(*k, key), Span::styled(format!(" {l}"), label)])
+    });
+    Line::from(spans.collect::<Vec<_>>())
+}
+
+fn render_key_bar(f: &mut Frame, rect: Rect, theme: &Theme) {
+    f.render_widget(
+        Paragraph::new(key_bar_line(theme)).style(base_style(theme)),
+        rect,
+    );
 }
 
 #[cfg(test)]
@@ -1225,27 +1403,36 @@ mod tests {
         assert!(row_text(&terminal, 2).contains(" 1/2 \u{25cf} login ok 1m"));
     }
 
-    #[test]
-    fn renders_regatta_snapshot_in_the_regatta_theme() {
-        let app = app_with_fixture();
-        let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
-        let backend = TestBackend::new(120, 40);
-        let mut terminal = Terminal::new(backend).expect("terminal");
+    fn draw_page(app: &App, theme_id: ThemeId, width: u16, height: u16) -> Terminal<TestBackend> {
+        let theme = crate::theme::resolve_for(theme_id, Some("truecolor"));
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
         terminal
-            .draw(|f| render(f, &app, &theme))
+            .draw(|f| render(f, app, &theme))
             .expect("draw should not fail");
+        terminal
+    }
+
+    #[test]
+    fn renders_regatta_snapshot_at_120x40_in_the_regatta_theme() {
+        let terminal = draw_page(&app_with_fixture(), ThemeId::Regatta, 120, 40);
         insta::assert_snapshot!(terminal.backend().to_string());
     }
 
     #[test]
-    fn renders_regatta_snapshot_in_the_harbor_light_theme() {
-        let app = app_with_fixture();
-        let theme = crate::theme::resolve_for(ThemeId::HarborLight, Some("truecolor"));
-        let backend = TestBackend::new(120, 40);
-        let mut terminal = Terminal::new(backend).expect("terminal");
-        terminal
-            .draw(|f| render(f, &app, &theme))
-            .expect("draw should not fail");
+    fn renders_regatta_snapshot_at_120x40_in_the_harbor_light_theme() {
+        let terminal = draw_page(&app_with_fixture(), ThemeId::HarborLight, 120, 40);
+        insta::assert_snapshot!(terminal.backend().to_string());
+    }
+
+    #[test]
+    fn renders_regatta_snapshot_at_160x46_in_the_regatta_theme() {
+        let terminal = draw_page(&app_with_fixture(), ThemeId::Regatta, 160, 46);
+        insta::assert_snapshot!(terminal.backend().to_string());
+    }
+
+    #[test]
+    fn renders_regatta_snapshot_at_160x46_in_the_harbor_light_theme() {
+        let terminal = draw_page(&app_with_fixture(), ThemeId::HarborLight, 160, 46);
         insta::assert_snapshot!(terminal.backend().to_string());
     }
 
@@ -1336,7 +1523,7 @@ mod tests {
             .expect("draw should not fail");
         let runs_rect = frame_rects(area, &app)[4].expect("runs frame is visible");
         let buffer = terminal.backend().buffer();
-        let row_fg = buffer[(runs_rect.x + 1, runs_rect.y + 1)].fg;
+        let row_fg = buffer[(runs_rect.x + 1, runs_rect.y + 2)].fg;
         let border_fg = buffer[(runs_rect.x, runs_rect.y)].fg;
         (row_fg, border_fg)
     }
@@ -1364,7 +1551,16 @@ mod tests {
         let app = App::default();
         assert_eq!(app.regatta_layout_preset(), 0);
         let area = Rect::new(0, 0, 120, 40);
-        assert_eq!(layout_rects(area, &app), canvas_layout(area, ALL, 0));
+        let body = Rect::new(0, 0, 120, 39);
+        assert_eq!(layout_rects(area, &app), canvas_layout(body, ALL, 0));
+    }
+
+    #[test]
+    fn the_key_bar_is_the_last_row_and_the_frames_keep_the_rest() {
+        let (body, bar) = split_key_bar(Rect::new(0, 2, 120, 40));
+        assert_eq!(body, Rect::new(0, 2, 120, 39));
+        assert_eq!(bar, Rect::new(0, 41, 120, 1));
+        assert_eq!(split_key_bar(Rect::new(0, 0, 9, 0)).1.height, 0);
     }
 
     #[test]
@@ -1374,9 +1570,9 @@ mod tests {
         assert_eq!(rects[1], Some(Rect::new(60, 0, 60, 4)));
         assert_eq!(rects[2], Some(Rect::new(0, 4, 48, 6)));
         assert_eq!(rects[3], Some(Rect::new(48, 4, 72, 6)));
-        assert_eq!(rects[4], Some(Rect::new(0, 10, 120, 3)));
-        assert_eq!(rects[5], Some(Rect::new(0, 13, 69, 27)));
-        assert_eq!(inbox, Rect::new(69, 13, 51, 27));
+        assert_eq!(rects[4], Some(Rect::new(0, 10, 120, 4)));
+        assert_eq!(rects[5], Some(Rect::new(0, 14, 69, 26)));
+        assert_eq!(inbox, Rect::new(69, 14, 51, 26));
     }
 
     #[test]
@@ -1411,7 +1607,7 @@ mod tests {
             .expect("draw should not fail");
         let (_, inbox) = layout_rects(area, &app);
         assert!(inbox.height >= 5, "inbox {inbox:?}");
-        assert_eq!(inbox.y + inbox.height, 24);
+        assert_eq!(inbox.y + inbox.height, 23);
     }
 
     #[test]
@@ -1445,5 +1641,273 @@ mod tests {
         assert!(title_cell.modifier.contains(Modifier::BOLD));
         assert_eq!(buffer[(chair.x, chair.y)].fg, theme.border);
         assert_eq!(buffer[(chair.x, chair.y)].symbol(), "\u{256d}");
+    }
+
+    /// A feed with literal `runs`, `queue` and `inbox` arrays, in the default (Runs) focus.
+    fn feed_app(runs: &str, queue: &str, inbox: &str) -> App {
+        let json = format!(
+            r#"{{"schema":1,"at":"2026-09-29T00:00:00Z","chair":{{"holder":"h","host":"h","epoch":1,"liveness":"live","beat_age_s":0}},"spend":{{"five_hour_fraction":0.0,"five_hour_source":"meter","weekly_fraction":0.0,"weekly_source":"meter","hard_stop_fraction":0.0,"five_hour_resets_at":"2026-09-29T00:00:00Z","weekly_resets_at":"2026-09-29T00:00:00Z"}},"machines":[],"runs":[{runs}],"queue":[{queue}],"inbox":[{inbox}],"watch":[]}}"#
+        );
+        let mut app = App::default();
+        app.apply_snapshot(crate::feed::parse_snapshot(&json).expect("literal feed parses"));
+        app
+    }
+
+    fn run_json(name: &str, status: &str) -> String {
+        format!(
+            r#"{{"run":"{name}","machine":"m0","phase":"p","node":"n","attempt":2,"turns":1,"cost":1.5,"verdict":"ok","status":"{status}"}}"#
+        )
+    }
+
+    fn inbox_json(n: usize) -> String {
+        (0..n)
+            .map(|i| {
+                format!(
+                    r#"{{"kind":"needs_chair","target":"task-{i}","reason":"budget stop {i}"}}"#
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+
+    fn queue_json(n: usize, landed: u32, total: u32) -> String {
+        (0..n)
+            .map(|i| {
+                format!(
+                    r#"{{"initiative":"init-{i}","priority":1,"phases_landed":{landed},"phases_total":{total},"current_phase":"p"}}"#
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+
+    fn cell(terminal: &Terminal<TestBackend>, x: u16, y: u16) -> ratatui::buffer::Cell {
+        terminal.backend().buffer()[(x, y)].clone()
+    }
+
+    #[test]
+    fn each_status_dot_is_its_literal_color_in_the_regatta_theme() {
+        let statuses = ["running", "approved", "landed", "quarantined"];
+        let runs: Vec<String> = statuses.iter().map(|s| run_json(s, s)).collect();
+        let app = feed_app(&runs.join(","), "", "");
+        let terminal = draw_page(&app, ThemeId::Regatta, 120, 40);
+        let runs_rect = frame_rects(Rect::new(0, 0, 120, 40), &app)[4].expect("runs rect");
+        let expected = [
+            Color::Rgb(0x56, 0xd4, 0xdd),
+            Color::Rgb(0xd2, 0xa8, 0xff),
+            Color::Rgb(0x56, 0xd3, 0x64),
+            Color::Rgb(0xff, 0x7b, 0x72),
+        ];
+        for (i, (status, color)) in statuses.iter().zip(expected).enumerate() {
+            let y = runs_rect.y + 2 + i as u16;
+            assert!(row_text(&terminal, y).contains(&format!("\u{25cf} {status}")));
+            assert_eq!(fg_at(&terminal, y, "\u{25cf}"), Some(color), "{status}");
+        }
+    }
+
+    #[test]
+    fn the_waiting_and_failed_statuses_take_their_own_colors() {
+        let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
+        assert_eq!(status_color(&theme, "failed"), Color::Rgb(0xff, 0x7b, 0x72));
+        assert_eq!(
+            status_color(&theme, "pending"),
+            Color::Rgb(0x8b, 0x94, 0x9e)
+        );
+    }
+
+    #[test]
+    fn the_selected_runs_row_is_on_the_selected_row_background_across_its_width() {
+        let app = feed_app(
+            &format!("{},{}", run_json("r0", "running"), run_json("r1", "landed")),
+            "",
+            "",
+        );
+        for (theme_id, bg) in [
+            (ThemeId::Regatta, Color::Rgb(0x16, 0x1b, 0x22)),
+            (ThemeId::HarborLight, Color::Rgb(0xef, 0xea, 0xdd)),
+        ] {
+            let terminal = draw_page(&app, theme_id, 120, 40);
+            let rect = frame_rects(Rect::new(0, 0, 120, 40), &app)[4].expect("runs rect");
+            let selected = rect.y + 2;
+            let prefix: String = row_text(&terminal, selected)
+                .chars()
+                .skip(1)
+                .take(2)
+                .collect();
+            assert_eq!(prefix, "\u{25b6} ");
+            assert_eq!(cell(&terminal, rect.x + 1, selected).bg, bg);
+            assert_eq!(cell(&terminal, rect.x + rect.width - 2, selected).bg, bg);
+            assert_ne!(cell(&terminal, rect.x + 1, selected + 1).bg, bg);
+        }
+    }
+
+    #[test]
+    fn the_runs_header_is_dim_and_the_columns_line_up() {
+        let app = feed_app(&run_json("r0", "running"), "", "");
+        let terminal = draw_page(&app, ThemeId::Regatta, 120, 40);
+        let rect = frame_rects(Rect::new(0, 0, 120, 40), &app)[4].expect("runs rect");
+        let header = row_text(&terminal, rect.y + 1);
+        let words: Vec<&str> = header.split_whitespace().skip(1).collect();
+        assert_eq!(
+            words[..7].join(" "),
+            "RUN MACHINE PHASE NODE ATT COST STATUS"
+        );
+        assert_eq!(
+            fg_at(&terminal, rect.y + 1, "RUN"),
+            Some(Color::Rgb(0x8b, 0x94, 0x9e))
+        );
+        let row = row_text(&terminal, rect.y + 2);
+        assert_eq!(
+            col_of(&terminal, rect.y + 1, "STATUS"),
+            row.find('\u{25cf}')
+                .map(|b| row[..b].chars().count() as u16)
+                .expect("dot")
+        );
+    }
+
+    #[test]
+    fn queue_bar_filled_rounds_to_the_nearest_of_twelve_cells() {
+        assert_eq!(queue_bar_filled(0, 3), 0);
+        assert_eq!(queue_bar_filled(1, 3), 4);
+        assert_eq!(queue_bar_filled(2, 4), 6);
+        assert_eq!(queue_bar_filled(3, 3), 12);
+        assert_eq!(queue_bar_filled(0, 0), 0);
+        assert_eq!(queue_bar_filled(9, 3), 12);
+    }
+
+    #[test]
+    fn the_queue_bar_turns_landed_at_three_quarters_done() {
+        let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
+        assert_eq!(queue_bar_color(&theme, 2, 4), Color::Rgb(0x56, 0xd4, 0xdd));
+        assert_eq!(queue_bar_color(&theme, 3, 4), Color::Rgb(0x56, 0xd3, 0x64));
+    }
+
+    #[test]
+    fn a_queue_row_draws_twelve_bar_cells_and_landed_over_total() {
+        let app = feed_app("", &queue_json(1, 2, 4), "");
+        let terminal = draw_page(&app, ThemeId::Regatta, 120, 40);
+        let rect = frame_rects(Rect::new(0, 0, 120, 40), &app)[5].expect("queue rect");
+        let y = rect.y + 1;
+        let row = row_text(&terminal, y);
+        assert!(row.contains("init-0"), "{row}");
+        assert!(row.contains(" 2/4 phases"), "{row}");
+        let x = col_of(&terminal, y, "\u{2588}");
+        assert_eq!(cell(&terminal, x, y).fg, Color::Rgb(0x56, 0xd4, 0xdd));
+        assert_eq!(cell(&terminal, x + 5, y).fg, Color::Rgb(0x56, 0xd4, 0xdd));
+        assert_eq!(cell(&terminal, x + 6, y).fg, Color::Rgb(0x21, 0x26, 0x2d));
+        assert_eq!(cell(&terminal, x + 11, y).fg, Color::Rgb(0x21, 0x26, 0x2d));
+        assert_eq!(row.chars().filter(|c| *c == '\u{2588}').count(), 12);
+    }
+
+    #[test]
+    fn overflow_split_folds_into_one_more_line_that_costs_an_item() {
+        assert_eq!(overflow_split(3, 3, 10), (3, 0));
+        assert_eq!(overflow_split(5, 3, 10), (3, 2));
+        assert_eq!(overflow_split(4, 3, 3), (2, 2));
+        assert_eq!(overflow_split(10, usize::MAX, 5), (4, 6));
+        assert_eq!(overflow_split(2, 3, 0), (0, 2));
+    }
+
+    #[test]
+    fn an_overflowing_queue_ends_on_a_dim_more_line() {
+        let app = feed_app("", &queue_json(10, 0, 3), "");
+        let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
+        let mut terminal = Terminal::new(TestBackend::new(60, 5)).expect("terminal");
+        terminal
+            .draw(|f| render_queue(f, f.area(), app.snapshot().expect("snapshot"), None, &theme))
+            .expect("draw should not fail");
+        assert!(row_text(&terminal, 2).contains("init-1"));
+        assert!(row_text(&terminal, 3).contains("+ 8 more"));
+        assert_eq!(
+            fg_at(&terminal, 3, "+ 8"),
+            Some(Color::Rgb(0x8b, 0x94, 0x9e))
+        );
+    }
+
+    fn inbox_rect(app: &App) -> Rect {
+        layout_rects(Rect::new(0, 0, 120, 40), app).1
+    }
+
+    #[test]
+    fn an_empty_inbox_says_nothing_waiting_in_the_landed_color() {
+        let app = feed_app("", "", "");
+        let terminal = draw_page(&app, ThemeId::Regatta, 120, 40);
+        let y = inbox_rect(&app).y + 1;
+        assert!(row_text(&terminal, y).contains("\u{2713} nothing waiting on you"));
+        assert_eq!(
+            fg_at(&terminal, y, "\u{2713}"),
+            Some(Color::Rgb(0x56, 0xd3, 0x64))
+        );
+    }
+
+    #[test]
+    fn a_full_inbox_shows_three_items_with_dim_reasons_then_more() {
+        let app = feed_app("", "", &inbox_json(5));
+        let terminal = draw_page(&app, ThemeId::Regatta, 120, 40);
+        let top = inbox_rect(&app).y + 1;
+        for i in 0..3 {
+            let row = row_text(&terminal, top + i);
+            assert!(
+                row.contains(&format!("needs_chair task-{i} budget stop {i}")),
+                "{row}"
+            );
+        }
+        assert_eq!(
+            fg_at(&terminal, top, "budget"),
+            Some(Color::Rgb(0x8b, 0x94, 0x9e))
+        );
+        assert_eq!(
+            fg_at(&terminal, top, "task-0"),
+            Some(Color::Rgb(0xc9, 0xd1, 0xd9))
+        );
+        assert!(row_text(&terminal, top + 3).contains("+ 2 more"));
+        assert!(!row_text(&terminal, top + 3).contains("task-3"));
+    }
+
+    #[test]
+    fn the_key_bar_is_the_last_row_with_keys_in_the_title_color_and_labels_dim() {
+        let app = app_with_fixture();
+        let terminal = draw_page(&app, ThemeId::Regatta, 120, 40);
+        let row = row_text(&terminal, 39);
+        assert_eq!(
+            row.trim_end(),
+            "1-6 frames \u{b7} \u{2190}\u{2192} focus \u{b7} \u{2191}\u{2193} select \u{b7} \u{23ce} drill down \u{b7} t theme \u{b7} p layout \u{b7} q quit"
+        );
+        assert_eq!(
+            fg_at(&terminal, 39, "1-6"),
+            Some(Color::Rgb(0x79, 0xc0, 0xff))
+        );
+        assert_eq!(
+            fg_at(&terminal, 39, "frames"),
+            Some(Color::Rgb(0x8b, 0x94, 0x9e))
+        );
+        assert_eq!(
+            fg_at(&terminal, 39, "quit"),
+            Some(Color::Rgb(0x8b, 0x94, 0x9e))
+        );
+    }
+
+    #[test]
+    fn every_key_on_the_key_bar_changes_the_app() {
+        use crossterm::event::KeyCode;
+        let before = app_with_fixture();
+        let mut layout = app_with_fixture();
+        crate::input::handle_key(&mut layout, KeyCode::Char('p'));
+        assert_ne!(
+            layout.regatta_layout_preset(),
+            before.regatta_layout_preset()
+        );
+        let mut theme = app_with_fixture();
+        crate::input::handle_key(&mut theme, KeyCode::Char('t'));
+        assert_ne!(theme.theme(), before.theme());
+        let mut frame = app_with_fixture();
+        crate::input::handle_key(&mut frame, KeyCode::Char('6'));
+        assert_ne!(
+            frame.regatta_frames_visible(),
+            before.regatta_frames_visible()
+        );
+        let mut focus = app_with_fixture();
+        crate::input::handle_key(&mut focus, KeyCode::Right);
+        assert_ne!(focus.focus(), before.focus());
     }
 }
