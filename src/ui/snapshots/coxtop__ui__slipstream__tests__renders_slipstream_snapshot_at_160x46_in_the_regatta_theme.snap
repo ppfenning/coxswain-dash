@@ -1,0 +1,50 @@
+---
+source: src/ui/slipstream.rs
+expression: "snapshot_text(ThemeId::Regatta, 160, 46)"
+---
+coxtop                                                                                                                                   Tue Sep 29 00:00 v1.2.3
+R U N S                                                                                                                 S P E N D
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮5h █████░░░░░░░░░░░░░░░░░░░░░░░░░░░  16%
+│dash-feed-1                                                                                                      $0.84│wk ███████████░░░░░░░░░░░░░░░░░░░░░  35%
+│omarchy p1-foundations   plan   build   handoff   review   arbitrate   land                                           │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯M A C H I N E S
+                                                                                                                        ╭──────────────────────────────────────╮
+                                                                                                                        │omarchy                            2/3│
+                                                                                                                        │████████████ ████████████ ░░░░░░░░░░░░│
+                                                                                                                        ╰──────────────────────────────────────╯
+                                                                                                                        I N B O X
+                                                                                                                        needs_chair some-task
+                                                                                                                          budget stop after 2 attempts
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                                                                                                        C H A I R
+                                                                                                                        ╭──────────────────────────────────────╮
+                                                                                                                        │● chair@omarchy:12345 @ omarchy       │
+                                                                                                                        │2 lands today · beat 4s               │
+                                                                                                                        │                                      │
+                                                                                                                        ╰──────────────────────────────────────╯
+j/k select   enter open   esc close   tab page   t theme   q quit
