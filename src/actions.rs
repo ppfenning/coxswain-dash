@@ -24,17 +24,46 @@ impl Target {
 /// One verb per variant. Lane and priority variants carry the already computed new value.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Action {
-    RunPause { run: String },
-    RunKill { run: String },
-    RunMove { run: String, host: String },
-    LanesUp { machine: String, lanes: u32 },
-    LanesDown { machine: String, lanes: u32 },
-    MachineDrain { machine: String },
-    MachineActivate { machine: String },
-    PriorityUp { initiative: String, priority: u32 },
-    PriorityDown { initiative: String, priority: u32 },
-    InboxAccept { id: String },
-    InboxDeny { id: String },
+    RunPause {
+        run: String,
+    },
+    RunKill {
+        run: String,
+    },
+    /// The 'm' key opens a prefilled palette, so nothing builds this outside tests yet.
+    #[allow(dead_code)]
+    RunMove {
+        run: String,
+        host: String,
+    },
+    LanesUp {
+        machine: String,
+        lanes: u32,
+    },
+    LanesDown {
+        machine: String,
+        lanes: u32,
+    },
+    MachineDrain {
+        machine: String,
+    },
+    MachineActivate {
+        machine: String,
+    },
+    PriorityUp {
+        initiative: String,
+        priority: u32,
+    },
+    PriorityDown {
+        initiative: String,
+        priority: u32,
+    },
+    InboxAccept {
+        id: String,
+    },
+    InboxDeny {
+        id: String,
+    },
 }
 
 /// The verb a key selects, before a target and the feed supply the rest.
