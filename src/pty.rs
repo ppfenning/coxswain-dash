@@ -20,10 +20,17 @@ pub trait PtySession {
     /// Drains whatever output has arrived since the last call; empty when there is none.
     fn read_output(&mut self) -> Vec<u8>;
     fn kill(&mut self) -> Result<(), PtyError>;
+    /// True once the spawned child has exited on its own. False with nothing spawned.
+    fn has_exited(&mut self) -> bool {
+        false
+    }
 }
 
 /// Lets a caller own any session behind one type.
 impl PtySession for Box<dyn PtySession> {
+    fn has_exited(&mut self) -> bool {
+        (**self).has_exited()
+    }
     fn spawn(&mut self, argv: &[String], rows: u16, cols: u16) -> Result<(), PtyError> {
         (**self).spawn(argv, rows, cols)
     }
@@ -95,6 +102,12 @@ impl RealPty {
 }
 
 impl PtySession for RealPty {
+    fn has_exited(&mut self) -> bool {
+        self.running
+            .as_mut()
+            .is_some_and(|r| matches!(r.child.try_wait(), Ok(Some(_))))
+    }
+
     fn spawn(&mut self, argv: &[String], rows: u16, cols: u16) -> Result<(), PtyError> {
         // A second spawn must not orphan the first child.
         let _ = reap(self.running.take());
@@ -188,6 +201,7 @@ pub enum PtyCall {
 pub struct FakePty {
     calls: Vec<PtyCall>,
     canned: Vec<u8>,
+    exited: bool,
 }
 
 impl FakePty {
@@ -195,7 +209,13 @@ impl FakePty {
         Self {
             calls: Vec::new(),
             canned: canned.to_vec(),
+            exited: false,
         }
+    }
+
+    /// Makes `has_exited` report true, as when the child process ends on its own.
+    pub fn set_exited(&mut self) {
+        self.exited = true;
     }
 
     pub fn calls(&self) -> &[PtyCall] {
@@ -232,6 +252,10 @@ impl PtySession for FakePty {
         self.calls.push(PtyCall::Kill);
         Ok(())
     }
+
+    fn has_exited(&mut self) -> bool {
+        self.exited
+    }
 }
 
 /// A `FakePty` the test keeps a handle to after boxing a clone into the app.
@@ -255,6 +279,9 @@ impl PtySession for SharedFakePty {
     }
     fn kill(&mut self) -> Result<(), PtyError> {
         self.0.borrow_mut().kill()
+    }
+    fn has_exited(&mut self) -> bool {
+        self.0.borrow_mut().has_exited()
     }
 }
 

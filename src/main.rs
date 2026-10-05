@@ -240,7 +240,7 @@ fn main() {
         }
 
         if app.chair_panel().is_open() {
-            app.chair_panel_mut().poll();
+            app.poll_chair_panel();
             changed = true;
         }
 
