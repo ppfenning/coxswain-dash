@@ -1,11 +1,11 @@
 ---
 source: src/ui/mod.rs
-assertion_line: 510
+assertion_line: 849
 expression: text
 ---
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭ 6 queue ──────────────────────────────────────────────────────────╮╭ inbox ──────────────────────────────────────────╮
-│  dash-feed-streams-a-versioned-json-snaps… ████████████ 0/3 phases││needs_chair some-task budget stop after 2 attempt│
-│                             ┌Kill run dash-feed-1──────────────────────────────────────┐                             │
+│  dash-feed-streams-a-version┌Kill run dash-feed-1──────────────────────────────────────┐k budget stop after 2 attempt│
 │                             │ $ cox runs stop dash-feed-1                              │                             │
 │                             │                                                          │                             │
 │                             │ y run    n cancel                                        │                             │
