@@ -4,7 +4,7 @@
 
 use ratatui::{
     Frame,
-    layout::{Constraint, Direction, Layout},
+    layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
@@ -128,8 +128,13 @@ fn daily_lines(daily: &[DayCost], width: usize, theme: &Theme) -> Vec<Line<'stat
 
 /// Draws the spend board: a `Spend` block with the two meters, their history, then the
 /// per-day cost rows.
-pub fn render(f: &mut Frame, detail: &SpendDetail, theme: &Theme, offset: chrono::FixedOffset) {
-    let area = f.area();
+pub fn render(
+    f: &mut Frame,
+    area: Rect,
+    detail: &SpendDetail,
+    theme: &Theme,
+    offset: chrono::FixedOffset,
+) {
     let base = Style::default().fg(theme.fg).bg(theme.bg);
     let block = Block::default()
         .title("Spend")
@@ -181,7 +186,7 @@ mod tests {
         let offset = chrono::FixedOffset::east_opt(0).unwrap();
         let mut terminal = Terminal::new(TestBackend::new(100, 28)).expect("terminal");
         terminal
-            .draw(|f| render(f, detail, theme, offset))
+            .draw(|f| render(f, f.area(), detail, theme, offset))
             .expect("draw should not fail");
         terminal
     }

@@ -136,11 +136,11 @@ fn render_history(
 /// Draws the title, one block per phase, and a trailing history block over the whole frame.
 pub fn render(
     f: &mut Frame,
+    area: Rect,
     detail: &InitiativeDetail,
     theme: &Theme,
     offset: chrono::FixedOffset,
 ) {
-    let area = f.area();
     let history_len = u16::try_from(detail.history.len()).unwrap_or(u16::MAX);
     let [title_area, phases_area, history_area] = {
         let split = Layout::default()
@@ -200,7 +200,7 @@ mod tests {
         let backend = TestBackend::new(120, 40);
         let mut terminal = Terminal::new(backend).expect("terminal");
         terminal
-            .draw(|f| render(f, &detail, &theme, offset))
+            .draw(|f| render(f, f.area(), &detail, &theme, offset))
             .expect("draw should not fail");
         insta::assert_snapshot!(terminal.backend().to_string());
     }
@@ -213,7 +213,7 @@ mod tests {
         let backend = TestBackend::new(120, 40);
         let mut terminal = Terminal::new(backend).expect("terminal");
         terminal
-            .draw(|f| render(f, &detail, &theme, offset))
+            .draw(|f| render(f, f.area(), &detail, &theme, offset))
             .expect("draw should not fail");
         insta::assert_snapshot!(terminal.backend().to_string());
     }
@@ -226,7 +226,7 @@ mod tests {
         let backend = TestBackend::new(120, 40);
         let mut terminal = Terminal::new(backend).expect("terminal");
         terminal
-            .draw(|f| render(f, &detail, &theme, offset))
+            .draw(|f| render(f, f.area(), &detail, &theme, offset))
             .expect("draw should not fail");
         let buffer = terminal.backend().buffer();
         let needle = "ERROR:";

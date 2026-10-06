@@ -387,16 +387,16 @@ impl App {
             .filter(|id| self.chair_panel.attachable(id))
     }
 
-    /// An open panel goes through `request_close`, and a started session waits there for
-    /// `answer_chair_close`. A shown panel with no session attaches if the feed now names one,
-    /// and hides otherwise. A hidden panel attaches to the chair's session, if the feed names
-    /// one, and takes focus either way.
+    /// The backtick path. It never closes a live session: an open pane, or a shown pane with no
+    /// session that lost focus, only takes focus back. A focused sessionless pane still hides
+    /// when the feed names no session, and attaches when it does. A hidden panel attaches to the
+    /// chair's session, if the feed names one, and takes focus either way. The name is kept
+    /// because a test under `ui/` calls it.
     pub fn toggle_chair_panel(&mut self) {
         if self.chair_panel.is_open() {
-            if self.chair_panel.request_close() == CloseOutcome::Closed {
-                self.chair_panel_shown = false;
-                self.chair_panel_focused = false;
-            }
+            self.chair_panel.set_focus(true);
+        } else if self.chair_panel_shown && !self.chair_panel_focused {
+            self.set_chair_panel_focus(true);
         } else if self.chair_panel_shown && self.published_session().is_none() {
             self.chair_panel_shown = false;
             self.chair_panel_focused = false;
@@ -406,6 +406,26 @@ impl App {
             self.chair_panel.open(id.as_deref(), PANEL_ROWS, PANEL_COLS);
             self.chair_panel.set_focus(true);
             self.set_chair_panel_focus(true);
+        }
+    }
+
+    /// The backslash path: hides a shown, unfocused pane. A live session goes through
+    /// `request_close`, and a started session waits there for `answer_chair_close`. A focused
+    /// or hidden pane is left alone.
+    pub fn hide_chair_panel(&mut self) {
+        if self.chair_focused() {
+            return;
+        }
+        if self.chair_panel.is_open() {
+            if self.chair_panel.request_close() == CloseOutcome::Closed {
+                self.chair_panel_shown = false;
+                self.chair_panel_focused = false;
+            }
+        } else if self.chair_panel_shown {
+            self.chair_panel_shown = false;
+            self.chair_panel_focused = false;
+        } else {
+            // Hidden already: nothing to hide.
         }
     }
 

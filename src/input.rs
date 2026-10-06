@@ -120,6 +120,7 @@ pub fn handle_key(app: &mut App, key: KeyCode) {
     }
     match key {
         KeyCode::Char('`') => app.toggle_chair_panel(),
+        KeyCode::Char('\\') => app.hide_chair_panel(),
         KeyCode::Char('~') => app.chair_panel_mut().cycle_width(),
         KeyCode::Tab => app.next_page(),
         KeyCode::BackTab => app.prev_page(),
@@ -386,7 +387,7 @@ mod tests {
     }
 
     #[test]
-    fn backtick_toggles_the_panel_open_and_closed_on_either_page() {
+    fn backtick_opens_and_backslash_closes_the_panel_on_either_page() {
         for page in [AppPage::Regatta, AppPage::Slipstream] {
             let fake = crate::pty::SharedFakePty::default();
             let mut app = App::new(page, ThemeId::Regatta).with_pty(Box::new(fake.clone()));
@@ -397,7 +398,7 @@ mod tests {
             assert!(app.chair_panel().is_open(), "a focused panel keeps Esc");
             let ctrl_close = KeyEvent::new(KeyCode::Char(']'), KeyModifiers::CONTROL);
             handle_event_with(&mut app, ctrl_close, &mut |_| {});
-            handle_event_with(&mut app, press(KeyCode::Char('`')), &mut |_| {});
+            handle_event_with(&mut app, press(KeyCode::Char('\\')), &mut |_| {});
             assert!(!app.chair_panel().is_open());
             assert!(fake.0.borrow().calls().contains(&crate::pty::PtyCall::Kill));
         }
@@ -502,9 +503,9 @@ mod tests {
     }
 
     #[test]
-    fn backtick_on_a_started_session_asks_and_y_then_kills_once() {
+    fn backslash_on_a_started_session_asks_and_y_then_kills_once() {
         let (mut app, fake) = app_with_started_session();
-        handle_event_with(&mut app, press(KeyCode::Char('`')), &mut |_| {});
+        handle_event_with(&mut app, press(KeyCode::Char('\\')), &mut |_| {});
         assert_eq!(kills(&fake), 0);
         assert!(app.chair_panel().confirming_close());
         assert!(app.chair_panel().is_open());
@@ -517,7 +518,7 @@ mod tests {
     #[test]
     fn n_and_esc_keep_the_started_session_and_other_keys_are_swallowed() {
         let (mut app, fake) = app_with_started_session();
-        handle_event_with(&mut app, press(KeyCode::Char('`')), &mut |_| {});
+        handle_event_with(&mut app, press(KeyCode::Char('\\')), &mut |_| {});
         handle_event_with(&mut app, press(KeyCode::Char('x')), &mut |_| {});
         handle_event_with(&mut app, press(KeyCode::Tab), &mut |_| {});
         assert!(app.chair_panel().confirming_close());
@@ -532,7 +533,7 @@ mod tests {
         );
         handle_event_with(&mut app, press(KeyCode::Char('n')), &mut |_| {});
         assert!(!app.chair_panel().confirming_close());
-        handle_event_with(&mut app, press(KeyCode::Char('`')), &mut |_| {});
+        handle_event_with(&mut app, press(KeyCode::Char('\\')), &mut |_| {});
         handle_event_with(&mut app, press(KeyCode::Esc), &mut |_| {});
         assert!(!app.chair_panel().confirming_close());
         assert!(app.chair_panel().is_open());
@@ -541,15 +542,49 @@ mod tests {
     }
 
     #[test]
-    fn an_attach_process_closes_on_backtick_without_asking() {
+    fn an_attach_process_closes_on_backslash_without_asking() {
         let fake = crate::pty::SharedFakePty::default();
         let mut app = App::default().with_pty(Box::new(fake.clone()));
         app.apply_snapshot(snapshot_with_decisions(false));
         handle_event_with(&mut app, press(KeyCode::Char('`')), &mut |_| {});
         let release = KeyEvent::new(KeyCode::Char(']'), KeyModifiers::CONTROL);
         handle_event_with(&mut app, release, &mut |_| {});
-        handle_event_with(&mut app, press(KeyCode::Char('`')), &mut |_| {});
+        handle_event_with(&mut app, press(KeyCode::Char('\\')), &mut |_| {});
         assert!(!app.chair_panel().confirming_close());
+        assert_eq!(kills(&fake), 1);
+    }
+
+    #[test]
+    fn backtick_focuses_an_open_unfocused_pane_without_closing_it() {
+        let (mut app, fake) = app_with_started_session();
+        assert!(!app.chair_focused());
+        handle_event_with(&mut app, press(KeyCode::Char('`')), &mut |_| {});
+        assert!(app.chair_panel().is_open());
+        assert!(app.chair_panel_shown());
+        assert!(app.chair_focused());
+        assert!(!app.chair_panel().confirming_close());
+        assert_eq!(kills(&fake), 0);
+    }
+
+    #[test]
+    fn backtick_opens_a_hidden_pane() {
+        let (mut app, fake) = app_with_rows();
+        assert!(!app.chair_panel_shown());
+        handle_event_with(&mut app, press(KeyCode::Char('`')), &mut |_| {});
+        assert!(app.chair_panel_shown());
+        assert!(app.chair_focused());
+        assert!(fake.0.borrow().calls().is_empty());
+    }
+
+    #[test]
+    fn backslash_hides_an_unfocused_pane_through_the_confirm_path() {
+        let (mut app, fake) = app_with_started_session();
+        handle_event_with(&mut app, press(KeyCode::Char('\\')), &mut |_| {});
+        assert!(app.chair_panel().confirming_close());
+        assert!(app.chair_panel_shown());
+        assert_eq!(kills(&fake), 0);
+        handle_event_with(&mut app, press(KeyCode::Char('y')), &mut |_| {});
+        assert!(!app.chair_panel_shown());
         assert_eq!(kills(&fake), 1);
     }
 
