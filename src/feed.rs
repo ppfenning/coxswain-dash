@@ -112,6 +112,9 @@ pub struct HistoryRow {
     pub landed: Vec<LandedTask>,
     #[serde(default)]
     pub cause: Option<String>,
+    /// A missing key and an explicit null both give `None`.
+    #[serde(default)]
+    pub project: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize, PartialEq)]
@@ -227,6 +230,9 @@ pub struct Run {
     /// How the run ended; `None` when the feed omits it or sends a kind this build does not know.
     #[serde(default, deserialize_with = "deserialize_end")]
     pub end: Option<RunEnd>,
+    /// A missing key and an explicit null both give `None`.
+    #[serde(default)]
+    pub project: Option<String>,
 }
 
 /// One `[at, cumulative_cost_usd, node]` point. `at` is RFC 3339 UTC, kept as sent.
@@ -275,6 +281,9 @@ pub struct QueueEntry {
     pub current_phase: String,
     #[serde(default)]
     pub repo: String,
+    /// A missing key and an explicit null both give `None`.
+    #[serde(default)]
+    pub project: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -663,6 +672,49 @@ mod tests {
             .expect("feed without history should parse");
         assert!(snapshot.history.is_empty());
         assert_eq!(snapshot.history_today, HistoryToday::default());
+    }
+
+    const RUN_JSON: &str = r#"{"run":"r","machine":"m","phase":"p1","node":"build","attempt":1,"turns":1,"cost":0.1,"verdict":"none","status":"running""#;
+    const QUEUE_JSON: &str =
+        r#"{"initiative":"i","priority":1,"phases_landed":0,"phases_total":1,"current_phase":"p1""#;
+
+    fn with_rows(runs: &str, queue: &str, history: &str) -> FeedSnapshot {
+        let line = with_history(history, "{}")
+            .replace(r#""runs":[]"#, &format!(r#""runs":[{runs}]"#))
+            .replace(r#""queue":[]"#, &format!(r#""queue":[{queue}]"#));
+        parse_snapshot(&line).expect("literal snapshot should parse")
+    }
+
+    #[test]
+    fn parse_snapshot_reads_project_on_runs_queue_and_history() {
+        let landed = LANDED_ROW.replace(r#""cost_usd""#, r#""project":"alpha","cost_usd""#);
+        let quarantined = QUARANTINED_ROW.replace(r#""cost_usd""#, r#""project":null,"cost_usd""#);
+        let snapshot = with_rows(
+            &format!(r#"{RUN_JSON},"project":"alpha"}},{RUN_JSON},"project":null}}"#),
+            &format!(r#"{QUEUE_JSON},"project":"beta"}},{QUEUE_JSON},"project":null}}"#),
+            &format!("{landed},{quarantined}"),
+        );
+        assert_eq!(snapshot.runs[0].project.as_deref(), Some("alpha"));
+        assert_eq!(snapshot.runs[1].project, None);
+        assert_eq!(snapshot.queue[0].project.as_deref(), Some("beta"));
+        assert_eq!(snapshot.queue[1].project, None);
+        assert_eq!(snapshot.history[0].project.as_deref(), Some("alpha"));
+        assert_eq!(snapshot.history[1].project, None);
+    }
+
+    #[test]
+    fn parse_snapshot_reads_a_feed_with_no_project_key_as_none() {
+        let snapshot = with_rows(
+            &format!("{RUN_JSON}}}"),
+            &format!("{QUEUE_JSON}}}"),
+            &format!("{LANDED_ROW},{QUARANTINED_ROW}"),
+        );
+        assert_eq!(snapshot.runs.len(), 1);
+        assert_eq!(snapshot.queue.len(), 1);
+        assert_eq!(snapshot.history.len(), 2);
+        assert_eq!(snapshot.runs[0].project, None);
+        assert_eq!(snapshot.queue[0].project, None);
+        assert!(snapshot.history.iter().all(|row| row.project.is_none()));
     }
 
     #[test]

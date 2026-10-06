@@ -673,6 +673,7 @@ mod tests {
             status: status.to_string(),
             cost_series: Vec::new(),
             end: None,
+            project: None,
         }
     }
 
