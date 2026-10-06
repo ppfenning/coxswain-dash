@@ -46,9 +46,14 @@ fn checkout_color(theme: &Theme, behind_main: u32) -> Color {
 /// Draws the machine drill-down: title, host facts, a lanes meter, then one line per
 /// checkout. `offset` is threaded through for signature parity with the other drill boards;
 /// this board shows no timestamp, so it goes unused.
-pub fn render(f: &mut Frame, detail: &MachineDetail, theme: &Theme, offset: chrono::FixedOffset) {
+pub fn render(
+    f: &mut Frame,
+    area: Rect,
+    detail: &MachineDetail,
+    theme: &Theme,
+    offset: chrono::FixedOffset,
+) {
     let _ = offset;
-    let area = f.area();
     let block = Block::default()
         .title(format!("Machine {}", detail.machine))
         .title_bottom(super::footer_line(
@@ -145,7 +150,7 @@ mod tests {
         let backend = TestBackend::new(80, 20);
         let mut terminal = Terminal::new(backend).expect("terminal");
         terminal
-            .draw(|f| render(f, &detail, &theme, offset))
+            .draw(|f| render(f, f.area(), &detail, &theme, offset))
             .expect("draw should not fail");
         assert!(terminal.backend().to_string().contains("Machine omarchy"));
     }
@@ -158,7 +163,7 @@ mod tests {
         let backend = TestBackend::new(120, 40);
         let mut terminal = Terminal::new(backend).expect("terminal");
         terminal
-            .draw(|f| render(f, &detail, &theme, offset))
+            .draw(|f| render(f, f.area(), &detail, &theme, offset))
             .expect("draw should not fail");
         insta::assert_snapshot!(terminal.backend().to_string());
     }
@@ -171,7 +176,7 @@ mod tests {
         let backend = TestBackend::new(120, 40);
         let mut terminal = Terminal::new(backend).expect("terminal");
         terminal
-            .draw(|f| render(f, &detail, &theme, offset))
+            .draw(|f| render(f, f.area(), &detail, &theme, offset))
             .expect("draw should not fail");
         insta::assert_snapshot!(terminal.backend().to_string());
     }
@@ -184,7 +189,7 @@ mod tests {
         let backend = TestBackend::new(120, 40);
         let mut terminal = Terminal::new(backend).expect("terminal");
         terminal
-            .draw(|f| render(f, &detail, &theme, offset))
+            .draw(|f| render(f, f.area(), &detail, &theme, offset))
             .expect("draw should not fail");
         // The fixture's `coxswain-dash` checkout has `behind_main: 3`, so it renders in
         // `meter_mid`, not `status_done` (0) or `meter_high` (above 5).

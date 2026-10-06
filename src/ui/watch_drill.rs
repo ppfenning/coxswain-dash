@@ -4,6 +4,7 @@
 
 use ratatui::{
     Frame,
+    layout::Rect,
     style::{Color, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
@@ -77,8 +78,13 @@ fn row_line(
 
 /// Draws the watch board. Rows past the frame height are cut; there is no scrolling.
 /// `offset` only converts each item's timestamp to local time.
-pub fn render(f: &mut Frame, items: &[WatchItem], theme: &Theme, offset: chrono::FixedOffset) {
-    let area = f.area();
+pub fn render(
+    f: &mut Frame,
+    area: Rect,
+    items: &[WatchItem],
+    theme: &Theme,
+    offset: chrono::FixedOffset,
+) {
     let base = Style::default().fg(theme.fg).bg(theme.bg);
     let block = Block::default()
         .title("Watch")
@@ -173,7 +179,7 @@ mod tests {
         let offset = chrono::FixedOffset::east_opt(0).unwrap();
         let mut terminal = Terminal::new(TestBackend::new(100, 20)).expect("terminal");
         terminal
-            .draw(|f| render(f, items, &theme, offset))
+            .draw(|f| render(f, f.area(), items, &theme, offset))
             .expect("draw should not fail");
         (terminal, theme)
     }

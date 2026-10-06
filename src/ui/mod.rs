@@ -85,30 +85,45 @@ fn render_base(f: &mut Frame, app: &App, theme: &Theme) {
     if let Some(screen) = app.settings() {
         return settings_frame::render(f, f.area(), theme, screen);
     }
+    if app.detail().is_none() {
+        return render_page(f, app, theme);
+    }
+    // A detail view takes the page's share of the width, so the chair panel stays up beside it.
+    let (body, side) = split_page(f.area(), app);
+    if body.width > 0 {
+        render_detail(f, body, app, theme);
+    }
+    if let Some(side) = side {
+        render_panel(f, side, app, theme);
+    }
+}
+
+/// The open detail view, its error, or its loading paragraph, drawn in `area`.
+fn render_detail(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     match (app.detail(), app.detail_error()) {
-        (Some((kind, id, _)), Some(err)) => render_detail_error(f, *kind, id, err, theme),
+        (Some((kind, id, _)), Some(err)) => render_detail_error(f, area, *kind, id, err, theme),
         // Watch holds no snapshot: it reads the feed's list, empty before the first snapshot.
         (Some((DetailKind::Watch, _, _)), None) => {
             let items = app.snapshot().map_or(&[][..], |s| s.watch.as_slice());
-            watch_drill::render(f, items, theme, app.utc_offset())
+            watch_drill::render(f, area, items, theme, app.utc_offset())
         }
         (Some((_, _, Some(DetailSnapshot::Spend(detail)))), None) => {
-            spend_drill::render(f, detail, theme, app.utc_offset())
+            spend_drill::render(f, area, detail, theme, app.utc_offset())
         }
         (Some((_, _, Some(DetailSnapshot::Health(detail)))), None) => {
-            health_drill::render(f, detail, theme, app.utc_offset())
+            health_drill::render(f, area, detail, theme, app.utc_offset())
         }
         (Some((_, _, Some(DetailSnapshot::Run(detail)))), None) => {
-            run_drill::render(f, detail, theme, app.utc_offset())
+            run_drill::render(f, area, detail, theme, app.utc_offset())
         }
         (Some((_, _, Some(DetailSnapshot::Initiative(detail)))), None) => {
-            initiative_drill::render(f, detail, theme, app.utc_offset())
+            initiative_drill::render(f, area, detail, theme, app.utc_offset())
         }
         (Some((_, _, Some(DetailSnapshot::Machine(detail)))), None) => {
-            machine_drill::render(f, detail, theme, app.utc_offset())
+            machine_drill::render(f, area, detail, theme, app.utc_offset())
         }
-        (Some((kind, id, None)), None) => render_loading(f, *kind, id, theme),
-        (None, _) => render_page(f, app, theme),
+        (Some((kind, id, None)), None) => render_loading(f, area, *kind, id, theme),
+        (None, _) => {}
     }
 }
 
@@ -271,8 +286,14 @@ fn render_feed_failed(f: &mut Frame, area: Rect, app: &App, err: &str, theme: &T
 }
 
 /// Drawn in place of a drill body when its detail child failed: the block, and one error row.
-fn render_detail_error(f: &mut Frame, kind: DetailKind, id: &str, err: &str, theme: &Theme) {
-    let area = f.area();
+fn render_detail_error(
+    f: &mut Frame,
+    area: Rect,
+    kind: DetailKind,
+    id: &str,
+    err: &str,
+    theme: &Theme,
+) {
     let block = Block::default()
         .title(kind_and_id(kind, id))
         .borders(Borders::ALL)
@@ -306,8 +327,7 @@ fn kind_and_id(kind: DetailKind, id: &str) -> String {
 }
 
 /// Drawn in place of a drill board while its detail snapshot is still in flight.
-fn render_loading(f: &mut Frame, kind: DetailKind, id: &str, theme: &Theme) {
-    let area = f.area();
+fn render_loading(f: &mut Frame, area: Rect, kind: DetailKind, id: &str, theme: &Theme) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded);
@@ -1320,5 +1340,24 @@ mod tests {
             assert!(closed.contains("omarchy"));
             assert!(screen(&buffer).contains("omarchy"));
         }
+    }
+
+    #[test]
+    fn a_run_drill_draws_beside_the_shown_chair_panel() {
+        let mut app = panel_app(AppPage::Regatta, ThemeId::Regatta, true, false);
+        app.open_detail();
+        let detail = detail::parse_detail(RUN_DETAIL_FIXTURE.trim()).expect("fixture should parse");
+        app.apply_detail_snapshot(detail);
+        assert!(app.detail().is_some());
+        let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
+        let rows = rows(&draw(&app, &theme));
+        let title = chair_panel::title(false);
+        let side = split_page(Rect::new(0, 0, 120, 40), &app)
+            .1
+            .expect("the panel is shown");
+        let right: String = rows[0].chars().skip(side.x as usize).collect();
+        let left: String = rows[0].chars().take(side.x as usize).collect();
+        assert!(right.contains(title), "{right}");
+        assert!(!left.contains(title), "{left}");
     }
 }
