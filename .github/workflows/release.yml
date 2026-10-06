@@ -20,15 +20,16 @@ jobs:
         with:
           targets: ${{ matrix.target }}
       - run: cargo build --release --locked --target ${{ matrix.target }}
-      - name: package coxtop and its checksum
+      - name: package towpath and its checksum
         env:
           TAG: ${{ github.ref_name }}
           TARGET: ${{ matrix.target }}
         run: |
-          asset="coxtop-${TAG}-${TARGET}.tar.gz"
+          asset="towpath-${TAG}-${TARGET}.tar.gz"
           mkdir -p stage dist
+          cp "target/${TARGET}/release/towpath" stage/towpath
           cp "target/${TARGET}/release/coxtop" stage/coxtop
-          tar -czf "dist/${asset}" -C stage coxtop
+          tar -czf "dist/${asset}" -C stage towpath coxtop
           cd dist
           if command -v sha256sum >/dev/null 2>&1; then
             sha256sum "${asset}" > "${asset}.sha256"

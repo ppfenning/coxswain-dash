@@ -3,7 +3,7 @@ source: src/ui/slipstream.rs
 assertion_line: 1042
 expression: "snapshot_text(ThemeId::HarborLight, 160, 46)"
 ---
-coxtop                                                                                                                                   Tue Sep 29 00:00 v1.2.3
+towpath                                                                                                                                  Tue Sep 29 00:00 v1.2.3
 R U N S                                                                                                                 S P E N D
 ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮5h █████░░░░░░░░░░░░░░░░░░░░░░░░░░░  16%
 │dash-feed-2 ● running ×2                                                                                         $0.00│wk ███████████░░░░░░░░░░░░░░░░░░░░░  35%
