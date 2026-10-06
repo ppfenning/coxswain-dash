@@ -548,6 +548,7 @@ mod tests {
             status: "running".to_string(),
             cost_series: vec![],
             end,
+            project: None,
         }
     }
 
