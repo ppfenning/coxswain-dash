@@ -13,11 +13,8 @@ mod decision_card;
 mod detail;
 mod exec;
 mod feed;
-#[allow(dead_code)]
 mod form;
-#[allow(dead_code)]
 mod form_initiative;
-#[allow(dead_code)]
 mod form_machine;
 mod input;
 mod palette;
@@ -36,6 +33,7 @@ mod ui;
 
 use std::collections::VecDeque;
 use std::io::{self, BufRead, BufReader, Write};
+use std::path::PathBuf;
 use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
@@ -116,6 +114,124 @@ fn spawn_detail_reader(
     (child, rx)
 }
 
+type Term = Terminal<CrosstermBackend<io::Stdout>>;
+
+/// The editor command line. `$EDITOR` may carry arguments, so `code -w` works. Unset or blank
+/// falls back to `vi`.
+fn editor_argv(env: Option<&str>, path: &str) -> Vec<String> {
+    let words: Vec<&str> = env.unwrap_or_default().split_whitespace().collect();
+    let program = if words.is_empty() { vec!["vi"] } else { words };
+    program
+        .into_iter()
+        .chain(std::iter::once(path))
+        .map(str::to_string)
+        .collect()
+}
+
+/// The temp file a body is edited in. The pid keeps two coxtops apart, the counter two edits.
+fn editor_path(pid: u32, seq: usize) -> PathBuf {
+    std::env::temp_dir().join(format!("coxtop-{pid}-{seq}.md"))
+}
+
+/// The detail child's body parsed as an initiative. Reads the last non-empty line.
+fn initiative_of(body: &str) -> Result<detail::InitiativeDetail, String> {
+    let line = body.lines().rev().find(|l| !l.trim().is_empty());
+    match line.map(detail::parse_detail) {
+        Some(Ok(detail::DetailSnapshot::Initiative(initiative))) => Ok(initiative),
+        Some(Ok(_)) => Err("detail was not an initiative".to_string()),
+        Some(Err(err)) => Err(format!("detail did not parse: {err}")),
+        None => Err("detail was empty".to_string()),
+    }
+}
+
+/// The result an edit's failed fetch is reported as, so the status line shows it as Failed.
+fn failed_fetch(id: &str, message: String) -> ExecResult {
+    ExecResult {
+        argv: detail::detail_argv("initiative", id),
+        code: Some(1),
+        output: message,
+    }
+}
+
+// edge
+/// Runs `cox dash --detail initiative <id>` to completion and parses its body.
+fn fetch_initiative(id: &str) -> Result<detail::InitiativeDetail, String> {
+    let argv = detail::detail_argv(kind_arg(DetailKind::Initiative), id);
+    let mut cmd = std::process::Command::new(&argv[0]);
+    cmd.args(&argv[1..]);
+    match detail::run_detail(cmd) {
+        detail::DetailOutcome::Body(body) => initiative_of(&body),
+        detail::DetailOutcome::Error(line) => Err(line),
+    }
+}
+
+// edge
+/// Leaves raw mode and the alternate screen so a child can own the terminal.
+fn suspend_terminal(terminal: &mut Term, pushed: Option<KeyboardEnhancementFlags>) {
+    if pushed.is_some() {
+        let _ = execute!(terminal.backend_mut(), PopKeyboardEnhancementFlags);
+    }
+    let _ = disable_raw_mode();
+    let _ = execute!(
+        terminal.backend_mut(),
+        LeaveAlternateScreen,
+        DisableMouseCapture
+    );
+}
+
+// edge
+/// Re-enters the alternate screen and raw mode, then clears so the next draw is a full repaint.
+fn resume_terminal(
+    terminal: &mut Term,
+    pushed: Option<KeyboardEnhancementFlags>,
+) -> io::Result<()> {
+    enable_raw_mode()?;
+    execute!(
+        terminal.backend_mut(),
+        EnterAlternateScreen,
+        EnableMouseCapture
+    )?;
+    if let Some(flags) = pushed {
+        execute!(terminal.backend_mut(), PushKeyboardEnhancementFlags(flags))?;
+    }
+    terminal.clear()
+}
+
+// edge
+/// Edits `text` in `$EDITOR` on a temp file with the terminal handed over, and returns the path
+/// and what the file held afterwards. The terminal is restored before any failure is returned.
+/// A non-zero editor exit still returns the file: the user may have saved before quitting.
+fn run_editor(
+    terminal: &mut Term,
+    pushed: Option<KeyboardEnhancementFlags>,
+    seq: usize,
+    text: &str,
+) -> (Option<PathBuf>, Result<String, String>) {
+    let path = editor_path(std::process::id(), seq);
+    if let Err(err) = std::fs::write(&path, text) {
+        return (
+            None,
+            Err(format!("could not write {}: {err}", path.display())),
+        );
+    }
+    let argv = editor_argv(
+        std::env::var("EDITOR").ok().as_deref(),
+        &path.to_string_lossy(),
+    );
+    suspend_terminal(terminal, pushed);
+    let ran = std::process::Command::new(&argv[0])
+        .args(&argv[1..])
+        .status();
+    let resumed = resume_terminal(terminal, pushed);
+    let outcome = match (ran, resumed) {
+        (Err(err), _) => Err(format!("could not start {}: {err}", argv[0])),
+        (Ok(_), Err(err)) => Err(format!("could not restore the terminal: {err}")),
+        (Ok(_), Ok(())) => std::fs::read_to_string(&path)
+            .map_err(|err| format!("could not read {}: {err}", path.display())),
+    };
+    (Some(path), outcome)
+}
+
 /// Spawns `cox dash --feed` and reads its stdout on a thread into a fresh channel.
 fn spawn_feed_reader() -> (std::process::Child, mpsc::Receiver<String>) {
     let mut child = feed::spawn_feed(Some(2));
@@ -182,6 +298,7 @@ fn main() {
 
     let mut changed = true;
     let mut bells_rung = 0;
+    let mut editor_runs: usize = 0;
     // Set when `q` met the close prompt; cleared when the answer keeps the session open.
     let mut quit_pending = false;
     loop {
@@ -259,6 +376,26 @@ fn main() {
                 }
                 _ => {}
             }
+        }
+
+        if let Some(id) = app.take_detail_request() {
+            match fetch_initiative(&id) {
+                Ok(initiative) => app.open_edit_initiative(&initiative),
+                Err(message) => app.apply_exec_result(failed_fetch(&id, message), Origin::Action),
+            }
+            changed = true;
+        }
+
+        if let Some(idx) = app.take_editor_request() {
+            let text = app
+                .form()
+                .and_then(|form| form.fields.get(idx))
+                .map(|field| field.text.clone())
+                .unwrap_or_default();
+            let (path, edited) = run_editor(&mut terminal, pushed, editor_runs, &text);
+            editor_runs += 1;
+            app.editor_done(idx, path, edited);
+            changed = true;
         }
 
         if let Some(pending) = app.take_pending() {
@@ -558,6 +695,29 @@ mod tests {
                 Origin::SettingsLoad
             ))
         );
+    }
+
+    #[test]
+    fn editor_argv_runs_a_plain_program_on_the_path() {
+        assert_eq!(editor_argv(Some("vim"), "/t/f"), strings(&["vim", "/t/f"]));
+    }
+
+    #[test]
+    fn editor_argv_splits_arguments_before_the_path() {
+        assert_eq!(
+            editor_argv(Some("code -w"), "/t/f"),
+            strings(&["code", "-w", "/t/f"])
+        );
+    }
+
+    #[test]
+    fn editor_argv_falls_back_to_vi_when_unset() {
+        assert_eq!(editor_argv(None, "/t/f"), strings(&["vi", "/t/f"]));
+    }
+
+    #[test]
+    fn editor_argv_falls_back_to_vi_when_blank() {
+        assert_eq!(editor_argv(Some("  "), "/t/f"), strings(&["vi", "/t/f"]));
     }
 
     #[test]
