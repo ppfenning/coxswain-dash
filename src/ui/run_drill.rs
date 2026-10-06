@@ -20,8 +20,13 @@ use crate::theme::Theme;
 /// Width, in characters, of a fully-filled step bar.
 const BAR_WIDTH: usize = 20;
 
-pub fn render(f: &mut Frame, detail: &RunDetail, theme: &Theme, offset: chrono::FixedOffset) {
-    let area = f.area();
+pub fn render(
+    f: &mut Frame,
+    area: Rect,
+    detail: &RunDetail,
+    theme: &Theme,
+    offset: chrono::FixedOffset,
+) {
     let block = Block::default()
         .title(format!("run {}", detail.run))
         .title_bottom(super::footer_line(&Target::Run(detail.run.clone()), theme))
@@ -209,7 +214,7 @@ mod tests {
         let backend = TestBackend::new(120, 40);
         let mut terminal = Terminal::new(backend).expect("terminal");
         terminal
-            .draw(|f| render(f, &detail, &theme, offset))
+            .draw(|f| render(f, f.area(), &detail, &theme, offset))
             .expect("draw should not fail");
         terminal
     }

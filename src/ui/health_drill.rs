@@ -5,6 +5,7 @@
 use chrono::FixedOffset;
 use ratatui::{
     Frame,
+    layout::Rect,
     style::{Color, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
@@ -141,8 +142,13 @@ fn board_lines(detail: &HealthDetail, theme: &Theme, offset: FixedOffset) -> Vec
         .collect()
 }
 
-pub fn render(f: &mut Frame, detail: &HealthDetail, theme: &Theme, offset: FixedOffset) {
-    let area = f.area();
+pub fn render(
+    f: &mut Frame,
+    area: Rect,
+    detail: &HealthDetail,
+    theme: &Theme,
+    offset: FixedOffset,
+) {
     let base = Style::default().fg(theme.fg).bg(theme.bg);
     let block = Block::default()
         .title("Health")
@@ -177,7 +183,7 @@ mod tests {
     ) -> Terminal<TestBackend> {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
         terminal
-            .draw(|f| render(f, detail, theme, utc()))
+            .draw(|f| render(f, f.area(), detail, theme, utc()))
             .expect("draw should not fail");
         terminal
     }
