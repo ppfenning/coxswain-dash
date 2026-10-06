@@ -1,6 +1,7 @@
-//! coxtop, the Coxswain fleet dashboard. Streams `cox dash --feed` into the `App`, dispatches
-//! rendering by page, and turns Tab/BackTab/t/digit keys into `App` mutations. `q` and Ctrl-C
-//! save the page and theme and exit.
+// towpath, the Coxswain fleet dashboard. Streams `cox dash --feed` into the `App`, dispatches
+// rendering by page, and turns Tab/BackTab/t/digit keys into `App` mutations. `q` and Ctrl-C
+// save the page and theme and exit. These are plain comments, not `//!`, because src/coxtop.rs
+// includes this file and an inner doc comment is refused there.
 
 mod actions;
 mod app;
@@ -54,8 +55,27 @@ use app::{App, AppPage, DetailKind, Origin, ThemeId};
 use chair_panel::CloseOutcome;
 use exec::{CmdRunner, ExecResult};
 
+const ALIAS_NOTICE: &str = "coxtop is now towpath; this alias goes away in 0.37";
+
+/// The notice a binary prints on start, given the name it was invoked as.
+fn alias_notice(invoked: &str) -> Option<&'static str> {
+    if invoked == "coxtop" {
+        Some(ALIAS_NOTICE)
+    } else {
+        None
+    }
+}
+
+/// The file stem of `argv[0]`, so `/usr/bin/coxtop` and `coxtop` are the same name.
+fn invoked_name(arg0: &str) -> &str {
+    std::path::Path::new(arg0)
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or(arg0)
+}
+
 fn version_line() -> String {
-    format!("coxtop {}", env!("CARGO_PKG_VERSION"))
+    format!("towpath {}", env!("CARGO_PKG_VERSION"))
 }
 
 /// Without these flags a terminal reports Shift+Enter as a bare Enter. Only a confirmed
@@ -128,9 +148,9 @@ fn editor_argv(env: Option<&str>, path: &str) -> Vec<String> {
         .collect()
 }
 
-/// The temp file a body is edited in. The pid keeps two coxtops apart, the counter two edits.
+/// The temp file a body is edited in. The pid keeps two towpaths apart, the counter two edits.
 fn editor_path(pid: u32, seq: usize) -> PathBuf {
-    std::env::temp_dir().join(format!("coxtop-{pid}-{seq}.md"))
+    std::env::temp_dir().join(format!("towpath-{pid}-{seq}.md"))
 }
 
 /// The detail child's body parsed as an initiative. Reads the last non-empty line.
@@ -263,6 +283,14 @@ fn pair_origin(queue: &mut VecDeque<Origin>, _result: &ExecResult) -> Option<Ori
 }
 
 fn main() {
+    let arg0 = std::env::args().next().unwrap_or_default();
+    if let Some(notice) = alias_notice(invoked_name(&arg0)) {
+        eprintln!("{notice}");
+    }
+    run();
+}
+
+fn run() {
     eprintln!("{}", version_line());
 
     let (page, theme_id) =
@@ -467,7 +495,33 @@ mod tests {
 
     #[test]
     fn the_version_line_names_the_binary() {
-        assert!(version_line().starts_with("coxtop "));
+        assert!(version_line().starts_with("towpath "));
+    }
+
+    #[test]
+    fn the_coxtop_name_gets_the_alias_notice() {
+        assert_eq!(
+            alias_notice("coxtop"),
+            Some("coxtop is now towpath; this alias goes away in 0.37")
+        );
+    }
+
+    #[test]
+    fn the_towpath_name_gets_no_notice() {
+        assert_eq!(alias_notice("towpath"), None);
+    }
+
+    #[test]
+    fn a_path_to_the_alias_binary_still_names_coxtop() {
+        assert_eq!(invoked_name("/usr/local/bin/coxtop"), "coxtop");
+        assert_eq!(invoked_name("towpath"), "towpath");
+    }
+
+    #[test]
+    fn both_binaries_reach_the_same_run_function() {
+        // src/coxtop.rs includes this file, so its `main` calls this `run`.
+        let entry: fn() = run;
+        let _ = entry;
     }
 
     #[test]

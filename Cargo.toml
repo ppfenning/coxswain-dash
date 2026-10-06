@@ -7,8 +7,16 @@ description = "coxtop: the Coxswain fleet dashboard"
 publish = false
 
 [[bin]]
-name = "coxtop"
+name = "towpath"
 path = "src/main.rs"
+# insta names a snapshot file after the bin crate, and the stored snapshots are still named
+# coxtop__*. src/coxtop.rs compiles the same code and tests, so the coxtop target runs them and
+# this one does not. The snapshot rename is a separate task; flip this when it lands.
+test = false
+
+[[bin]]
+name = "coxtop"
+path = "src/coxtop.rs"
 
 [dependencies]
 ratatui = "0.29"

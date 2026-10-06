@@ -365,7 +365,7 @@ fn render_header(
     p: &SlipstreamPalette,
 ) {
     let title = Style::default().fg(p.accent).add_modifier(Modifier::BOLD);
-    f.render_widget(Paragraph::new(Span::styled("coxtop", title)), rect);
+    f.render_widget(Paragraph::new(Span::styled("towpath", title)), rect);
     let right = header_right(&snapshot.at, offset, version);
     f.render_widget(
         Paragraph::new(Line::from(Span::styled(right, dim_style(p))).right_aligned()),
