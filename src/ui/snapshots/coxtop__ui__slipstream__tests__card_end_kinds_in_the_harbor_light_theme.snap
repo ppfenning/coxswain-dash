@@ -3,7 +3,7 @@ source: src/ui/slipstream.rs
 assertion_line: 994
 expression: "end_kinds_text(ThemeId::HarborLight)"
 ---
-coxtop
+towpath
 R U N S
 ╭──────────────────────────────────────────────────────────────────────────────╮
 │alpha-1 ● running                                                        $1.50│
