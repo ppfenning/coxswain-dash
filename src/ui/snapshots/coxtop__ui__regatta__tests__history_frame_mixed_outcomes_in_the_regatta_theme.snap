@@ -1,10 +1,11 @@
 ---
 source: src/ui/regatta.rs
-assertion_line: 3095
+assertion_line: 3393
 expression: terminal.backend().to_string()
 ---
 "╭ 7 history ───────────────────────────────────────────────────────────────────╮"
 "│today  3 lands  1 quarantines  $4.20  5 runs                                  │"
+"│  TIME  MACHINE    INITIATIVE             STATUS                          COST│"
 "│  13:12 omarchy    dash-feed              landed #41                     $1.25│"
 "│  12:40 omarchy    dash-feed              approved                       $0.50│"
 "│  11:05 spare      history-frame          quarantined verify_failed      $2.10│"

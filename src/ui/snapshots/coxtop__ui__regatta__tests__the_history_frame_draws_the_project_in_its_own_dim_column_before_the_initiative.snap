@@ -1,0 +1,14 @@
+---
+source: src/ui/regatta.rs
+assertion_line: 3693
+expression: terminal.backend().to_string()
+---
+"╭ 7 history ───────────────────────────────────────────────────────────────────────────────────────────────────────────╮"
+"│today  3 lands  1 quarantines  $4.20  5 runs                                                                          │"
+"│  TIME  MACHINE    PROJECT        INITIATIVE             STATUS                          COST                         │"
+"│  13:12 omarchy    pat-skylight   dash-feed              landed                         $1.25                         │"
+"│  12:40 spare      -              history-frame          approved                       $0.50                         │"
+"│                                                                                                                      │"
+"│                                                                                                                      │"
+"│                                                                                                                      │"
+"╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯"

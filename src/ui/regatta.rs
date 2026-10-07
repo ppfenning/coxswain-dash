@@ -250,14 +250,21 @@ fn split_key_bar(area: Rect) -> (Rect, Rect) {
     )
 }
 
-/// The fewest rows the history frame is drawn in: two borders, the header and one row.
-const HISTORY_MIN_ROWS: u16 = 4;
+/// The fewest rows the history frame is drawn in: two borders, the summary, the column header and
+/// one run.
+const HISTORY_MIN_ROWS: u16 = 5;
 
-/// Rows the history frame asks for: two borders, the header, and one row per ended run (one for
-/// the empty-state line). It never takes more than a third of `body_h`, and is absent (0) when
-/// that third is under `HISTORY_MIN_ROWS`.
+/// Rows the history frame asks for: two borders, the summary, the column header and one row per
+/// ended run. An empty history asks for the borders, the summary and one empty-state line, with
+/// no column header. It never takes more than a third of `body_h`, and is absent (0) when that
+/// third is under `HISTORY_MIN_ROWS`.
 fn history_height(len: usize, body_h: u16) -> u16 {
-    let want = u16::try_from(len.max(1).saturating_add(3)).unwrap_or(u16::MAX);
+    let rows = if len == 0 {
+        1 + 3
+    } else {
+        len.saturating_add(4)
+    };
+    let want = u16::try_from(rows).unwrap_or(u16::MAX);
     let cap = body_h / 3;
     if cap < HISTORY_MIN_ROWS {
         0
@@ -1363,14 +1370,58 @@ fn history_header(today: &HistoryToday, theme: &Theme) -> Line<'static> {
     )
 }
 
-/// One ended run: end time in `offset`, machine in `accent`, initiative, outcome word in its
-/// colour with its cause or PR, then cost. A selected row is prefixed `▶` and sits on
-/// `theme.selected_row`.
+/// Chars of the history time column, `HH:MM`.
+const HISTORY_TIME_WIDTH: usize = 5;
+/// Columns a history row spends outside PROJECT: the prefix, TIME, MACHINE, INITIATIVE, STATUS and
+/// COST, each with its separator. PROJECT never takes any of these.
+const HISTORY_FIXED_WIDTH: usize = 2
+    + HISTORY_TIME_WIDTH
+    + 1
+    + RUN_COLUMNS[1]
+    + 1
+    + RUN_COLUMNS[2]
+    + 1
+    + HISTORY_OUTCOME_WIDTH
+    + 1
+    + COST_WIDTH;
+
+/// The PROJECT column's width in a history frame `inner_width` wide: what is left after the fixed
+/// columns and its own separator, up to `PROJECT_WIDTH`. 0 leaves the column out.
+fn history_project_width(inner_width: usize) -> usize {
+    let spare = inner_width.saturating_sub(HISTORY_FIXED_WIDTH);
+    PROJECT_WIDTH.min(spare.saturating_sub(1))
+}
+
+/// The history column names, dim, over the cells `history_row` draws at the same widths. PROJECT
+/// is left out when `project_w` is 0.
+fn history_columns(project_w: usize, theme: &Theme) -> Line<'static> {
+    let project = if project_w > 0 {
+        format!("{} ", fit_cell("PROJECT", project_w))
+    } else {
+        String::new()
+    };
+    Line::styled(
+        format!(
+            "  {} {} {project}{} {} {:>COST_WIDTH$}",
+            fit_cell("TIME", HISTORY_TIME_WIDTH),
+            fit_cell("MACHINE", RUN_COLUMNS[1]),
+            fit_cell("INITIATIVE", RUN_COLUMNS[2]),
+            fit_cell("STATUS", HISTORY_OUTCOME_WIDTH),
+            "COST"
+        ),
+        Style::default().fg(theme.dim),
+    )
+}
+
+/// One ended run: end time in `offset`, machine in `accent`, a dim project when `project_w` is
+/// above 0, initiative, outcome word in its colour with its cause or PR, then cost. A selected
+/// row is prefixed `▶` and sits on `theme.selected_row`.
 fn history_row(
     row: &HistoryRow,
     offset: FixedOffset,
     accent: Color,
     selected: bool,
+    project_w: usize,
     theme: &Theme,
 ) -> Line<'static> {
     let prefix = if selected { "\u{25b6} " } else { "  " };
@@ -1385,13 +1436,19 @@ fn history_row(
             Span::raw(" "),
         ]
         .into_iter()
-        .chain(initiative_cell(
-            &row.initiative,
-            row.project.as_deref(),
-            RUN_COLUMNS[2],
-            theme,
-        ))
+        .chain(
+            (project_w > 0)
+                .then(|| {
+                    [
+                        project_cell(row.project.as_deref(), project_w, theme),
+                        Span::raw(" "),
+                    ]
+                })
+                .into_iter()
+                .flatten(),
+        )
         .chain([
+            Span::raw(fit_cell(&row.initiative, RUN_COLUMNS[2])),
             Span::raw(" "),
             Span::styled(word, Style::default().fg(outcome_color(theme, row.outcome))),
             Span::styled(
@@ -1426,7 +1483,11 @@ fn history_window_start(selected: Option<usize>, rows: usize) -> usize {
     selected.map_or(0, |s| (s + 1).saturating_sub(rows))
 }
 
-/// The history frame: today's counts, then one row per ended run in feed order, newest first.
+/// Rows of the history frame above the runs: the summary and the column header.
+const HISTORY_HEAD_ROWS: usize = 2;
+
+/// The history frame: today's counts, the column header, then one row per ended run in feed
+/// order, newest first. An empty history draws the counts and one line, with no column header.
 fn render_history(
     f: &mut Frame,
     rect: Rect,
@@ -1438,33 +1499,40 @@ fn render_history(
     let block = numbered_block(7, "history", theme, selected.is_some());
     let inner = block.inner(rect);
     let shown = selected.filter(|i| *i < snapshot.history.len());
-    let rows = usize::from(inner.height).saturating_sub(1);
+    let rows = usize::from(inner.height).saturating_sub(HISTORY_HEAD_ROWS);
     let start = history_window_start(shown, rows);
-    let body: Vec<Line<'static>> = if snapshot.history.is_empty() {
-        vec![Line::styled(
-            "no runs ended yet",
-            Style::default().fg(theme.dim),
-        )]
+    let project_w = history_project_width(usize::from(inner.width));
+    let summary = history_header(&snapshot.history_today, theme);
+    let lines: Vec<Line<'static>> = if snapshot.history.is_empty() {
+        vec![
+            summary,
+            Line::styled("no runs ended yet", Style::default().fg(theme.dim)),
+        ]
     } else {
-        snapshot
-            .history
-            .iter()
-            .enumerate()
-            .skip(start)
-            .take(rows)
-            .map(|(i, r)| {
-                let accent = machine_accent(snapshot, &r.machine, theme);
-                history_row(r, offset, accent, shown == Some(i), theme)
-            })
+        [summary, history_columns(project_w, theme)]
+            .into_iter()
+            .chain(
+                snapshot
+                    .history
+                    .iter()
+                    .enumerate()
+                    .skip(start)
+                    .take(rows)
+                    .map(|(i, r)| {
+                        let accent = machine_accent(snapshot, &r.machine, theme);
+                        history_row(r, offset, accent, shown == Some(i), project_w, theme)
+                    }),
+            )
             .collect()
     };
-    let lines: Vec<Line<'static>> = std::iter::once(history_header(&snapshot.history_today, theme))
-        .chain(body)
-        .collect();
     let paragraph = Paragraph::new(lines).block(block).style(base_style(theme));
     f.render_widget(paragraph, rect);
-    // The header takes the first inner row.
-    paint_selected_row(f, inner, shown.map(|i| i - start + 1), theme);
+    // The selected row sits under the summary and the header; one scrolled out of view gets none.
+    let at = shown
+        .and_then(|i| i.checked_sub(start))
+        .filter(|d| *d < rows)
+        .map(|d| d + HISTORY_HEAD_ROWS);
+    paint_selected_row(f, inner, at, theme);
 }
 
 /// Cells in a queue progress bar.
@@ -3295,14 +3363,28 @@ mod tests {
         line.spans.iter().map(|s| s.content.as_ref()).collect()
     }
 
-    fn draw_history_frame(app: &App, theme_id: ThemeId) -> Terminal<TestBackend> {
+    /// The history frame alone in a `width` x `height` terminal, `selected` being its selection.
+    fn draw_history_at(
+        app: &App,
+        theme_id: ThemeId,
+        width: u16,
+        height: u16,
+        selected: Option<usize>,
+    ) -> Terminal<TestBackend> {
         let theme = crate::theme::resolve_for(theme_id, Some("truecolor"));
         let snapshot = app.snapshot().expect("snapshot");
-        let mut terminal = Terminal::new(TestBackend::new(80, 9)).expect("terminal");
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
         terminal
-            .draw(|f| render_history(f, f.area(), snapshot, None, app.utc_offset(), &theme))
+            .draw(|f| render_history(f, f.area(), snapshot, selected, app.utc_offset(), &theme))
             .expect("draw should not fail");
         terminal
+    }
+
+    /// The history frame at 80 wide, as tall as it asks to be (at least 9 rows).
+    fn draw_history_frame(app: &App, theme_id: ThemeId) -> Terminal<TestBackend> {
+        let asks = app.snapshot().map_or(0, |s| s.history.len()) + 4;
+        let height = u16::try_from(asks).expect("a short history").max(9);
+        draw_history_at(app, theme_id, 80, height, None)
     }
 
     #[test]
@@ -3587,9 +3669,8 @@ mod tests {
         assert!(key_bar_row(Focus::Queue, 200).contains("g group queue"));
     }
 
-    #[test]
-    fn the_history_frame_shares_the_initiative_cell_with_a_dim_project() {
-        let theme = project_theme();
+    /// Two history rows, one with a project and one with none.
+    fn history_with_a_project() -> App {
         let rows = [
             with_project(
                 r#"{"run":"r2","machine":"omarchy","initiative":"dash-feed","ended_at":"2026-10-04T13:12:00Z","outcome":"landed","cost_usd":1.25}"#,
@@ -3600,15 +3681,153 @@ mod tests {
                 "null",
             ),
         ];
-        let app = history_app(&rows.join(","), TODAY);
-        let terminal = draw_history_frame(&app, ThemeId::Regatta);
+        history_app(&rows.join(","), TODAY)
+    }
+
+    /// The history frame's rows: 0 is the border, 1 the summary, 2 the column header, 3 the first run.
+    #[test]
+    fn the_history_frame_draws_the_project_in_its_own_dim_column_before_the_initiative() {
+        let theme = project_theme();
+        let app = history_with_a_project();
+        let terminal = draw_history_at(&app, ThemeId::Regatta, 120, 9, None);
         insta::assert_snapshot!(terminal.backend().to_string());
-        let x = col_of(&terminal, 2, "pat-skylig");
-        assert_eq!(terminal.backend().buffer()[(x, 2)].fg, theme.dim);
+        let x = col_of(&terminal, 2, "PROJECT");
+        assert_eq!(col_of(&terminal, 3, "pat-skylight"), x);
+        assert_eq!(terminal.backend().buffer()[(x, 3)].fg, theme.dim);
+        assert!(col_of(&terminal, 2, "MACHINE") < x);
+        assert!(x < col_of(&terminal, 2, "INITIATIVE"));
         assert_eq!(
-            col_of(&terminal, 2, "landed"),
-            col_of(&terminal, 3, "approved")
+            col_of(&terminal, 3, "landed"),
+            col_of(&terminal, 4, "approved")
         );
+    }
+
+    #[test]
+    fn a_missing_project_draws_a_dash_in_the_project_column() {
+        let theme = project_theme();
+        let terminal = draw_history_at(&history_with_a_project(), ThemeId::Regatta, 120, 9, None);
+        let x = col_of(&terminal, 2, "PROJECT");
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(x, 4)].symbol(), "-");
+        assert_eq!(buffer[(x, 4)].fg, theme.dim);
+        assert_eq!(buffer[(x + 1, 4)].symbol(), " ");
+    }
+
+    #[test]
+    fn the_history_initiative_cell_holds_the_initiative_alone() {
+        let terminal = draw_history_at(&history_with_a_project(), ThemeId::Regatta, 120, 9, None);
+        let x = usize::from(col_of(&terminal, 2, "INITIATIVE"));
+        let cell = |y: u16| -> String {
+            row_text(&terminal, y)
+                .chars()
+                .skip(x)
+                .take(RUN_COLUMNS[2])
+                .collect()
+        };
+        assert_eq!(cell(3), fit_cell("dash-feed", RUN_COLUMNS[2]));
+        assert_eq!(cell(4), fit_cell("history-frame", RUN_COLUMNS[2]));
+    }
+
+    #[test]
+    fn the_history_header_names_every_column_and_sits_under_the_summary() {
+        let theme = project_theme();
+        let names = ["TIME", "MACHINE", "PROJECT", "INITIATIVE", "STATUS", "COST"];
+        let line = history_columns(PROJECT_WIDTH, &theme);
+        let text = line_text(&line);
+        let at: Vec<usize> = names.iter().map(|n| text.find(n).expect(n)).collect();
+        assert!(at.windows(2).all(|w| w[0] < w[1]), "{text:?}");
+        assert_eq!(line.style.fg, Some(theme.dim));
+        let without = line_text(&history_columns(0, &theme));
+        assert!(!without.contains("PROJECT"), "{without:?}");
+        assert!(
+            ["INITIATIVE", "STATUS", "COST"]
+                .iter()
+                .all(|n| without.contains(n))
+        );
+        let app = history_app(MIXED, TODAY);
+        let terminal = draw_page(&app, ThemeId::Regatta, 120, 40);
+        let rect = history_rect(Rect::new(0, 0, 120, 40), &app).expect("history rect");
+        assert!(row_text(&terminal, rect.y + 1).contains("today  3 lands"));
+        let header = row_text(&terminal, rect.y + 2);
+        assert!(names.iter().all(|n| header.contains(n)), "{header:?}");
+    }
+
+    #[test]
+    fn history_columns_and_rows_share_one_width_set() {
+        let theme = project_theme();
+        let app = history_with_a_project();
+        let row = &app.snapshot().expect("snapshot").history[0];
+        for project_w in [0, 3, PROJECT_WIDTH] {
+            let header = line_text(&history_columns(project_w, &theme));
+            let line = line_text(&history_row(
+                row,
+                app.utc_offset(),
+                theme.dim,
+                false,
+                project_w,
+                &theme,
+            ));
+            assert_eq!(header.chars().count(), line.chars().count(), "{project_w}");
+        }
+    }
+
+    #[test]
+    fn history_project_width_takes_only_what_is_left_after_the_fixed_columns() {
+        assert_eq!(HISTORY_FIXED_WIDTH, 78);
+        assert_eq!(history_project_width(78), 0);
+        assert_eq!(history_project_width(79), 0);
+        assert_eq!(history_project_width(80), 1);
+        assert_eq!(history_project_width(78 + 1 + PROJECT_WIDTH), PROJECT_WIDTH);
+        assert_eq!(history_project_width(118), PROJECT_WIDTH);
+    }
+
+    #[test]
+    fn at_80_wide_the_project_column_is_left_out_and_every_other_column_draws() {
+        let terminal = draw_history_at(&history_with_a_project(), ThemeId::Regatta, 80, 9, None);
+        let header = row_text(&terminal, 2);
+        let first = row_text(&terminal, 3);
+        assert!(!header.contains("PROJ"), "{header:?}");
+        assert!(!first.contains("pat-skylight"), "{first:?}");
+        for name in ["TIME", "MACHINE", "INITIATIVE", "STATUS", "COST"] {
+            assert!(header.contains(name), "{name} {header:?}");
+        }
+        for cell in ["13:12 omarchy", "dash-feed", "landed", "$1.25"] {
+            assert!(first.contains(cell), "{cell} {first:?}");
+        }
+    }
+
+    #[test]
+    fn at_120_wide_the_project_column_is_drawn() {
+        let terminal = draw_history_at(&history_with_a_project(), ThemeId::Regatta, 120, 9, None);
+        assert!(row_text(&terminal, 2).contains("PROJECT"));
+        assert!(row_text(&terminal, 3).contains("pat-skylight"));
+    }
+
+    #[test]
+    fn a_one_run_history_in_the_smallest_frame_draws_that_run() {
+        let app = history_app(
+            r#"{"run":"r1","machine":"spare","initiative":"history-frame","ended_at":"2026-10-04T12:40:00Z","outcome":"approved","cost_usd":0.5}"#,
+            TODAY,
+        );
+        assert_eq!(history_height(1, 3 * HISTORY_MIN_ROWS), HISTORY_MIN_ROWS);
+        let terminal = draw_history_at(&app, ThemeId::Regatta, 120, HISTORY_MIN_ROWS, None);
+        assert!(row_text(&terminal, 1).contains("today"));
+        assert!(row_text(&terminal, 2).contains("TIME"));
+        assert!(row_text(&terminal, 3).contains("12:40 spare"));
+    }
+
+    #[test]
+    fn selecting_with_no_visible_rows_draws_no_highlight_and_does_not_panic() {
+        let theme = project_theme();
+        let app = history_app(MIXED, TODAY);
+        for height in 2..=4 {
+            let terminal = draw_history_at(&app, ThemeId::Regatta, 120, height, Some(3));
+            let buffer = terminal.backend().buffer();
+            assert!(
+                buffer.content().iter().all(|c| c.bg != theme.selected_row),
+                "height {height}"
+            );
+        }
     }
 
     #[test]
@@ -3672,7 +3891,7 @@ mod tests {
             let rect = history_rect(Rect::new(0, 0, 120, 40), &app).expect("history rect");
             let buffer = terminal.backend().buffer();
             for (i, (word, color)) in words.iter().zip(colors).enumerate() {
-                let y = rect.y + 2 + i as u16;
+                let y = rect.y + 3 + i as u16;
                 let x = col_of(&terminal, y, word);
                 assert_eq!(buffer[(x, y)].fg, color, "{theme_id:?} {word}");
                 assert_eq!(buffer[(x + 2, y)].fg, color, "{theme_id:?} {word}");
@@ -3681,12 +3900,17 @@ mod tests {
     }
 
     #[test]
-    fn history_rows_read_time_machine_initiative_outcome_and_cost() {
+    fn history_rows_read_time_machine_project_initiative_outcome_and_cost() {
         let app = history_app(MIXED, TODAY);
         let terminal = draw_page(&app, ThemeId::Regatta, 120, 40);
         let rect = history_rect(Rect::new(0, 0, 120, 40), &app).expect("history rect");
-        let row = |i: u16| row_text(&terminal, rect.y + 2 + i);
-        assert!(row(0).contains("13:12 omarchy    dash-feed"), "{}", row(0));
+        let row = |i: u16| row_text(&terminal, rect.y + 3 + i);
+        let lead = format!(
+            "13:12 {} {} dash-feed",
+            fit_cell("omarchy", RUN_COLUMNS[1]),
+            fit_cell("-", PROJECT_WIDTH)
+        );
+        assert!(row(0).contains(&lead), "{}", row(0));
         assert!(row(0).contains("landed #41"), "{}", row(0));
         assert!(row(0).contains("$1.25"), "{}", row(0));
         assert!(!row(1).contains('#'), "{}", row(1));
@@ -3701,10 +3925,10 @@ mod tests {
         let terminal = draw_page(&app, ThemeId::Regatta, 120, 40);
         let rect = history_rect(Rect::new(0, 0, 120, 40), &app).expect("history rect");
         let buffer = terminal.backend().buffer();
-        let omarchy = col_of(&terminal, rect.y + 2, "omarchy");
-        let spare = col_of(&terminal, rect.y + 4, "spare");
-        assert_eq!(buffer[(omarchy, rect.y + 2)].fg, theme.machine_accents[0]);
-        assert_eq!(buffer[(spare, rect.y + 4)].fg, theme.machine_accents[1]);
+        let omarchy = col_of(&terminal, rect.y + 3, "omarchy");
+        let spare = col_of(&terminal, rect.y + 5, "spare");
+        assert_eq!(buffer[(omarchy, rect.y + 3)].fg, theme.machine_accents[0]);
+        assert_eq!(buffer[(spare, rect.y + 5)].fg, theme.machine_accents[1]);
         assert_ne!(theme.machine_accents[0], theme.machine_accents[1]);
     }
 
@@ -3714,7 +3938,7 @@ mod tests {
         let app = history_app(MIXED, TODAY).with_utc_offset(et);
         let terminal = draw_page(&app, ThemeId::Regatta, 120, 40);
         let rect = history_rect(Rect::new(0, 0, 120, 40), &app).expect("history rect");
-        assert!(row_text(&terminal, rect.y + 2).contains("09:12 omarchy"));
+        assert!(row_text(&terminal, rect.y + 3).contains("09:12 omarchy"));
     }
 
     #[test]
@@ -3764,8 +3988,9 @@ mod tests {
             let terminal = draw_page(&app, theme_id, 120, 40);
             let rect = history_rect(Rect::new(0, 0, 120, 40), &app).expect("history rect");
             let buffer = terminal.backend().buffer();
-            assert!(row_text(&terminal, rect.y + 3).contains("\u{25b6} 12:40"));
-            assert_eq!(buffer[(rect.x + 3, rect.y + 3)].bg, theme.selected_row);
+            assert!(row_text(&terminal, rect.y + 4).contains("\u{25b6} 12:40"));
+            assert_eq!(buffer[(rect.x + 3, rect.y + 4)].bg, theme.selected_row);
+            assert_eq!(buffer[(rect.x + 3, rect.y + 3)].bg, theme.bg);
             assert_eq!(buffer[(rect.x + 3, rect.y + 2)].bg, theme.bg);
             assert_eq!(buffer[(rect.x, rect.y)].fg, theme.border_focus);
         }
@@ -3780,11 +4005,14 @@ mod tests {
     }
 
     #[test]
-    fn history_height_is_rows_plus_three_capped_at_a_third_of_the_body() {
+    fn history_height_is_rows_plus_four_capped_at_a_third_of_the_body() {
         assert_eq!(history_height(0, 39), 4);
-        assert_eq!(history_height(6, 39), 9);
+        assert_eq!(history_height(1, 39), 5);
+        assert_eq!(history_height(6, 39), 10);
         assert_eq!(history_height(50, 39), 13);
         assert_eq!(history_height(6, 11), 0);
+        assert_eq!(history_height(1, 15), 5);
+        assert_eq!(history_height(1, 14), 0);
     }
 
     #[test]
@@ -3794,7 +4022,7 @@ mod tests {
         for preset in 0..4 {
             assert_eq!(app.regatta_layout_preset(), preset);
             let history = history_rect(area, &app).expect("history is visible");
-            assert_eq!(history, Rect::new(0, 30, 120, 9));
+            assert_eq!(history, Rect::new(0, 29, 120, 10));
             let (rects, inbox) = layout_rects(area, &app);
             for rect in rects.iter().flatten().chain([&inbox]) {
                 assert!(
