@@ -151,7 +151,7 @@ pub fn split_page(area: Rect, app: &App) -> (Rect, Option<Rect>) {
 
 /// The page's area, then the panel's when `percent` is the panel's share of the width. Without
 /// a panel the page keeps `area` whole.
-fn split_panel(area: Rect, percent: Option<u16>) -> (Rect, Option<Rect>) {
+pub(crate) fn split_panel(area: Rect, percent: Option<u16>) -> (Rect, Option<Rect>) {
     let Some(percent) = percent else {
         return (area, None);
     };
@@ -171,29 +171,42 @@ fn split_panel(area: Rect, percent: Option<u16>) -> (Rect, Option<Rect>) {
 
 /// Rows the decision card takes above the terminal: its text, its borders and room for a
 /// wrapped line, never more than half the panel.
-fn card_height(options: usize, panel_height: u16) -> u16 {
+pub(crate) fn card_height(options: usize, panel_height: u16) -> u16 {
     let wanted = u16::try_from(options)
         .unwrap_or(u16::MAX)
         .saturating_add(10);
     wanted.min(panel_height / 2)
 }
 
+/// The decision card's rect, when `card_options` is the option count of a shown card, and the
+/// terminal's rect below it. Without a card the terminal takes all of `side`.
+pub(crate) fn panel_rects(side: Rect, card_options: Option<usize>) -> (Option<Rect>, Rect) {
+    let Some(options) = card_options else {
+        return (None, side);
+    };
+    let top = Rect {
+        height: card_height(options, side.height),
+        ..side
+    };
+    let rest = Rect {
+        y: side.y + top.height,
+        height: side.height - top.height,
+        ..side
+    };
+    (Some(top), rest)
+}
+
 /// The chair panel in `area`, with the decision card above its terminal while the card shows.
 fn render_panel(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     let card = app.decision_card();
-    let Some(decision) = card.decision().filter(|_| app.card_visible()) else {
-        return app.chair_panel().render(f, area, theme);
-    };
-    let top = Rect {
-        height: card_height(decision.options.len(), area.height),
-        ..area
-    };
-    let rest = Rect {
-        y: area.y + top.height,
-        height: area.height - top.height,
-        ..area
-    };
-    card.render(f, top, theme, app.utc_offset());
+    let options = card
+        .decision()
+        .filter(|_| app.card_visible())
+        .map(|decision| decision.options.len());
+    let (top, rest) = panel_rects(area, options);
+    if let Some(top) = top {
+        card.render(f, top, theme, app.utc_offset());
+    }
     app.chair_panel().render(f, rest, theme);
 }
 
