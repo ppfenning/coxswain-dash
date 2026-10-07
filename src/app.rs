@@ -417,13 +417,10 @@ impl App {
         }
     }
 
-    /// The backslash path: hides a shown, unfocused pane. A live session goes through
-    /// `request_close`, and a started session waits there for `answer_chair_close`. A focused
-    /// or hidden pane is left alone.
+    /// The backslash path: hides a shown pane, focused or not. A live session goes through
+    /// `request_close`, and a started session waits there for `answer_chair_close`. A hidden
+    /// pane is left alone.
     pub fn hide_chair_panel(&mut self) {
-        if self.chair_focused() {
-            return;
-        }
         if self.chair_panel.is_open() {
             if self.chair_panel.request_close() == CloseOutcome::Closed {
                 self.chair_panel_shown = false;

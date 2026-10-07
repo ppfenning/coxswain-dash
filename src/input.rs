@@ -55,7 +55,11 @@ pub fn handle_event_with(app: &mut App, key: KeyEvent, run: &mut dyn FnMut(&[Str
     }
     // A shown panel with no session keeps focus until `Ctrl-]` or a frame-focus key moves it.
     if app.chair_panel_focused() {
-        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char(']') {
+        // Without the kitty keyboard flags `Ctrl-]` (byte 0x1d) arrives as `Ctrl-5`. This
+        // mirrors the private `is_release_focus` in chair_panel.rs, which this task may not edit.
+        if key.modifiers.contains(KeyModifiers::CONTROL)
+            && matches!(key.code, KeyCode::Char(']' | '5'))
+        {
             app.set_chair_panel_focus(false);
             return;
         }
@@ -470,6 +474,39 @@ mod tests {
             let (kind, id, _) = app.detail().expect("detail should be open");
             assert_eq!(*kind, crate::app::DetailKind::Run);
             assert_eq!(id, "r1");
+            assert!(fake.0.borrow().calls().is_empty());
+        }
+    }
+
+    #[test]
+    fn backslash_closes_a_shown_sessionless_panel_focused_or_not() {
+        for release_first in [false, true] {
+            let (mut app, _fake) = app_with_rows();
+            handle_event_with(&mut app, press(KeyCode::Char('`')), &mut |_| {});
+            if release_first {
+                let release = KeyEvent::new(KeyCode::Char(']'), KeyModifiers::CONTROL);
+                handle_event_with(&mut app, release, &mut |_| {});
+            }
+            assert_eq!(app.chair_panel_focused(), !release_first);
+            handle_event_with(&mut app, press(KeyCode::Char('\\')), &mut |_| {});
+            assert!(!app.chair_panel_shown());
+            assert!(!app.chair_panel_focused());
+        }
+    }
+
+    #[test]
+    fn ctrl_5_releases_a_sessionless_panel_the_same_as_ctrl_close_bracket() {
+        for code in [KeyCode::Char(']'), KeyCode::Char('5')] {
+            let (mut app, fake) = app_with_rows();
+            handle_event_with(&mut app, press(KeyCode::Char('`')), &mut |_| {});
+            assert!(app.chair_panel_focused());
+            handle_event_with(
+                &mut app,
+                KeyEvent::new(code, KeyModifiers::CONTROL),
+                &mut |_| {},
+            );
+            assert!(!app.chair_panel_focused());
+            assert!(app.chair_panel_shown());
             assert!(fake.0.borrow().calls().is_empty());
         }
     }
