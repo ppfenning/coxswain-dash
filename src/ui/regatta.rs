@@ -16,7 +16,7 @@ use ratatui::{
 };
 
 use crate::actions::{Target, bindings};
-use crate::app::{App, Focus};
+use crate::app::{App, Focus, group_queue};
 use crate::feed::{
     Chair, CurrentAction, FeedSnapshot, HistoryRow, HistoryToday, InboxEntry, Machine, Outcome,
     QueueEntry, Run,
@@ -536,7 +536,14 @@ fn render_frame(
         ),
         3 => render_lanes(f, rect, app, theme),
         4 => render_runs(f, rect, snapshot, frame_selection(app, Focus::Runs), theme),
-        5 => render_queue(f, rect, snapshot, frame_selection(app, Focus::Queue), theme),
+        5 => render_queue(
+            f,
+            rect,
+            snapshot,
+            frame_selection(app, Focus::Queue),
+            app.queue_grouped(),
+            theme,
+        ),
         _ => unreachable!("regatta frame index out of range: {idx}"),
     }
 }
@@ -1459,28 +1466,65 @@ fn queue_line(q: &QueueEntry, selected: bool, width: usize, theme: &Theme) -> Li
     }
 }
 
+/// The queue's lines and the line the selected row lands on. Grouped, each project gets a dim
+/// header line over its rows, with no-project rows last under `other`. `selected` indexes `rows`.
+fn queue_lines(
+    rows: &[QueueEntry],
+    grouped: bool,
+    selected: Option<usize>,
+    width: usize,
+    theme: &Theme,
+) -> (Vec<Line<'static>>, Option<usize>) {
+    let chosen = selected.and_then(|i| rows.get(i));
+    let row = |q: &QueueEntry| {
+        let is_chosen = chosen.is_some_and(|c| std::ptr::eq(c, q));
+        (queue_line(q, is_chosen, width, theme), is_chosen)
+    };
+    let items: Vec<(Line<'static>, bool)> = if grouped {
+        group_queue(rows)
+            .into_iter()
+            .flat_map(|(label, members)| {
+                std::iter::once((
+                    Line::styled(label.to_string(), Style::default().fg(theme.dim)),
+                    false,
+                ))
+                .chain(members.into_iter().map(row))
+                .collect::<Vec<_>>()
+            })
+            .collect()
+    } else {
+        rows.iter().map(row).collect()
+    };
+    let at = items.iter().position(|(_, is_chosen)| *is_chosen);
+    (items.into_iter().map(|(line, _)| line).collect(), at)
+}
+
 fn render_queue(
     f: &mut Frame,
     rect: Rect,
     snapshot: &FeedSnapshot,
     selected: Option<usize>,
+    grouped: bool,
     theme: &Theme,
 ) {
     let block = numbered_block(6, FRAME_NAMES[5], theme, selected.is_some());
     let inner = block.inner(rect);
-    let (shown, more) = overflow_split(snapshot.queue.len(), usize::MAX, usize::from(inner.height));
-    let rows = snapshot
-        .queue
-        .iter()
+    let (all, at) = queue_lines(
+        &snapshot.queue,
+        grouped,
+        selected,
+        usize::from(inner.width),
+        theme,
+    );
+    let (shown, more) = overflow_split(all.len(), usize::MAX, usize::from(inner.height));
+    let lines: Vec<Line> = all
+        .into_iter()
         .take(shown)
-        .enumerate()
-        .map(|(i, q)| queue_line(q, selected == Some(i), usize::from(inner.width), theme));
-    let lines: Vec<Line> = rows
         .chain((more > 0).then(|| more_line(more, theme)))
         .collect();
     let paragraph = Paragraph::new(lines).block(block).style(base_style(theme));
     f.render_widget(paragraph, rect);
-    paint_selected_row(f, inner, selected.filter(|i| *i < shown), theme);
+    paint_selected_row(f, inner, at.filter(|i| *i < shown), theme);
 }
 
 /// Inbox items drawn before the rest fold into `+ N more`.
@@ -1623,13 +1667,14 @@ fn render_run_cost(
 }
 
 /// Key and label pairs of the key bar: exactly the keys `input::handle_key` and `main` act on.
-const KEY_BAR: [(&str, &str); 7] = [
+const KEY_BAR: [(&str, &str); 8] = [
     ("1-9", "frames"),
     ("\u{2190}\u{2192}", "focus"),
     ("\u{2191}\u{2193}", "select"),
     ("\u{23ce}", "drill down"),
     ("t", "theme"),
     ("v", "layout"),
+    ("g", "group queue"),
     ("q", "quit"),
 ];
 
@@ -2845,7 +2890,16 @@ mod tests {
         let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
         let mut terminal = Terminal::new(TestBackend::new(60, 5)).expect("terminal");
         terminal
-            .draw(|f| render_queue(f, f.area(), app.snapshot().expect("snapshot"), None, &theme))
+            .draw(|f| {
+                render_queue(
+                    f,
+                    f.area(),
+                    app.snapshot().expect("snapshot"),
+                    None,
+                    false,
+                    &theme,
+                );
+            })
             .expect("draw should not fail");
         assert!(row_text(&terminal, 2).contains("init-1"));
         assert!(row_text(&terminal, 3).contains("+ 8 more"));
@@ -2902,7 +2956,7 @@ mod tests {
         let row = row_text(&terminal, 39);
         assert_eq!(
             row.trim_end(),
-            "1-9 frames \u{b7} \u{2190}\u{2192} focus \u{b7} \u{2191}\u{2193} select \u{b7} \u{23ce} drill down \u{b7} t theme \u{b7} v layout \u{b7} q quit \u{2502} p pause  k kill  m move \u{b7} : palette  w watch  $ spend  h health"
+            "1-9 frames \u{b7} \u{2190}\u{2192} focus \u{b7} \u{2191}\u{2193} select \u{b7} \u{23ce} drill down \u{b7} t theme \u{b7} v layout \u{b7} g group queue \u{b7} q quit \u{2502} p pause  k kill  m move \u{b7} : palette  w watch  $ spend  h health"
         );
         assert_eq!(
             fg_at(&terminal, 39, "$ spend"),
@@ -2961,7 +3015,7 @@ mod tests {
         row_text(&terminal, 39).trim_end().to_string()
     }
 
-    const FIXED_KEYS: &str = "1-9 frames \u{b7} \u{2190}\u{2192} focus \u{b7} \u{2191}\u{2193} select \u{b7} \u{23ce} drill down \u{b7} t theme \u{b7} v layout \u{b7} q quit";
+    const FIXED_KEYS: &str = "1-9 frames \u{b7} \u{2190}\u{2192} focus \u{b7} \u{2191}\u{2193} select \u{b7} \u{23ce} drill down \u{b7} t theme \u{b7} v layout \u{b7} g group queue \u{b7} q quit";
 
     const FOCUS_ACTIONS: [(Focus, &str); 4] = [
         (Focus::Runs, "p pause  k kill  m move"),
@@ -3223,7 +3277,7 @@ mod tests {
         let snapshot = app.snapshot().expect("snapshot");
         let mut terminal = Terminal::new(TestBackend::new(60, 5)).expect("terminal");
         terminal
-            .draw(|f| render_queue(f, f.area(), snapshot, None, theme))
+            .draw(|f| render_queue(f, f.area(), snapshot, None, app.queue_grouped(), theme))
             .expect("draw should not fail");
         terminal
     }
@@ -3279,6 +3333,78 @@ mod tests {
             }
             .trim_end()
         );
+    }
+
+    /// Four rows over two projects, interleaved, and one with no project.
+    fn queue_with_two_projects_and_a_null() -> App {
+        let entry = |name: &str, project: &str| {
+            format!(
+                r#"{{"initiative":"{name}","priority":1,"phases_landed":1,"phases_total":3,"current_phase":"p","project":{project}}}"#
+            )
+        };
+        let queue = [
+            entry("alpha", r#""pat-skylight""#),
+            entry("beta", "null"),
+            entry("gamma", r#""pat-towpath""#),
+            entry("delta", r#""pat-skylight""#),
+        ];
+        feed_app("", &queue.join(","), "")
+    }
+
+    fn draw_tall_queue_frame(app: &App, theme: &Theme) -> Terminal<TestBackend> {
+        let snapshot = app.snapshot().expect("snapshot");
+        let mut terminal = Terminal::new(TestBackend::new(60, 9)).expect("terminal");
+        terminal
+            .draw(|f| render_queue(f, f.area(), snapshot, None, app.queue_grouped(), theme))
+            .expect("draw should not fail");
+        terminal
+    }
+
+    #[test]
+    fn the_queue_frame_ungrouped_keeps_feed_order() {
+        let theme = project_theme();
+        let terminal = draw_tall_queue_frame(&queue_with_two_projects_and_a_null(), &theme);
+        insta::assert_snapshot!(terminal.backend().to_string());
+    }
+
+    #[test]
+    fn the_queue_frame_grouped_has_a_header_per_project_and_other_last() {
+        let theme = project_theme();
+        let mut app = queue_with_two_projects_and_a_null();
+        app.toggle_queue_grouped();
+        let terminal = draw_tall_queue_frame(&app, &theme);
+        insta::assert_snapshot!(terminal.backend().to_string());
+        let x = col_of(&terminal, 1, "pat-skylight");
+        assert_eq!(terminal.backend().buffer()[(x, 1)].fg, theme.dim);
+    }
+
+    #[test]
+    fn grouped_queue_lines_follow_the_groups_and_move_the_selection_with_its_row() {
+        let theme = project_theme();
+        let app = queue_with_two_projects_and_a_null();
+        let rows = &app.snapshot().expect("snapshot").queue;
+        let text = |line: &Line| {
+            line.spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect::<String>()
+        };
+        let (lines, at) = queue_lines(rows, true, Some(3), 60, &theme);
+        let heads: Vec<String> = lines
+            .iter()
+            .map(text)
+            .filter(|t| !t.starts_with(' ') && !t.starts_with('\u{25b6}'))
+            .collect();
+        assert_eq!(heads, ["pat-skylight", "pat-towpath", "other"]);
+        assert_eq!(at, Some(2));
+        assert!(text(&lines[2]).starts_with("\u{25b6} delta"));
+        assert_eq!(queue_lines(rows, false, Some(3), 60, &theme).1, Some(3));
+    }
+
+    #[test]
+    fn the_key_bar_lists_g_for_grouping_the_queue() {
+        assert!(KEY_BAR.contains(&("g", "group queue")));
+        assert!(key_bar_row(Focus::Queue, 200).contains("g group queue"));
     }
 
     #[test]
