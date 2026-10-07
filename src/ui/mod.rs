@@ -875,6 +875,7 @@ mod tests {
                 match message {
                     crate::feed::FeedMessage::Snapshot(snapshot) => app.apply_snapshot(*snapshot),
                     crate::feed::FeedMessage::Error(text) => app.apply_feed_error(text),
+                    crate::feed::FeedMessage::ParseError(_) => {}
                 }
                 app
             })

@@ -163,6 +163,9 @@ fn next_feed_state(old: FeedState, event: FeedEvent) -> FeedState {
 pub struct App {
     snapshot: Option<FeedSnapshot>,
     feed: FeedState,
+    /// Feed lines that failed to parse since the last good snapshot.
+    parse_error_count: u32,
+    latest_parse_error: Option<String>,
     detail_error: Option<String>,
     page: AppPage,
     theme: ThemeId,
@@ -249,6 +252,8 @@ impl Default for App {
         App {
             snapshot: None,
             feed: FeedState::default(),
+            parse_error_count: 0,
+            latest_parse_error: None,
             detail_error: None,
             page: AppPage::Regatta,
             theme: ThemeId::Regatta,
@@ -446,6 +451,32 @@ impl App {
         self.feed.error.as_deref()
     }
 
+    /// How many feed lines failed to parse since the last good snapshot.
+    pub fn parse_error_count(&self) -> u32 {
+        self.parse_error_count
+    }
+
+    /// The text of the most recent unparseable line's error, cleared by a good snapshot.
+    pub fn latest_parse_error(&self) -> Option<&str> {
+        self.latest_parse_error.as_deref()
+    }
+
+    /// Time since the held snapshot's `at`, measured against the `now` passed in.
+    /// `None` with no snapshot or an `at` that is not RFC 3339.
+    pub fn feed_age(&self, now: DateTime<FixedOffset>) -> Option<chrono::Duration> {
+        let at = DateTime::parse_from_rfc3339(&self.snapshot.as_ref()?.at).ok()?;
+        Some(now - at)
+    }
+
+    /// The feed's age when it exceeds three times `interval`, else `None`.
+    pub fn feed_stale(
+        &self,
+        now: DateTime<FixedOffset>,
+        interval: chrono::Duration,
+    ) -> Option<chrono::Duration> {
+        self.feed_age(now).filter(|age| *age > interval * 3)
+    }
+
     /// Whether any snapshot ever arrived. False with `feed_failed` false means waiting.
     pub fn has_snapshot(&self) -> bool {
         self.feed.has_snapshot
@@ -541,6 +572,14 @@ impl App {
         }
         self.snapshot = Some(snap);
         self.feed = next_feed_state(self.feed.clone(), FeedEvent::Snapshot);
+        self.parse_error_count = 0;
+        self.latest_parse_error = None;
+    }
+
+    /// Records one unparseable feed line. The held snapshot and `feed_error` are untouched.
+    pub fn record_parse_error(&mut self, message: String) {
+        self.parse_error_count += 1;
+        self.latest_parse_error = Some(message);
     }
 
     /// Records the feed's one-line failure. A held snapshot is kept.
@@ -1728,6 +1767,60 @@ mod tests {
         app.apply_feed_error("boom".to_string());
         app.apply_snapshot(make_snapshot("2026-09-29T00:00:00Z", 1));
         assert_eq!(app.feed_error(), None);
+    }
+
+    #[test]
+    fn two_parse_errors_count_two_and_keep_the_second_text() {
+        let mut app = App::default();
+        app.record_parse_error("first".to_string());
+        app.record_parse_error("second".to_string());
+        assert_eq!(app.parse_error_count(), 2);
+        assert_eq!(app.latest_parse_error(), Some("second"));
+    }
+
+    #[test]
+    fn a_good_snapshot_resets_the_parse_errors_and_the_feed_error() {
+        let mut app = App::default();
+        app.apply_feed_error("boom".to_string());
+        app.record_parse_error("first".to_string());
+        app.record_parse_error("second".to_string());
+        app.apply_snapshot(make_snapshot("2026-09-29T00:00:00Z", 1));
+        assert_eq!(app.parse_error_count(), 0);
+        assert_eq!(app.latest_parse_error(), None);
+        assert_eq!(app.feed_error(), None);
+    }
+
+    fn at(s: &str) -> DateTime<FixedOffset> {
+        DateTime::parse_from_rfc3339(s).expect("literal time should parse")
+    }
+
+    #[test]
+    fn feed_age_is_none_with_no_snapshot() {
+        let app = App::default();
+        assert_eq!(app.feed_age(at("2026-09-29T00:00:30Z")), None);
+    }
+
+    #[test]
+    fn feed_age_is_now_minus_the_snapshot_time() {
+        let mut app = App::default();
+        app.apply_snapshot(make_snapshot("2026-09-29T00:00:00Z", 1));
+        assert_eq!(
+            app.feed_age(at("2026-09-29T00:00:30Z")),
+            Some(chrono::Duration::seconds(30))
+        );
+    }
+
+    #[test]
+    fn feed_stale_is_none_at_three_intervals_and_some_just_past() {
+        let mut app = App::default();
+        let interval = chrono::Duration::seconds(10);
+        assert_eq!(app.feed_stale(at("2026-09-29T00:01:00Z"), interval), None);
+        app.apply_snapshot(make_snapshot("2026-09-29T00:00:00Z", 1));
+        assert_eq!(app.feed_stale(at("2026-09-29T00:00:30Z"), interval), None);
+        assert_eq!(
+            app.feed_stale(at("2026-09-29T00:00:31Z"), interval),
+            Some(chrono::Duration::seconds(31))
+        );
     }
 
     #[test]
