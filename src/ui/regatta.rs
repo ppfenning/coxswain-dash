@@ -26,7 +26,7 @@ use crate::theme::Theme;
 
 use super::chair_card::{Freshness, TICK_INTERVAL_S, beat_freshness, short_age};
 use super::run_cost::{chart_bounds, dollar_labels, drawable};
-use super::{CollapsedRun, collapse_runs, count_suffix, end_chip, local_time};
+use super::{CollapsedRun, collapse_runs, count_suffix, end_chip, local_time, project_span};
 
 /// Cells in a spend meter, and the least one shrinks to in a narrow frame.
 const METER_WIDTH: usize = 26;
@@ -1071,6 +1071,30 @@ fn fit_cell(text: &str, width: usize) -> String {
     format!("{cut:<width$}")
 }
 
+/// An initiative and its dim project sharing one `width`-char cell. The project is capped at half
+/// the cell and the initiative takes what is left, so the cell never outgrows `width`. A missing
+/// or empty project leaves the initiative alone, exactly as `fit_cell` draws it.
+fn initiative_cell(
+    initiative: &str,
+    project: Option<&str>,
+    width: usize,
+    theme: &Theme,
+) -> Vec<Span<'static>> {
+    let shown = project
+        .filter(|p| !p.is_empty())
+        .map(|p| fit_cell(p, p.chars().count().min(width / 2)))
+        .filter(|p| !p.is_empty());
+    match shown {
+        Some(project) => {
+            let initiative_w = width.saturating_sub(1 + project.chars().count());
+            std::iter::once(Span::raw(fit_cell(initiative, initiative_w)))
+                .chain(project_span(Some(&project), theme))
+                .collect()
+        }
+        None => vec![Span::raw(fit_cell(initiative, width))],
+    }
+}
+
 /// A run's stage: `phase · node`, whichever of the two is known, or `starting` when neither is.
 fn stage_label(phase: Option<&str>, node: Option<&str>) -> String {
     match (phase, node) {
@@ -1150,6 +1174,7 @@ fn run_row(row: &CollapsedRun, selected: bool, theme: &Theme) -> Line<'static> {
         lead.into_iter()
             .chain(chip)
             .chain(count_suffix(row.count, theme))
+            .chain(project_span(r.project.as_deref(), theme))
             .collect::<Vec<_>>(),
     );
     if selected {
@@ -1272,20 +1297,33 @@ fn history_row(
 ) -> Line<'static> {
     let prefix = if selected { "\u{25b6} " } else { "  " };
     let word = outcome_word(row.outcome);
-    let line = Line::from(vec![
-        Span::raw(format!("{prefix}{} ", local_time(&row.ended_at, offset))),
-        Span::styled(
-            fit_cell(&row.machine, RUN_COLUMNS[1]),
-            Style::default().fg(accent),
-        ),
-        Span::raw(format!(" {} ", fit_cell(&row.initiative, RUN_COLUMNS[2]))),
-        Span::styled(word, Style::default().fg(outcome_color(theme, row.outcome))),
-        Span::styled(
-            fit_cell(&outcome_detail(row), HISTORY_OUTCOME_WIDTH - word.len()),
-            Style::default().fg(theme.dim),
-        ),
-        Span::raw(format!(" {:>COST_WIDTH$}", format!("${:.2}", row.cost_usd))),
-    ]);
+    let line = Line::from(
+        [
+            Span::raw(format!("{prefix}{} ", local_time(&row.ended_at, offset))),
+            Span::styled(
+                fit_cell(&row.machine, RUN_COLUMNS[1]),
+                Style::default().fg(accent),
+            ),
+            Span::raw(" "),
+        ]
+        .into_iter()
+        .chain(initiative_cell(
+            &row.initiative,
+            row.project.as_deref(),
+            RUN_COLUMNS[2],
+            theme,
+        ))
+        .chain([
+            Span::raw(" "),
+            Span::styled(word, Style::default().fg(outcome_color(theme, row.outcome))),
+            Span::styled(
+                fit_cell(&outcome_detail(row), HISTORY_OUTCOME_WIDTH - word.len()),
+                Style::default().fg(theme.dim),
+            ),
+            Span::raw(format!(" {:>COST_WIDTH$}", format!("${:.2}", row.cost_usd))),
+        ])
+        .collect::<Vec<_>>(),
+    );
     if selected {
         line.style(Style::default().fg(theme.accent).bg(theme.selected_row))
     } else {
@@ -1398,15 +1436,22 @@ fn queue_line(q: &QueueEntry, selected: bool, width: usize, theme: &Theme) -> Li
     let bar = |cells: usize, color: Color| {
         Span::styled("\u{2588}".repeat(cells), Style::default().fg(color))
     };
-    let line = Line::from(vec![
-        Span::raw(format!(
-            "{prefix}{} ",
-            fit_cell(&q.initiative, initiative_w)
-        )),
-        bar(filled, bar_color),
-        bar(QUEUE_BAR_CELLS - filled, theme.track),
-        Span::raw(tail),
-    ]);
+    let line = Line::from(
+        std::iter::once(Span::raw(prefix))
+            .chain(initiative_cell(
+                &q.initiative,
+                q.project.as_deref(),
+                initiative_w,
+                theme,
+            ))
+            .chain([
+                Span::raw(" "),
+                bar(filled, bar_color),
+                bar(QUEUE_BAR_CELLS - filled, theme.track),
+                Span::raw(tail),
+            ])
+            .collect::<Vec<_>>(),
+    );
     if selected {
         line.style(Style::default().fg(theme.accent).bg(theme.selected_row))
     } else {
@@ -3154,6 +3199,131 @@ mod tests {
     fn history_frame_empty_in_the_harbor_light_theme() {
         let terminal = draw_history_frame(&history_app("", TODAY), ThemeId::HarborLight);
         insta::assert_snapshot!(terminal.backend().to_string());
+    }
+
+    /// `row_json` with a `"project"` key whose value is the JSON literal `project`.
+    fn with_project(row_json: &str, project: &str) -> String {
+        format!("{},\"project\":{project}}}", row_json.trim_end_matches('}'))
+    }
+
+    fn project_theme() -> Theme {
+        crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"))
+    }
+
+    fn draw_project_runs_frame(app: &App, theme: &Theme) -> Terminal<TestBackend> {
+        let snapshot = app.snapshot().expect("snapshot");
+        let mut terminal = Terminal::new(TestBackend::new(100, 6)).expect("terminal");
+        terminal
+            .draw(|f| render_runs(f, f.area(), snapshot, None, theme))
+            .expect("draw should not fail");
+        terminal
+    }
+
+    fn draw_queue_frame(app: &App, theme: &Theme) -> Terminal<TestBackend> {
+        let snapshot = app.snapshot().expect("snapshot");
+        let mut terminal = Terminal::new(TestBackend::new(60, 5)).expect("terminal");
+        terminal
+            .draw(|f| render_queue(f, f.area(), snapshot, None, theme))
+            .expect("draw should not fail");
+        terminal
+    }
+
+    fn runs_with_projects() -> App {
+        let runs = [
+            with_project(&run_json("alpha-1", "running"), r#""pat-skylight""#),
+            with_project(&run_json("beta-1", "running"), "null"),
+        ];
+        feed_app(&runs.join(","), "", "")
+    }
+
+    #[test]
+    fn the_runs_frame_shows_a_dim_project_at_the_end_of_its_row() {
+        let theme = project_theme();
+        let terminal = draw_project_runs_frame(&runs_with_projects(), &theme);
+        insta::assert_snapshot!(terminal.backend().to_string());
+        let x = col_of(&terminal, 2, "pat-skylight");
+        assert_eq!(terminal.backend().buffer()[(x, 2)].fg, theme.dim);
+        assert!(!row_text(&terminal, 3).contains("pat-"));
+    }
+
+    fn queue_with_projects() -> App {
+        let entry = |name: &str, project: &str| {
+            format!(
+                r#"{{"initiative":"{name}","priority":1,"phases_landed":1,"phases_total":3,"current_phase":"p","project":{project}}}"#
+            )
+        };
+        let queue = [
+            entry("alpha", r#""pat-skylight""#),
+            entry("beta", "null"),
+            entry("gamma", r#""""#),
+        ];
+        feed_app("", &queue.join(","), "")
+    }
+
+    #[test]
+    fn the_queue_frame_shows_a_dim_project_after_the_initiative() {
+        let theme = project_theme();
+        let terminal = draw_queue_frame(&queue_with_projects(), &theme);
+        insta::assert_snapshot!(terminal.backend().to_string());
+        let x = col_of(&terminal, 1, "pat-skylight");
+        assert_eq!(terminal.backend().buffer()[(x, 1)].fg, theme.dim);
+        let bar = |y| col_of(&terminal, y, "\u{2588}");
+        assert_eq!(bar(1), bar(2));
+        assert_eq!(bar(2), bar(3));
+        assert_eq!(
+            row_text(&terminal, 2).trim_end(),
+            {
+                let plain = feed_app("", &queue_json(1, 1, 3), "");
+                let again = draw_queue_frame(&plain, &theme);
+                row_text(&again, 1).replace("init-0", "beta  ")
+            }
+            .trim_end()
+        );
+    }
+
+    #[test]
+    fn the_history_frame_shares_the_initiative_cell_with_a_dim_project() {
+        let theme = project_theme();
+        let rows = [
+            with_project(
+                r#"{"run":"r2","machine":"omarchy","initiative":"dash-feed","ended_at":"2026-10-04T13:12:00Z","outcome":"landed","cost_usd":1.25}"#,
+                r#""pat-skylight""#,
+            ),
+            with_project(
+                r#"{"run":"r1","machine":"spare","initiative":"history-frame","ended_at":"2026-10-04T12:40:00Z","outcome":"approved","cost_usd":0.5}"#,
+                "null",
+            ),
+        ];
+        let app = history_app(&rows.join(","), TODAY);
+        let terminal = draw_history_frame(&app, ThemeId::Regatta);
+        insta::assert_snapshot!(terminal.backend().to_string());
+        let x = col_of(&terminal, 2, "pat-skylig");
+        assert_eq!(terminal.backend().buffer()[(x, 2)].fg, theme.dim);
+        assert_eq!(
+            col_of(&terminal, 2, "landed"),
+            col_of(&terminal, 3, "approved")
+        );
+    }
+
+    #[test]
+    fn initiative_cell_fills_the_width_and_caps_the_project_at_half() {
+        let theme = project_theme();
+        let text =
+            |spans: &[Span<'_>]| spans.iter().map(|s| s.content.as_ref()).collect::<String>();
+        let none = initiative_cell("dash-feed", None, 22, &theme);
+        assert_eq!(text(&none), fit_cell("dash-feed", 22));
+        let empty = initiative_cell("dash-feed", Some(""), 22, &theme);
+        assert_eq!(text(&empty), fit_cell("dash-feed", 22));
+        let short = initiative_cell("dash-feed", Some("skylight"), 22, &theme);
+        assert_eq!(text(&short), "dash-feed     skylight");
+        assert_eq!(text(&short).chars().count(), 22);
+        let long = initiative_cell("dash-feed", Some("pat-skylight-extra"), 22, &theme);
+        assert_eq!(text(&long).chars().count(), 22);
+        assert!(
+            text(&long).ends_with(" pat-skylig\u{2026}"),
+            "{}",
+            text(&long)
+        );
     }
 
     #[test]

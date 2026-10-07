@@ -20,7 +20,7 @@ use crate::confirm::{ConfirmAnswer, ConfirmState};
 use crate::decision_card::DecisionCard;
 use crate::detail::{DetailSnapshot, InitiativeDetail};
 use crate::exec::{ExecResult, StatusLevel, frame_lines, status_summary};
-use crate::feed::{Chair, FeedSnapshot, queue_repos};
+use crate::feed::{Chair, FeedSnapshot, QueueEntry, queue_repos};
 use crate::form::{Form, FormAnswer, shell_join};
 use crate::form_initiative::{self, Prefill};
 use crate::form_machine;
@@ -174,6 +174,8 @@ pub struct App {
     run_cost_visible: bool,
     /// The inbox frame's visibility; its number key is 9. A hidden inbox is not a focus stop.
     inbox_visible: bool,
+    /// Whether the queue is shown grouped by project. Session-only: never written to config.
+    queue_grouped: bool,
     regatta_layout_preset: usize,
     lanes_history: Vec<(String, u32)>,
     utc_offset: FixedOffset,
@@ -254,6 +256,7 @@ impl Default for App {
             history_visible: true,
             run_cost_visible: true,
             inbox_visible: true,
+            queue_grouped: false,
             regatta_layout_preset: 0,
             lanes_history: Vec::new(),
             utc_offset: FixedOffset::east_opt(0).expect("zero is a valid UTC offset"),
@@ -594,6 +597,15 @@ impl App {
         if !self.inbox_visible && self.focus == Focus::Inbox {
             self.focus = Focus::Runs;
         }
+    }
+
+    /// Flips whether the queue is shown grouped by project; the key is `g`.
+    pub fn toggle_queue_grouped(&mut self) {
+        self.queue_grouped = !self.queue_grouped;
+    }
+
+    pub fn queue_grouped(&self) -> bool {
+        self.queue_grouped
     }
 
     pub fn cycle_regatta_layout_preset(&mut self) {
@@ -1162,9 +1174,114 @@ impl App {
     }
 }
 
+/// The label of the group holding rows with no project.
+const OTHER_GROUP: &str = "other";
+
+/// Groups queue rows by project: named projects in first-seen order, then "other" for rows with
+/// no project, which is left out when no row lacks one. Rows keep their relative order.
+pub fn group_queue(rows: &[QueueEntry]) -> Vec<(&str, Vec<&QueueEntry>)> {
+    let projects = rows.iter().filter_map(|row| row.project.as_deref()).fold(
+        Vec::new(),
+        |seen: Vec<&str>, project| {
+            if seen.contains(&project) {
+                seen
+            } else {
+                seen.into_iter().chain([project]).collect()
+            }
+        },
+    );
+    let named = projects.into_iter().map(|project| {
+        let members = rows
+            .iter()
+            .filter(|row| row.project.as_deref() == Some(project))
+            .collect();
+        (project, members)
+    });
+    let unassigned: Vec<&QueueEntry> = rows.iter().filter(|row| row.project.is_none()).collect();
+    named
+        .chain((!unassigned.is_empty()).then_some((OTHER_GROUP, unassigned)))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn entry(initiative: &str, project: Option<&str>) -> QueueEntry {
+        QueueEntry {
+            initiative: initiative.to_string(),
+            priority: 1,
+            phases_landed: 0,
+            phases_total: 1,
+            current_phase: "p".to_string(),
+            repo: String::new(),
+            project: project.map(str::to_string),
+        }
+    }
+
+    /// Each group as its label and the initiative names it holds.
+    fn shape<'a>(groups: &[(&'a str, Vec<&QueueEntry>)]) -> Vec<(&'a str, Vec<String>)> {
+        groups
+            .iter()
+            .map(|(label, rows)| (*label, rows.iter().map(|r| r.initiative.clone()).collect()))
+            .collect()
+    }
+
+    #[test]
+    fn group_queue_orders_two_interleaved_projects_then_other() {
+        let rows = [
+            entry("a1", Some("alpha")),
+            entry("n1", None),
+            entry("b1", Some("beta")),
+            entry("a2", Some("alpha")),
+        ];
+        assert_eq!(
+            shape(&group_queue(&rows)),
+            vec![
+                ("alpha", vec!["a1".to_string(), "a2".to_string()]),
+                ("beta", vec!["b1".to_string()]),
+                ("other", vec!["n1".to_string()]),
+            ]
+        );
+    }
+
+    #[test]
+    fn group_queue_puts_all_null_rows_in_one_other_group() {
+        let rows = [entry("n1", None), entry("n2", None)];
+        assert_eq!(
+            shape(&group_queue(&rows)),
+            vec![("other", vec!["n1".to_string(), "n2".to_string()])]
+        );
+    }
+
+    #[test]
+    fn group_queue_of_an_empty_queue_is_empty() {
+        assert!(group_queue(&[]).is_empty());
+    }
+
+    #[test]
+    fn group_queue_keeps_input_order_within_a_group() {
+        let rows = [
+            entry("z", Some("alpha")),
+            entry("m", Some("alpha")),
+            entry("a", Some("alpha")),
+        ];
+        assert_eq!(
+            shape(&group_queue(&rows)),
+            vec![(
+                "alpha",
+                vec!["z".to_string(), "m".to_string(), "a".to_string()]
+            )]
+        );
+    }
+
+    #[test]
+    fn queue_grouping_starts_off_and_toggle_flips_it() {
+        let mut app = App::default();
+        assert!(!app.queue_grouped());
+        app.toggle_queue_grouped();
+        assert!(app.queue_grouped());
+    }
 
     /// Builds a literal `FeedSnapshot` with the given timestamp and total lanes-in-use,
     /// via `feed::parse_snapshot` so the test never constructs the wire structs by hand.

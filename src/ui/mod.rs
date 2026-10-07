@@ -31,7 +31,7 @@ use crate::app::{App, AppPage, DetailKind, Modal};
 use crate::chair_panel;
 use crate::detail::DetailSnapshot;
 use crate::exec::StatusLevel;
-use crate::feed::{Run, RunEnd};
+use crate::feed::{FeedSnapshot, Run, RunEnd};
 use crate::theme::Theme;
 
 pub use regatta::frame_rects as regatta_frame_rects;
@@ -114,7 +114,8 @@ fn render_detail(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
             health_drill::render(f, area, detail, theme, app.utc_offset())
         }
         (Some((_, _, Some(DetailSnapshot::Run(detail)))), None) => {
-            run_drill::render(f, area, detail, theme, app.utc_offset())
+            let project = app.snapshot().and_then(|s| run_project(s, &detail.run));
+            run_drill::render(f, area, detail, project, theme, app.utc_offset())
         }
         (Some((_, _, Some(DetailSnapshot::Initiative(detail)))), None) => {
             initiative_drill::render(f, area, detail, theme, app.utc_offset())
@@ -531,9 +532,53 @@ pub fn count_suffix(count: usize, theme: &Theme) -> Option<Span<'static>> {
     }
 }
 
+/// A row's project as a dim span led by one space; `None` for a missing or empty project, so the
+/// line it would join stays as it was.
+pub fn project_span(project: Option<&str>, theme: &Theme) -> Option<Span<'static>> {
+    project
+        .filter(|p| !p.is_empty())
+        .map(|p| Span::styled(format!(" {p}"), Style::default().fg(theme.dim)))
+}
+
+/// The project of run `run_id`, looked up in the live runs and then in the history.
+pub fn run_project<'a>(snapshot: &'a FeedSnapshot, run_id: &str) -> Option<&'a str> {
+    snapshot
+        .runs
+        .iter()
+        .find(|r| r.run == run_id)
+        .map(|r| r.project.as_deref())
+        .or_else(|| {
+            snapshot
+                .history
+                .iter()
+                .find(|h| h.run == run_id)
+                .map(|h| h.project.as_deref())
+        })
+        .flatten()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn project_span_is_dim_and_led_by_a_space() {
+        let t = theme();
+        let span = project_span(Some("pat-skylight"), &t).expect("a project gives a span");
+        assert_eq!(span.content, " pat-skylight");
+        assert_eq!(span.style.fg, Some(t.dim));
+        assert!(project_span(None, &t).is_none());
+        assert!(project_span(Some(""), &t).is_none());
+    }
+
+    #[test]
+    fn run_project_looks_in_runs_then_history() {
+        let json = r#"{"schema":1,"at":"2026-10-04T20:00:00Z","chair":{"holder":"h","host":"h","epoch":1,"liveness":"live","beat_age_s":0},"spend":{"five_hour_fraction":0.0,"five_hour_source":"meter","weekly_fraction":0.0,"weekly_source":"meter","hard_stop_fraction":0.0,"five_hour_resets_at":"2026-10-04T22:00:00Z","weekly_resets_at":"2026-10-11T04:00:00Z"},"machines":[],"runs":[{"run":"live","machine":"m0","phase":"p","node":"n","attempt":1,"turns":1,"cost":1.0,"verdict":"ok","status":"running","project":"from-runs"}],"queue":[],"inbox":[],"watch":[],"history":[{"run":"old","machine":"m0","initiative":"i","ended_at":"2026-10-04T08:00:00Z","outcome":"landed","cost_usd":1.0,"project":"from-history"}]}"#;
+        let snapshot = crate::feed::parse_snapshot(json).expect("literal feed parses");
+        assert_eq!(run_project(&snapshot, "live"), Some("from-runs"));
+        assert_eq!(run_project(&snapshot, "old"), Some("from-history"));
+        assert_eq!(run_project(&snapshot, "missing"), None);
+    }
 
     fn run(id: &str, end: Option<RunEnd>) -> Run {
         Run {

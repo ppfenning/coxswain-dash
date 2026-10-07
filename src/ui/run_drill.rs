@@ -9,7 +9,7 @@ use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Style},
-    text::Line,
+    text::{Line, Span},
     widgets::{Block, BorderType, Borders, Paragraph},
 };
 
@@ -24,6 +24,7 @@ pub fn render(
     f: &mut Frame,
     area: Rect,
     detail: &RunDetail,
+    project: Option<&str>,
     theme: &Theme,
     offset: chrono::FixedOffset,
 ) {
@@ -54,7 +55,7 @@ pub fn render(
         ])
         .split(inner);
 
-    render_title(f, rows[0], detail, theme);
+    render_title(f, rows[0], detail, project, theme);
     render_steps(f, rows[1], detail, theme);
     if let Some(reason) = &detail.stopped_reason {
         render_stopped_reason(f, rows[2], reason, theme);
@@ -68,7 +69,13 @@ fn base_style(theme: &Theme) -> Style {
     Style::default().fg(theme.fg).bg(theme.bg)
 }
 
-fn render_title(f: &mut Frame, rect: Rect, detail: &RunDetail, theme: &Theme) {
+fn render_title(
+    f: &mut Frame,
+    rect: Rect,
+    detail: &RunDetail,
+    project: Option<&str>,
+    theme: &Theme,
+) {
     // A field the store has not filled yet is left out rather than drawn as an empty cell.
     let parts: Vec<&str> = [
         &detail.run,
@@ -80,7 +87,17 @@ fn render_title(f: &mut Frame, rect: Rect, detail: &RunDetail, theme: &Theme) {
     .map(String::as_str)
     .filter(|part| !part.is_empty())
     .collect();
-    let line = Line::from(parts.join(" | "));
+    let project = project.filter(|p| !p.is_empty()).map(|p| {
+        [
+            Span::raw(" | "),
+            Span::styled(p.to_string(), Style::default().fg(theme.dim)),
+        ]
+    });
+    let line = Line::from(
+        std::iter::once(Span::raw(parts.join(" | ")))
+            .chain(project.into_iter().flatten())
+            .collect::<Vec<_>>(),
+    );
     let paragraph = Paragraph::new(line).style(Style::default().fg(theme.accent).bg(theme.bg));
     f.render_widget(paragraph, rect);
 }
@@ -208,13 +225,20 @@ mod tests {
     }
 
     fn draw_with_theme(theme_id: ThemeId) -> Terminal<TestBackend> {
+        draw_with_project(theme_id, None)
+    }
+
+    fn draw_with_project(theme_id: ThemeId, project: Option<&str>) -> Terminal<TestBackend> {
+        draw_with(&crate::theme::resolve(theme_id), project)
+    }
+
+    fn draw_with(theme: &Theme, project: Option<&str>) -> Terminal<TestBackend> {
         let detail = run_detail_from_fixture();
-        let theme = crate::theme::resolve(theme_id);
         let offset = chrono::FixedOffset::east_opt(0).unwrap();
         let backend = TestBackend::new(120, 40);
         let mut terminal = Terminal::new(backend).expect("terminal");
         terminal
-            .draw(|f| render(f, f.area(), &detail, &theme, offset))
+            .draw(|f| render(f, f.area(), &detail, project, theme, offset))
             .expect("draw should not fail");
         terminal
     }
@@ -229,6 +253,27 @@ mod tests {
     fn renders_run_drill_snapshot_in_the_harbor_light_theme() {
         let terminal = draw_with_theme(ThemeId::HarborLight);
         insta::assert_snapshot!(terminal.backend().to_string());
+    }
+
+    #[test]
+    fn renders_the_header_with_a_project() {
+        let terminal = draw_with_project(ThemeId::Regatta, Some("pat-skylight"));
+        insta::assert_snapshot!(terminal.backend().to_string());
+    }
+
+    #[test]
+    fn the_project_in_the_header_is_dim_and_the_rest_stays_accent() {
+        let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
+        let terminal = draw_with(&theme, Some("pat-skylight"));
+        let buffer = terminal.backend().buffer();
+        let row: String = (1..119)
+            .map(|x| buffer[(x, 1)].symbol().to_string())
+            .collect();
+        let start = 1 + row.find("pat-skylight").expect("the project is drawn") as u16;
+        assert_eq!(buffer[(start, 1)].fg, theme.dim);
+        assert_eq!(buffer[(start + 11, 1)].fg, theme.dim);
+        assert_eq!(buffer[(1, 1)].fg, theme.accent);
+        assert_eq!(buffer[(start - 2, 1)].fg, theme.accent);
     }
 
     #[test]
