@@ -1404,7 +1404,10 @@ fn history_row(
     let word = outcome_word(row.outcome);
     let line = Line::from(
         [
-            Span::raw(format!("{prefix}{} ", local_time(&row.ended_at, offset))),
+            Span::raw(format!(
+                "{prefix}{} ",
+                fit_cell(&local_time(&row.ended_at, offset), HISTORY_TIME_WIDTH)
+            )),
             Span::styled(
                 fit_cell(&row.machine, RUN_COLUMNS[1]),
                 Style::default().fg(accent),
@@ -3894,6 +3897,46 @@ mod tests {
         assert!(!row(1).contains('#'), "{}", row(1));
         assert!(row(2).contains("quarantined verify_failed"), "{}", row(2));
         assert!(row(5).contains("08:00 spare"), "{}", row(5));
+    }
+
+    #[test]
+    fn a_naive_ended_at_keeps_every_column_in_place() {
+        let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
+        let utc = FixedOffset::east_opt(0).unwrap();
+        let row = |ended_at: &str| HistoryRow {
+            run: "r1".to_string(),
+            machine: "omarchy".to_string(),
+            initiative: "dash-feed".to_string(),
+            ended_at: ended_at.to_string(),
+            outcome: Outcome::Landed,
+            cost_usd: 1.25,
+            landed: Vec::new(),
+            cause: None,
+            project: None,
+        };
+        let text = |ended_at: &str| -> String {
+            history_row(
+                &row(ended_at),
+                utc,
+                theme.accent,
+                false,
+                PROJECT_WIDTH,
+                &theme,
+            )
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect()
+        };
+        let naive = text("2026-09-29T13:12:00");
+        let zoned = text("2026-09-29T13:12:00Z");
+        assert_eq!(naive, zoned);
+        let unparsed = text("not a time at all");
+        let start = |s: &str, needle: &str| s[..s.find(needle).unwrap()].chars().count();
+        for needle in ["omarchy", "dash-feed", "$1.25"] {
+            assert_eq!(start(&naive, needle), start(&unparsed, needle), "{needle}");
+        }
+        assert!(naive.starts_with("  13:12 omarchy"), "{naive}");
     }
 
     #[test]
