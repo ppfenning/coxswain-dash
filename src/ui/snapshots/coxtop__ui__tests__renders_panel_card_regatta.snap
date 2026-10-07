@@ -1,6 +1,6 @@
 ---
 source: src/ui/mod.rs
-assertion_line: 1208
+assertion_line: 1350
 expression: screen(&buffer)
 ---
 ╭ 1 chair ────────────────────────────╮╭ 2 spend ────────────────────────────╮╭decision────────────────────────────────╮
@@ -15,7 +15,7 @@ expression: screen(&buffer)
 │                                              ││00:00 lanes in use · peak 1 ││Tab goes to the session                 │
 ╰──────────────────────────────────────────────╯╰────────────────────────────╯│                                        │
 ╭ 5 runs ────────────────────────────────────────────────────────────────────╮╰────────────────────────────────────────╯
-│  RUN          MACHINE    STAGE                               ATT    COST ST│┌ chair ─────────────────────────────────┐
+│  RUN          MACHINE    STAGE                               ATT    COST ST│┌ chair · ` focus · \ close · ~ width ───┐
 │▶ alpha-1      omarchy    p1 · build                            1   $0.50 ● ││chair> waiting for you                  │
 ╰────────────────────────────────────────────────────────────────────────────╯│                                        │
 ╭ 6 queue ──────────────────────────────────╮╭ 9 inbox ──────────────────────╮│                                        │

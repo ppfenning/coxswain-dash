@@ -64,7 +64,7 @@ pub fn title(focused: bool) -> &'static str {
     if focused {
         " chair · Ctrl-] leaves "
     } else {
-        " chair "
+        " chair · ` focus · \\ close · ~ width "
     }
 }
 
@@ -608,9 +608,17 @@ mod tests {
     }
 
     #[test]
-    fn the_title_and_status_hint_name_ctrl_right_bracket_only_while_focused() {
-        assert!(title(true).contains("Ctrl-]"));
-        assert_eq!(title(false), " chair ");
+    fn the_focused_title_names_the_key_that_leaves() {
+        assert_eq!(title(true), " chair · Ctrl-] leaves ");
+    }
+
+    #[test]
+    fn the_unfocused_title_names_the_focus_close_and_width_keys() {
+        assert_eq!(title(false), " chair · ` focus · \\ close · ~ width ");
+    }
+
+    #[test]
+    fn the_status_hint_is_the_focused_title_and_only_while_focused() {
         assert_eq!(release_hint(true), Some(title(true).trim()));
         assert_eq!(release_hint(false), None);
     }
