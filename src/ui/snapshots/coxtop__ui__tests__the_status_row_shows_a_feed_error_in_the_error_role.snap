@@ -1,0 +1,6 @@
+---
+source: src/ui/mod.rs
+assertion_line: 1069
+expression: last_row_of(&buffer)
+---
+feed error: ValueError: boom

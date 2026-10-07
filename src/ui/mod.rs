@@ -41,9 +41,19 @@ const NO_FEED: &str = "no feed yet";
 
 /// The page or detail view, then the status line over the footer row, then the open modal.
 pub fn render(f: &mut Frame, app: &App, theme: &Theme) {
+    render_with(f, app, theme, &[]);
+}
+
+/// `render`'s sequence, with the feed health `pieces` drawn after the status line. Empty
+/// `pieces` draw nothing extra, so `render` and `render_with_health` cannot drift apart.
+fn render_with(f: &mut Frame, app: &App, theme: &Theme, pieces: &[(HealthKind, String)]) {
     render_base(f, app, theme);
     render_form(f, app, theme);
     render_status(f, app, theme);
+    let row = health_row(f.area(), app).filter(|row| row.width > 0 && !pieces.is_empty());
+    if let Some(row) = row {
+        render_feed_health(f, row, theme, pieces);
+    }
     render_modal(f, app, theme);
 }
 
@@ -70,6 +80,151 @@ fn render_status(f: &mut Frame, app: &App, theme: &Theme) {
         f.render_widget(Clear, row);
         status_line::render(f, row, theme, Some(status));
     }
+}
+
+/// How a feed health piece is coloured: the error role, or the waiting role for a degraded feed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HealthKind {
+    Error,
+    Degraded,
+}
+
+/// `age` as its largest whole unit: `42s`, `5m`, `2h` or `3d`. A negative age is `0s`.
+fn compact_age(age: chrono::Duration) -> String {
+    match age.num_seconds().max(0) {
+        s if s < 60 => format!("{s}s"),
+        s if s < 3_600 => format!("{}m", s / 60),
+        s if s < 86_400 => format!("{}h", s / 3_600),
+        s => format!("{}d", s / 86_400),
+    }
+}
+
+/// The feed health pieces in drawing order: the feed error, the bad-line count with the latest
+/// parse error, then the stale age. Empty when the feed is healthy.
+fn feed_health_text(
+    error: Option<&str>,
+    parse_count: u32,
+    latest_parse: Option<&str>,
+    stale: Option<chrono::Duration>,
+) -> Vec<(HealthKind, String)> {
+    let parse = (parse_count > 0).then(|| {
+        let noun = if parse_count == 1 { "line" } else { "lines" };
+        match latest_parse {
+            Some(latest) => format!("{parse_count} bad {noun}: {latest}"),
+            None => format!("{parse_count} bad {noun}"),
+        }
+    });
+    error
+        .map(|err| (HealthKind::Error, feed_error_text(err)))
+        .into_iter()
+        .chain(parse.map(|text| (HealthKind::Degraded, text)))
+        .chain(stale.map(|age| {
+            (
+                HealthKind::Degraded,
+                format!("feed {} old", compact_age(age)),
+            )
+        }))
+        .collect()
+}
+
+/// Terminal cells `text` takes: a wide char takes two, a combining char none.
+fn cells(text: &str) -> usize {
+    Span::raw(text).width()
+}
+
+/// The longest prefix of `text` that fits in `width` cells.
+fn take_cells(text: &str, width: usize) -> String {
+    text.chars()
+        .scan(0, |used, c| {
+            *used += cells(c.encode_utf8(&mut [0; 4]));
+            (*used <= width).then_some(c)
+        })
+        .collect()
+}
+
+/// `pieces` joined by two spaces and cut to `width` terminal cells in all.
+fn fit_pieces(pieces: &[(HealthKind, String)], width: usize) -> Vec<(HealthKind, String)> {
+    pieces
+        .iter()
+        .fold((width, Vec::new()), |(left, out), (kind, text)| {
+            let sep = if out.is_empty() { "" } else { "  " };
+            let cut = take_cells(&format!("{sep}{text}"), left);
+            let left = left - cells(&cut);
+            let out = if cut.is_empty() {
+                out
+            } else {
+                out.into_iter().chain([(*kind, cut)]).collect()
+            };
+            (left, out)
+        })
+        .1
+}
+
+/// Draws the feed health `pieces` on one row, each in its own role colour, clearing the row.
+fn render_feed_health(f: &mut Frame, row: Rect, theme: &Theme, pieces: &[(HealthKind, String)]) {
+    let spans: Vec<Span> = fit_pieces(pieces, usize::from(row.width))
+        .into_iter()
+        .map(|(kind, text)| {
+            let fg = match kind {
+                HealthKind::Error => theme.status_failed,
+                HealthKind::Degraded => theme.status_waiting,
+            };
+            Span::styled(text, Style::default().fg(fg).bg(theme.bg))
+        })
+        .collect();
+    f.render_widget(Clear, row);
+    f.render_widget(
+        Paragraph::new(Line::from(spans)).style(Style::default().bg(theme.bg)),
+        row,
+    );
+}
+
+/// The part of `row` right of `hint` and a two-cell gap; zero width when the hint fills it.
+fn after_hint(row: Rect, hint: &str) -> Rect {
+    let used = u16::try_from(cells(hint) + 2)
+        .unwrap_or(u16::MAX)
+        .min(row.width);
+    Rect {
+        x: row.x + used,
+        width: row.width - used,
+        ..row
+    }
+}
+
+/// Where the feed health line goes on a screen of `area`. An action status keeps the footer
+/// row. Otherwise the line stays inside the page's share of that row, whatever the panel's
+/// state, so the chair panel's bottom border is never drawn over (it is on the last row of
+/// the panel's share whether the panel is focused, open, shown or showing a decision card). A
+/// focused chair's release hint keeps its place at the left of the share, and the health line
+/// takes the rest of it.
+fn health_row(area: Rect, app: &App) -> Option<Rect> {
+    let share = last_row(split_page(area, app).0);
+    match (app.status(), chair_panel::release_hint(app.chair_focused())) {
+        (Some(_), _) => None,
+        (None, Some(hint)) => Some(after_hint(share, hint)),
+        (None, None) => Some(share),
+    }
+}
+
+/// `render`, with the feed's health on the footer row while it is not healthy: the feed error,
+/// the bad-line count, the stale age. `now` and `interval` come from the caller; nothing here
+/// reads the clock. A healthy feed draws exactly as `render`.
+// main.rs calls `render` until the next ticket wires this in, so the binary build sees it unused.
+#[allow(dead_code)]
+pub fn render_with_health(
+    f: &mut Frame,
+    app: &App,
+    theme: &Theme,
+    now: DateTime<FixedOffset>,
+    interval: chrono::Duration,
+) {
+    let pieces = feed_health_text(
+        app.feed_error(),
+        app.parse_error_count(),
+        app.latest_parse_error(),
+        app.feed_stale(now, interval),
+    );
+    render_with(f, app, theme, &pieces);
 }
 
 fn render_modal(f: &mut Frame, app: &App, theme: &Theme) {
@@ -897,6 +1052,253 @@ mod tests {
     #[test]
     fn feed_error_text_prefixes_the_line() {
         assert_eq!(feed_error_text("boom"), "feed error: boom");
+    }
+
+    #[test]
+    fn compact_age_uses_the_largest_whole_unit() {
+        let secs = chrono::Duration::seconds;
+        assert_eq!(compact_age(secs(42)), "42s");
+        assert_eq!(compact_age(secs(60)), "1m");
+        assert_eq!(compact_age(secs(3_599)), "59m");
+        assert_eq!(compact_age(secs(3_600)), "1h");
+        assert_eq!(compact_age(secs(86_400)), "1d");
+        assert_eq!(compact_age(secs(-5)), "0s");
+    }
+
+    #[test]
+    fn feed_health_text_orders_error_parse_then_stale() {
+        let stale = Some(chrono::Duration::seconds(42));
+        assert_eq!(feed_health_text(None, 0, Some("old"), None), []);
+        assert_eq!(
+            feed_health_text(Some("boom"), 3, Some("expected value at line 1"), stale),
+            [
+                (HealthKind::Error, "feed error: boom".to_owned()),
+                (
+                    HealthKind::Degraded,
+                    "3 bad lines: expected value at line 1".to_owned()
+                ),
+                (HealthKind::Degraded, "feed 42s old".to_owned()),
+            ]
+        );
+        assert_eq!(
+            feed_health_text(None, 1, None, None),
+            [(HealthKind::Degraded, "1 bad line".to_owned())]
+        );
+    }
+
+    #[test]
+    fn fit_pieces_cuts_the_joined_text_to_the_width() {
+        let pieces = [
+            (HealthKind::Error, "abcdef".to_owned()),
+            (HealthKind::Degraded, "ghij".to_owned()),
+        ];
+        assert_eq!(
+            fit_pieces(&pieces, 9),
+            [
+                (HealthKind::Error, "abcdef".to_owned()),
+                (HealthKind::Degraded, "  g".to_owned())
+            ]
+        );
+        assert_eq!(
+            fit_pieces(&pieces, 4),
+            [(HealthKind::Error, "abcd".to_owned())]
+        );
+    }
+
+    fn parse_at(text: &str) -> DateTime<FixedOffset> {
+        DateTime::parse_from_rfc3339(text).expect("rfc3339")
+    }
+
+    /// The fixture's snapshot is `at` 2026-09-29T00:00:00Z; `seconds_on` is the clock after it.
+    fn draw_health(app: &App, theme: &Theme, seconds_on: i64) -> ratatui::buffer::Buffer {
+        let now = parse_at("2026-09-29T00:00:00Z") + chrono::Duration::seconds(seconds_on);
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).expect("terminal");
+        terminal
+            .draw(|f| render_with_health(f, app, theme, now, chrono::Duration::seconds(5)))
+            .expect("draw should not fail");
+        terminal.backend().buffer().clone()
+    }
+
+    fn last_row_of(buffer: &ratatui::buffer::Buffer) -> String {
+        rows(buffer).pop().expect("a last row")
+    }
+
+    fn assert_last_row_fg(buffer: &ratatui::buffer::Buffer, text: &str, color: Color) {
+        let y = buffer.area.height - 1;
+        assert!(
+            last_row_of(buffer).starts_with(text),
+            "{}",
+            last_row_of(buffer)
+        );
+        let len = text.chars().count() as u16;
+        assert!((0..len).all(|x| buffer[(x, y)].fg == color));
+    }
+
+    #[test]
+    fn a_healthy_feed_draws_exactly_what_render_draws() {
+        let app = app_with_feed();
+        let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
+        let health = draw_health(&app, &theme, 1);
+        assert_eq!(health, draw(&app, &theme));
+        insta::assert_snapshot!(last_row_of(&health));
+    }
+
+    #[test]
+    fn the_status_row_shows_a_feed_error_in_the_error_role() {
+        let mut app = app_with_feed();
+        app.apply_feed_error("ValueError: boom".to_owned());
+        let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
+        let buffer = draw_health(&app, &theme, 1);
+        assert_last_row_fg(&buffer, "feed error: ValueError: boom", theme.status_failed);
+        insta::assert_snapshot!(last_row_of(&buffer));
+    }
+
+    #[test]
+    fn the_status_row_shows_the_bad_line_count_and_the_latest_error() {
+        let mut app = app_with_feed();
+        (0..3).for_each(|_| app.record_parse_error("expected value at line 1".to_owned()));
+        let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
+        let buffer = draw_health(&app, &theme, 1);
+        assert_last_row_fg(
+            &buffer,
+            "3 bad lines: expected value at line 1",
+            theme.status_waiting,
+        );
+        insta::assert_snapshot!(last_row_of(&buffer));
+    }
+
+    #[test]
+    fn the_status_row_shows_a_stale_feeds_age() {
+        let app = app_with_feed();
+        let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
+        let buffer = draw_health(&app, &theme, 42);
+        assert_last_row_fg(&buffer, "feed 42s old", theme.status_waiting);
+        insta::assert_snapshot!(last_row_of(&buffer));
+    }
+
+    #[test]
+    fn take_cells_counts_terminal_cells_not_chars() {
+        assert_eq!(take_cells("日本語", 5), "日本");
+        assert_eq!(
+            fit_pieces(&[(HealthKind::Error, "日本語".to_owned())], 3),
+            [(HealthKind::Error, "日".to_owned())]
+        );
+    }
+
+    #[test]
+    fn after_hint_leaves_the_row_right_of_the_hint_and_a_gap() {
+        assert_eq!(
+            after_hint(Rect::new(5, 39, 20, 1), "abc"),
+            Rect::new(10, 39, 15, 1)
+        );
+        assert_eq!(after_hint(Rect::new(0, 39, 10, 1), "abcdefghij").width, 0);
+    }
+
+    /// `needle` is on the last row and every one of its cells has `color` as its foreground.
+    fn assert_on_last_row_in(buffer: &ratatui::buffer::Buffer, needle: &str, color: Color) {
+        let row = last_row_of(buffer);
+        let x = row
+            .find(needle)
+            .unwrap_or_else(|| panic!("{needle:?} is not on the last row: {row}"));
+        let y = buffer.area.height - 1;
+        let start = row[..x].chars().count() as u16;
+        let len = needle.chars().count() as u16;
+        assert!((start..start + len).all(|col| buffer[(col, y)].fg == color));
+    }
+
+    #[test]
+    fn every_piece_is_drawn_in_its_own_role_when_all_three_faults_show() {
+        let mut app = app_with_feed();
+        app.apply_feed_error("boom".to_owned());
+        app.record_parse_error("expected value at line 1".to_owned());
+        let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
+        let buffer = draw_health(&app, &theme, 42);
+        assert!(
+            last_row_of(&buffer).starts_with(
+                "feed error: boom  1 bad line: expected value at line 1  feed 42s old"
+            )
+        );
+        assert_on_last_row_in(&buffer, "feed error: boom", theme.status_failed);
+        assert_on_last_row_in(&buffer, "1 bad line: expected", theme.status_waiting);
+        assert_on_last_row_in(&buffer, "feed 42s old", theme.status_waiting);
+    }
+
+    #[test]
+    fn an_action_status_keeps_the_footer_row_over_the_feed_health() {
+        let mut app = app_with_feed();
+        app.record_parse_error("expected value at line 1".to_owned());
+        app.apply_exec_result(stop_result(Some(2), "no such run\n"), Origin::Action);
+        let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
+        let buffer = draw_health(&app, &theme, 42);
+        assert_eq!(last_row_of(&buffer), last_row_of(&draw(&app, &theme)));
+        assert!(!last_row_of(&buffer).contains("bad line"));
+        assert!(!last_row_of(&buffer).contains("old"));
+    }
+
+    #[test]
+    fn a_focused_chairs_release_hint_and_border_stay_beside_the_feed_health() {
+        let mut app = panel_app(AppPage::Regatta, ThemeId::Regatta, true, false);
+        assert!(app.chair_focused());
+        app.apply_feed_error("boom".to_owned());
+        let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
+        let buffer = draw_health(&app, &theme, 1);
+        let plain = draw(&app, &theme);
+        let row = last_row_of(&buffer);
+        let hint = chair_panel::release_hint(true).expect("a focused chair has a hint");
+        let at_hint = row.find(hint).unwrap_or_else(|| panic!("no hint: {row}"));
+        let at_error = row
+            .find("feed error: boom")
+            .unwrap_or_else(|| panic!("{row}"));
+        assert!(at_hint < at_error, "{row}");
+        assert_on_last_row_in(&buffer, "feed error: boom", theme.status_failed);
+        let page = split_page(buffer.area, &app).0;
+        let y = buffer.area.height - 1;
+        assert!((page.width..buffer.area.width).all(|x| buffer[(x, y)] == plain[(x, y)]));
+    }
+
+    /// The cells of the last row right of the page's share, where the chair panel's bottom
+    /// border is, drawn the same with and without a feed fault.
+    fn assert_panel_columns_untouched(app: &App) {
+        let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
+        let faulty = draw_health(app, &theme, 1);
+        let plain = draw(app, &theme);
+        let page = split_page(faulty.area, app).0;
+        let y = faulty.area.height - 1;
+        assert!(page.width < faulty.area.width, "the panel must be shown");
+        assert!(last_row_of(&faulty).contains("feed error: boom"));
+        assert!((page.width..faulty.area.width).all(|x| faulty[(x, y)] == plain[(x, y)]));
+    }
+
+    #[test]
+    fn an_open_unfocused_panel_keeps_its_border_under_a_feed_error() {
+        let mut app = panel_app(AppPage::Regatta, ThemeId::Regatta, true, false);
+        app.chair_panel_mut().set_focus(false);
+        assert!(!app.chair_focused() && app.chair_panel().is_open());
+        app.apply_feed_error("boom".to_owned());
+        assert_panel_columns_untouched(&app);
+        let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
+        insta::assert_snapshot!(screen(&draw_health(&app, &theme, 1)));
+    }
+
+    #[test]
+    fn a_shown_decision_card_keeps_its_border_under_a_feed_error() {
+        let mut app = panel_app(AppPage::Regatta, ThemeId::Regatta, false, true);
+        assert!(app.card_visible());
+        app.apply_feed_error("boom".to_owned());
+        assert_panel_columns_untouched(&app);
+    }
+
+    #[test]
+    fn a_drill_view_keeps_its_body_above_the_health_line() {
+        let mut app = app_with_open_run_detail();
+        app.record_parse_error("expected value at line 1".to_owned());
+        let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
+        let buffer = draw_health(&app, &theme, 1);
+        assert!(last_row_of(&buffer).starts_with("1 bad line: expected value at line 1"));
+        let plain = draw(&app, &theme);
+        let body = rows(&buffer)[..39].to_vec();
+        assert_eq!(body, rows(&plain)[..39].to_vec());
+        insta::assert_snapshot!(screen(&buffer));
     }
 
     const TRACEBACK: &str = "printf 'Traceback (most recent call last):\\n  File \"x\"\\nValueError: boom\\n' >&2; exit 1";

@@ -1,0 +1,6 @@
+---
+source: src/ui/mod.rs
+assertion_line: 1059
+expression: last_row_of(&health)
+---
+1-9 frames · ←→ focus · ↑↓ select · ⏎ drill down │ p pause  k kill  m move · : palette  w watch  $ spend  h health

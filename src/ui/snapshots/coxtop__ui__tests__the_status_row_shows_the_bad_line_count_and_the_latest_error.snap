@@ -1,0 +1,6 @@
+---
+source: src/ui/mod.rs
+assertion_line: 1083
+expression: last_row_of(&buffer)
+---
+3 bad lines: expected value at line 1
