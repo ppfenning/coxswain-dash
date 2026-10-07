@@ -290,6 +290,14 @@ mod tests {
     use super::*;
 
     #[test]
+    fn spawning_a_nonexistent_program_returns_err_not_a_panic() {
+        let mut pty = RealPty::new();
+        let argv = ["/nonexistent/program-xyz".to_string()];
+        assert!(pty.spawn(&argv, 24, 80).is_err());
+        assert!(!pty.has_exited());
+    }
+
+    #[test]
     fn fake_records_spawn_write_resize_read_and_kill_with_their_arguments() {
         let mut fake = FakePty::with_output(b"hi\r\n");
         let argv = ["sh", "-c", "echo hi"].map(String::from);

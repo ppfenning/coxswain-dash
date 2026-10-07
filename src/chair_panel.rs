@@ -734,6 +734,17 @@ mod tests {
     }
 
     #[test]
+    fn failed_start_session_leaves_the_panel_closed_with_the_error_kept() {
+        let mut panel = ChairPanel::new(FailPty { spawn_fails: true });
+        panel.start_session(24, 80);
+        assert_eq!(
+            (panel.is_open(), panel.started(), panel.screen.is_none()),
+            (false, false, true)
+        );
+        assert_eq!(panel.error(), Some("no such binary"));
+    }
+
+    #[test]
     fn open_without_a_session_after_a_failed_spawn_drops_the_stale_error() {
         let mut panel = ChairPanel::new(FailPty { spawn_fails: true });
         panel.open(Some("abc"), 24, 80);
