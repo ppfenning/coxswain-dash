@@ -1,9 +1,9 @@
 ---
 source: src/chair_panel.rs
-assertion_line: 721
+assertion_line: 1043
 expression: "drawn(&open_panel(), ThemeId::HarborLight)"
 ---
-"┌ chair ─────────────────────┐"
+"┌ chair · ` focus · \ close ·┐"
 "│hello                       │"
 "│world                       │"
 "│                            │"

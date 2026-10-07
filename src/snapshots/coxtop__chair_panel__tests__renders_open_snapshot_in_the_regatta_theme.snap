@@ -1,9 +1,9 @@
 ---
 source: src/chair_panel.rs
-assertion_line: 716
+assertion_line: 1038
 expression: "drawn(&open_panel(), ThemeId::Regatta)"
 ---
-"┌ chair ─────────────────────┐"
+"┌ chair · ` focus · \ close ·┐"
 "│hello                       │"
 "│world                       │"
 "│                            │"

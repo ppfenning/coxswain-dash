@@ -1380,7 +1380,7 @@ mod tests {
         assert!(app.detail().is_some());
         let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
         let rows = rows(&draw(&app, &theme));
-        let title = chair_panel::title(false);
+        let title = chair_panel::title(app.chair_focused());
         let side = split_page(Rect::new(0, 0, 120, 40), &app)
             .1
             .expect("the panel is shown");
