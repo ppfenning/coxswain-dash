@@ -17,7 +17,7 @@ pub mod spend_drill;
 pub mod status_line;
 pub mod watch_drill;
 
-use chrono::{DateTime, FixedOffset};
+use chrono::{DateTime, FixedOffset, NaiveDateTime};
 use ratatui::{
     Frame,
     layout::Rect,
@@ -355,12 +355,19 @@ fn footer_line(target: &Target, theme: &Theme) -> Line<'static> {
     )
 }
 
-/// Formats an RFC 3339 timestamp as `%H:%M` in `offset`. A string that does not parse as
-/// RFC 3339 comes back unchanged. Pure: the offset is passed in, never read from the clock.
+/// Formats an RFC 3339 timestamp as `%H:%M` in `offset`. A timestamp with no zone is read as UTC.
+/// A string that parses neither way comes back unchanged. Pure: the offset is passed in.
 pub fn local_time(utc: &str, offset: FixedOffset) -> String {
     match DateTime::parse_from_rfc3339(utc) {
         Ok(at) => at.with_timezone(&offset).format("%H:%M").to_string(),
-        Err(_) => utc.to_string(),
+        Err(_) => match NaiveDateTime::parse_from_str(utc, "%Y-%m-%dT%H:%M:%S%.f") {
+            Ok(naive) => naive
+                .and_utc()
+                .with_timezone(&offset)
+                .format("%H:%M")
+                .to_string(),
+            Err(_) => utc.to_string(),
+        },
     }
 }
 
@@ -728,6 +735,17 @@ mod tests {
     fn local_time_formats_in_the_given_offset() {
         let et = FixedOffset::west_opt(4 * 3600).unwrap();
         assert_eq!(local_time("2026-09-29T18:00:00Z", et), "14:00");
+    }
+
+    #[test]
+    fn local_time_reads_a_naive_timestamp_as_utc() {
+        let et = FixedOffset::west_opt(4 * 3600).unwrap();
+        assert_eq!(local_time("2026-09-29T18:00:00", et), "14:00");
+        assert_eq!(
+            local_time("2026-09-29T18:00:00", et),
+            local_time("2026-09-29T18:00:00Z", et)
+        );
+        assert_eq!(local_time("2026-09-29T18:00:00.250", et), "14:00");
     }
 
     use crate::app::ThemeId;
