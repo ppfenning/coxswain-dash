@@ -533,10 +533,15 @@ mod tests {
         handle_event_with(&mut app, press(KeyCode::Enter), &mut |_| {});
         assert!(fake.0.borrow().calls().is_empty());
         handle_event_with(&mut app, press(KeyCode::Char('`')), &mut |_| {});
+        let (rows, cols) = crate::chair_panel::inner_size(
+            ratatui::layout::Rect::new(0, 0, 120, 40),
+            app.chair_panel().width(),
+            None,
+        );
         let attach = crate::pty::PtyCall::Spawn {
             argv: ["claude", "attach", "s1"].map(String::from).to_vec(),
-            rows: PANEL_ROWS,
-            cols: PANEL_COLS,
+            rows,
+            cols,
         };
         assert_eq!(fake.0.borrow().calls(), [attach]);
     }
