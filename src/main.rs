@@ -78,6 +78,38 @@ fn version_line() -> String {
     format!("towpath {}", env!("CARGO_PKG_VERSION"))
 }
 
+const USAGE: &str = "Usage: towpath [--version | -V | --help]\n\nThe Coxswain fleet dashboard. Run it with no arguments to open the interface.";
+
+/// What a start does once its arguments are read.
+#[derive(Debug, PartialEq, Eq)]
+enum Action {
+    PrintVersion,
+    PrintHelp,
+    Run,
+}
+
+/// The decision for one start: the action, the alias notice for stderr, and the text for stdout.
+#[derive(Debug, PartialEq, Eq)]
+struct Launch {
+    action: Action,
+    notice: Option<&'static str>,
+    stdout: Option<String>,
+}
+
+/// Only the first argument is read. Anything but a known flag runs the interface, as before.
+fn decide(args: &[String], invoked: &str) -> Launch {
+    let (action, stdout) = match args.first().map(String::as_str) {
+        Some("--version" | "-V") => (Action::PrintVersion, Some(version_line())),
+        Some("--help") => (Action::PrintHelp, Some(USAGE.to_string())),
+        _ => (Action::Run, None),
+    };
+    Launch {
+        action,
+        notice: alias_notice(invoked),
+        stdout,
+    }
+}
+
 /// Without these flags a terminal reports Shift+Enter as a bare Enter. Only a confirmed
 /// `Ok(true)` pushes them; an unsupported terminal or a failed query pushes nothing.
 fn enhancement_flags(support: Result<bool, ()>) -> Option<KeyboardEnhancementFlags> {
@@ -283,11 +315,21 @@ fn pair_origin(queue: &mut VecDeque<Origin>, _result: &ExecResult) -> Option<Ori
 }
 
 fn main() {
-    let arg0 = std::env::args().next().unwrap_or_default();
-    if let Some(notice) = alias_notice(invoked_name(&arg0)) {
+    let args: Vec<String> = std::env::args().collect();
+    let arg0 = args.first().map(String::as_str).unwrap_or_default();
+    let launch = decide(args.get(1..).unwrap_or_default(), invoked_name(arg0));
+    if let Some(notice) = launch.notice {
         eprintln!("{notice}");
     }
-    run();
+    match launch.action {
+        Action::Run => run(),
+        Action::PrintVersion | Action::PrintHelp => {
+            if let Some(text) = launch.stdout {
+                println!("{text}");
+            }
+            std::process::exit(0);
+        }
+    }
 }
 
 fn run() {
@@ -515,6 +557,48 @@ mod tests {
     fn a_path_to_the_alias_binary_still_names_coxtop() {
         assert_eq!(invoked_name("/usr/local/bin/coxtop"), "coxtop");
         assert_eq!(invoked_name("towpath"), "towpath");
+    }
+
+    fn args(words: &[&str]) -> Vec<String> {
+        words.iter().map(|word| word.to_string()).collect()
+    }
+
+    #[test]
+    fn version_flags_return_the_version_line() {
+        for flag in ["--version", "-V"] {
+            let launch = decide(&args(&[flag]), "towpath");
+            assert_eq!(launch.action, Action::PrintVersion);
+            assert_eq!(launch.stdout, Some(version_line()));
+            assert_eq!(launch.notice, None);
+        }
+    }
+
+    #[test]
+    fn the_help_flag_returns_the_usage_text() {
+        let launch = decide(&args(&["--help"]), "towpath");
+        assert_eq!(launch.action, Action::PrintHelp);
+        assert_eq!(launch.stdout, Some(USAGE.to_string()));
+        assert_eq!(launch.notice, None);
+    }
+
+    #[test]
+    fn the_alias_with_version_gets_the_notice_and_the_version_line() {
+        let launch = decide(&args(&["--version"]), "coxtop");
+        assert_eq!(launch.action, Action::PrintVersion);
+        assert_eq!(launch.notice, Some(ALIAS_NOTICE));
+        assert_eq!(launch.stdout, Some(version_line()));
+    }
+
+    #[test]
+    fn no_arguments_run_the_interface() {
+        let launch = decide(&[], "towpath");
+        assert_eq!(launch.action, Action::Run);
+        assert_eq!(launch.stdout, None);
+    }
+
+    #[test]
+    fn an_unknown_flag_runs_the_interface() {
+        assert_eq!(decide(&args(&["--bogus"]), "towpath").action, Action::Run);
     }
 
     #[test]
