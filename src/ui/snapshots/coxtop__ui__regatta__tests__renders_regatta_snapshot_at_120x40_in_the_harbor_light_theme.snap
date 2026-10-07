@@ -1,6 +1,6 @@
 ---
 source: src/ui/regatta.rs
-assertion_line: 2367
+assertion_line: 2420
 expression: terminal.backend().to_string()
 ---
 "╭ 1 chair ─────────────────────────────────────────────────╮╭ 2 spend ─────────────────────────────────────────────────╮"
@@ -42,4 +42,4 @@ expression: terminal.backend().to_string()
 "│today  0 lands  0 quarantines  $0.00  0 runs                                                                          │"
 "│no runs ended yet                                                                                                     │"
 "╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯"
-"1-9 frames · ←→ focus · ↑↓ select · ⏎ drill down │ p pause  k kill  m move · : palette  w watch  $ spend  h health      "
+"1-9 frames · ←→ focus · ↑↓ select · q quit │ p pause  k kill  m move · : palette  w watch  $ spend  h health            "
