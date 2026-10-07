@@ -26,7 +26,7 @@ use crate::theme::Theme;
 
 use super::chair_card::{Freshness, TICK_INTERVAL_S, beat_freshness, short_age};
 use super::run_cost::{chart_bounds, dollar_labels, drawable};
-use super::{CollapsedRun, collapse_runs, count_suffix, end_chip, local_time};
+use super::{CollapsedRun, collapse_runs, count_suffix, end_chip, local_time, project_span};
 
 /// Cells in a spend meter, and the least one shrinks to in a narrow frame.
 const METER_WIDTH: usize = 26;
@@ -1103,6 +1103,30 @@ fn fit_cell(text: &str, width: usize) -> String {
     format!("{cut:<width$}")
 }
 
+/// An initiative and its dim project sharing one `width`-char cell. The project is capped at half
+/// the cell and the initiative takes what is left, so the cell never outgrows `width`. A missing
+/// or empty project leaves the initiative alone, exactly as `fit_cell` draws it.
+fn initiative_cell(
+    initiative: &str,
+    project: Option<&str>,
+    width: usize,
+    theme: &Theme,
+) -> Vec<Span<'static>> {
+    let shown = project
+        .filter(|p| !p.is_empty())
+        .map(|p| fit_cell(p, p.chars().count().min(width / 2)))
+        .filter(|p| !p.is_empty());
+    match shown {
+        Some(project) => {
+            let initiative_w = width.saturating_sub(1 + project.chars().count());
+            std::iter::once(Span::raw(fit_cell(initiative, initiative_w)))
+                .chain(project_span(Some(&project), theme))
+                .collect()
+        }
+        None => vec![Span::raw(fit_cell(initiative, width))],
+    }
+}
+
 /// A run's stage: `phase · node`, whichever of the two is known, or `starting` when neither is.
 fn stage_label(phase: Option<&str>, node: Option<&str>) -> String {
     match (phase, node) {
@@ -1560,8 +1584,13 @@ fn queue_line(q: &QueueEntry, selected: bool, width: usize, theme: &Theme) -> Li
     };
     let line = Line::from(
         std::iter::once(Span::raw(prefix))
+            .chain(initiative_cell(
+                &q.initiative,
+                q.project.as_deref(),
+                initiative_w,
+                theme,
+            ))
             .chain([
-                Span::raw(fit_cell(&q.initiative, initiative_w)),
                 Span::raw(" "),
                 bar(filled, bar_color),
                 bar(QUEUE_BAR_CELLS - filled, theme.track),
@@ -3548,12 +3577,12 @@ mod tests {
     }
 
     #[test]
-    fn the_queue_line_draws_the_initiative_alone() {
+    fn the_queue_frame_shows_a_dim_project_after_the_initiative() {
         let theme = project_theme();
         let terminal = draw_queue_frame(&queue_with_projects(), &theme);
         insta::assert_snapshot!(terminal.backend().to_string());
-        assert!(row_text(&terminal, 1).contains("alpha"));
-        assert!(!row_text(&terminal, 1).contains("pat-skylight"));
+        let x = col_of(&terminal, 1, "pat-skylight");
+        assert_eq!(terminal.backend().buffer()[(x, 1)].fg, theme.dim);
         let bar = |y| col_of(&terminal, y, "\u{2588}");
         assert_eq!(bar(1), bar(2));
         assert_eq!(bar(2), bar(3));
@@ -3799,6 +3828,27 @@ mod tests {
                 "height {height}"
             );
         }
+    }
+
+    #[test]
+    fn initiative_cell_fills_the_width_and_caps_the_project_at_half() {
+        let theme = project_theme();
+        let text =
+            |spans: &[Span<'_>]| spans.iter().map(|s| s.content.as_ref()).collect::<String>();
+        let none = initiative_cell("dash-feed", None, 22, &theme);
+        assert_eq!(text(&none), fit_cell("dash-feed", 22));
+        let empty = initiative_cell("dash-feed", Some(""), 22, &theme);
+        assert_eq!(text(&empty), fit_cell("dash-feed", 22));
+        let short = initiative_cell("dash-feed", Some("skylight"), 22, &theme);
+        assert_eq!(text(&short), "dash-feed     skylight");
+        assert_eq!(text(&short).chars().count(), 22);
+        let long = initiative_cell("dash-feed", Some("pat-skylight-extra"), 22, &theme);
+        assert_eq!(text(&long).chars().count(), 22);
+        assert!(
+            text(&long).ends_with(" pat-skylig\u{2026}"),
+            "{}",
+            text(&long)
+        );
     }
 
     #[test]

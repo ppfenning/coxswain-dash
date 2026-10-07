@@ -1,13 +1,13 @@
 ---
 source: src/ui/regatta.rs
-assertion_line: 3600
+assertion_line: 3367
 expression: terminal.backend().to_string()
 ---
 "╭ 6 queue ─────────────────────────────────────────────────╮"
-"│  alpha                            ████████████ 1/3 phases│"
+"│  alpha               pat-skylight ████████████ 1/3 phases│"
 "│  beta                             ████████████ 1/3 phases│"
-"│  gamma                            ████████████ 1/3 phases│"
-"│  delta                            ████████████ 1/3 phases│"
+"│  gamma                pat-towpath ████████████ 1/3 phases│"
+"│  delta               pat-skylight ████████████ 1/3 phases│"
 "│                                                          │"
 "│                                                          │"
 "│                                                          │"
