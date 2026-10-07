@@ -532,14 +532,6 @@ pub fn count_suffix(count: usize, theme: &Theme) -> Option<Span<'static>> {
     }
 }
 
-/// A row's project as a dim span led by one space; `None` for a missing or empty project, so the
-/// line it would join stays as it was.
-pub fn project_span(project: Option<&str>, theme: &Theme) -> Option<Span<'static>> {
-    project
-        .filter(|p| !p.is_empty())
-        .map(|p| Span::styled(format!(" {p}"), Style::default().fg(theme.dim)))
-}
-
 /// The project of run `run_id`, looked up in the live runs and then in the history.
 pub fn run_project<'a>(snapshot: &'a FeedSnapshot, run_id: &str) -> Option<&'a str> {
     snapshot
@@ -560,16 +552,6 @@ pub fn run_project<'a>(snapshot: &'a FeedSnapshot, run_id: &str) -> Option<&'a s
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn project_span_is_dim_and_led_by_a_space() {
-        let t = theme();
-        let span = project_span(Some("pat-skylight"), &t).expect("a project gives a span");
-        assert_eq!(span.content, " pat-skylight");
-        assert_eq!(span.style.fg, Some(t.dim));
-        assert!(project_span(None, &t).is_none());
-        assert!(project_span(Some(""), &t).is_none());
-    }
 
     #[test]
     fn run_project_looks_in_runs_then_history() {
