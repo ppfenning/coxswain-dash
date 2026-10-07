@@ -33,7 +33,7 @@ mod theme;
 mod ui;
 
 use std::collections::VecDeque;
-use std::io::{self, BufRead, BufReader, Write};
+use std::io::{self, BufRead, BufReader, IsTerminal, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, mpsc};
 use std::time::Duration;
@@ -332,7 +332,40 @@ fn main() {
     }
 }
 
+/// Towpath draws a full-screen UI and reads keys, so both ends must be a terminal.
+fn preflight(stdin_is_tty: bool, stdout_is_tty: bool) -> Result<(), String> {
+    if stdin_is_tty && stdout_is_tty {
+        Ok(())
+    } else {
+        Err("towpath needs a terminal".to_string())
+    }
+}
+
+/// Undoes terminal setup, best effort: each step ignores its own error so one failure
+/// does not skip the rest. Safe to call for steps that never ran.
+fn restore_terminal(pop_flags: bool) {
+    let mut out = io::stdout();
+    if pop_flags {
+        let _ = execute!(out, PopKeyboardEnhancementFlags);
+    }
+    let _ = disable_raw_mode();
+    let _ = execute!(out, DisableMouseCapture);
+    let _ = execute!(out, LeaveAlternateScreen);
+}
+
+/// Stops the feed child, prints why setup failed, and exits 1 instead of panicking.
+fn abort_setup(child: &mut std::process::Child, what: &str, err: &io::Error) -> ! {
+    let _ = child.kill();
+    let _ = child.wait();
+    eprintln!("{what}: {err}");
+    std::process::exit(1)
+}
+
 fn run() {
+    if let Err(message) = preflight(io::stdin().is_terminal(), io::stdout().is_terminal()) {
+        eprintln!("{message}");
+        std::process::exit(1);
+    }
     eprintln!("{}", version_line());
 
     let (page, theme_id) =
@@ -345,22 +378,40 @@ fn run() {
     let (exec_tx, exec_rx) = mpsc::channel::<ExecResult>();
     let mut origins: VecDeque<Origin> = VecDeque::new();
 
-    enable_raw_mode().expect("failed to enable raw mode");
-    let mut out = io::stdout();
-    execute!(out, EnterAlternateScreen, EnableMouseCapture)
-        .expect("failed to enter the alternate screen");
-    let pushed = enhancement_flags(supports_keyboard_enhancement().map_err(|_| ()));
-    if let Some(flags) = pushed {
-        execute!(out, PushKeyboardEnhancementFlags(flags))
-            .expect("failed to push the keyboard enhancement flags");
-        let previous_hook = std::panic::take_hook();
-        std::panic::set_hook(Box::new(move |info| {
-            let _ = execute!(io::stdout(), PopKeyboardEnhancementFlags);
-            previous_hook(info);
-        }));
+    if let Err(err) = enable_raw_mode() {
+        abort_setup(&mut child, "failed to enable raw mode", &err);
     }
+    let mut out = io::stdout();
+    if let Err(err) = execute!(out, EnterAlternateScreen, EnableMouseCapture) {
+        restore_terminal(false);
+        abort_setup(&mut child, "failed to enter the alternate screen", &err);
+    }
+    let pushed = enhancement_flags(supports_keyboard_enhancement().map_err(|_| ()));
+    let push_result = pushed.map_or(Ok(()), |flags| {
+        execute!(out, PushKeyboardEnhancementFlags(flags))
+    });
+    if let Err(err) = push_result {
+        restore_terminal(false);
+        abort_setup(
+            &mut child,
+            "failed to push the keyboard enhancement flags",
+            &err,
+        );
+    }
+    let pop_flags = pushed.is_some();
+    let previous_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        restore_terminal(pop_flags);
+        previous_hook(info);
+    }));
     let backend = CrosstermBackend::new(out);
-    let mut terminal = Terminal::new(backend).expect("failed to build the terminal");
+    let mut terminal = match Terminal::new(backend) {
+        Ok(terminal) => terminal,
+        Err(err) => {
+            restore_terminal(pop_flags);
+            abort_setup(&mut child, "failed to build the terminal", &err);
+        }
+    };
 
     let mut detail_child: Option<std::process::Child> = None;
     let mut detail_rx: Option<mpsc::Receiver<String>> = None;
@@ -534,6 +585,28 @@ fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const NEEDS_TERMINAL: &str = "towpath needs a terminal";
+
+    #[test]
+    fn preflight_passes_when_both_are_terminals() {
+        assert_eq!(preflight(true, true), Ok(()));
+    }
+
+    #[test]
+    fn preflight_refuses_when_only_stdin_is_a_terminal() {
+        assert_eq!(preflight(true, false), Err(NEEDS_TERMINAL.to_string()));
+    }
+
+    #[test]
+    fn preflight_refuses_when_only_stdout_is_a_terminal() {
+        assert_eq!(preflight(false, true), Err(NEEDS_TERMINAL.to_string()));
+    }
+
+    #[test]
+    fn preflight_refuses_when_neither_is_a_terminal() {
+        assert_eq!(preflight(false, false), Err(NEEDS_TERMINAL.to_string()));
+    }
 
     #[test]
     fn the_version_line_names_the_binary() {
