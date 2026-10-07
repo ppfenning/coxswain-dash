@@ -7,7 +7,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent,
 use ratatui::layout::Rect;
 
 use crate::actions::Target;
-use crate::app::{App, Focus, PANEL_COLS, PANEL_ROWS};
+use crate::app::{App, AppPage, Focus, PANEL_COLS, PANEL_ROWS};
 use crate::decision_card::KeyOutcome;
 use crate::form::{KEY_ADD_MACHINE, KEY_EDIT, KEY_NEW, KEY_REMOVE};
 
@@ -128,6 +128,8 @@ pub fn handle_key(app: &mut App, key: KeyCode) {
         // `s` was unbound in the landed keymap, so it opens the settings screen.
         KeyCode::Char('s') => app.open_settings(),
         KeyCode::Char('v') => app.cycle_regatta_layout_preset(),
+        // `g` is bound in no action table; it groups the queue, which only the Regatta page has.
+        KeyCode::Char('g') if app.page() == AppPage::Regatta => app.toggle_queue_grouped(),
         // No action binding uses `w`, `$` or `h`; a test over `actions::bindings` holds that.
         KeyCode::Char('w') => app.open_watch(),
         KeyCode::Char('$') => app.open_spend(),
@@ -666,6 +668,22 @@ mod tests {
         let mut app = App::default();
         handle_key(&mut app, KeyCode::Char('v'));
         assert_eq!(app.regatta_layout_preset(), 1);
+    }
+
+    #[test]
+    fn char_g_flips_queue_grouping_on_and_back_off() {
+        let mut app = App::new(AppPage::Regatta, ThemeId::Regatta);
+        handle_key(&mut app, KeyCode::Char('g'));
+        assert!(app.queue_grouped());
+        handle_key(&mut app, KeyCode::Char('g'));
+        assert!(!app.queue_grouped());
+    }
+
+    #[test]
+    fn char_g_does_nothing_on_the_slipstream_page() {
+        let mut app = App::new(AppPage::Slipstream, ThemeId::Regatta);
+        handle_key(&mut app, KeyCode::Char('g'));
+        assert!(!app.queue_grouped());
     }
 
     #[test]
