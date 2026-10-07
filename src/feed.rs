@@ -331,7 +331,51 @@ pub fn queue_repos(snapshot: &FeedSnapshot) -> Vec<String> {
 #[derive(Debug)]
 pub enum FeedMessage {
     Snapshot(Box<FeedSnapshot>),
+    /// A stdout line that did not parse, carrying the parse error text.
+    ParseError(String),
+    /// The child exited. Carries the exit status and the stderr tail.
     Error(String),
+}
+
+/// How many trailing stderr lines the reader keeps.
+const STDERR_TAIL_LINES: usize = 20;
+
+/// The longest stderr line kept whole; a longer line is split into pieces this size, so a
+/// child that never writes a newline still has a bounded tail.
+const STDERR_LINE_BYTES: u64 = 4096;
+
+/// The wait before restart number `attempt` (0-based): 1s doubling each time, capped at 30s.
+pub fn restart_delay(attempt: u32) -> std::time::Duration {
+    let secs = 1u64.checked_shl(attempt).unwrap_or(u64::MAX).min(30);
+    std::time::Duration::from_secs(secs)
+}
+
+/// `tail` with `line` appended, keeping only the last `max` lines.
+fn push_tail(tail: Vec<String>, line: String, max: usize) -> Vec<String> {
+    let skip = (tail.len() + 1).saturating_sub(max);
+    tail.into_iter()
+        .skip(skip)
+        .chain(std::iter::once(line))
+        .collect()
+}
+
+/// The error text for an exited feed. Always names the exit status, `Some(0)` included.
+/// The last stderr line leads; with more than one line the whole tail follows.
+pub fn exit_message(code: Option<i32>, tail: &[String]) -> String {
+    let status = match code {
+        Some(n) => format!("exit status {n}"),
+        None => "no exit status".to_owned(),
+    };
+    let lines: Vec<&str> = tail
+        .iter()
+        .map(|line| line.trim())
+        .filter(|line| !line.is_empty())
+        .collect();
+    match lines.as_slice() {
+        [] => format!("feed exited ({status})"),
+        [only] => format!("{only} ({status})"),
+        [.., last] => format!("{last} ({status}; stderr: {})", lines.join(" | ")),
+    }
 }
 
 /// The last line that is not blank after trimming, or `None` when there is none.
@@ -382,35 +426,102 @@ pub fn spawn_feed(interval_secs: Option<u64>) -> std::process::Child {
 }
 
 // edge
-/// Reads the child to the end, sending a `Snapshot` per good stdout line. Lines that do not
-/// parse are skipped. Once stdout closes, sends one `Error` if stderr had text or the exit
-/// was not a success. The error always follows every snapshot.
-pub fn read_feed(mut child: std::process::Child, tx: std::sync::mpsc::Sender<FeedMessage>) {
+/// Lines of `reader`, split on `\n` with invalid UTF-8 replaced, so a bad byte never stops
+/// the drain.
+fn lossy_lines(reader: impl std::io::Read) -> impl Iterator<Item = String> {
+    use std::io::BufRead;
+
+    std::io::BufReader::new(reader)
+        .split(b'\n')
+        .map_while(Result::ok)
+        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+}
+
+// edge
+/// Like [`lossy_lines`], but a line longer than `max_bytes` arrives as several pieces of at
+/// most `max_bytes` each, so no single read grows without bound.
+fn bounded_lines(reader: impl std::io::Read, max_bytes: u64) -> impl Iterator<Item = String> {
     use std::io::{BufRead, Read};
 
+    let mut reader = std::io::BufReader::new(reader);
+    std::iter::from_fn(move || {
+        let mut piece = Vec::new();
+        match (&mut reader).take(max_bytes).read_until(b'\n', &mut piece) {
+            Ok(0) | Err(_) => None,
+            Ok(_) => {
+                let text = piece.strip_suffix(b"\n").unwrap_or(&piece);
+                Some(String::from_utf8_lossy(text).into_owned())
+            }
+        }
+    })
+}
+
+// edge
+/// Reads the child to the end and hands each message to `sink`. Stderr drains on its own
+/// thread and only its last lines are kept, so a chatty child never fills the pipe. A good
+/// stdout line is a `Snapshot`, a bad one a `ParseError`. Once stdout closes, one `Error`
+/// follows with the exit status and the stderr tail, whatever the exit code.
+fn read_feed_into(mut child: std::process::Child, mut sink: impl FnMut(FeedMessage)) {
     let stderr = child.stderr.take();
     let stderr_reader = std::thread::spawn(move || {
-        let mut bytes = Vec::new();
-        if let Some(mut pipe) = stderr {
-            let _ = pipe.read_to_end(&mut bytes);
-        }
-        String::from_utf8_lossy(&bytes).into_owned()
+        stderr
+            .map(|pipe| {
+                bounded_lines(pipe, STDERR_LINE_BYTES).fold(Vec::new(), |tail, line| {
+                    push_tail(tail, line, STDERR_TAIL_LINES)
+                })
+            })
+            .unwrap_or_default()
     });
 
     if let Some(stdout) = child.stdout.take() {
-        std::io::BufReader::new(stdout)
-            .lines()
-            .map_while(Result::ok)
-            .filter_map(|line| parse_snapshot(&line).ok())
-            .for_each(|snapshot| {
-                let _ = tx.send(FeedMessage::Snapshot(Box::new(snapshot)));
+        lossy_lines(stdout)
+            .filter(|line| !line.trim().is_empty())
+            .for_each(|line| {
+                sink(match parse_snapshot(&line) {
+                    Ok(snapshot) => FeedMessage::Snapshot(Box::new(snapshot)),
+                    Err(err) => FeedMessage::ParseError(err.to_string()),
+                })
             });
     }
 
-    let stderr_text = stderr_reader.join().unwrap_or_default();
+    let tail = stderr_reader.join().unwrap_or_default();
     let code = child.wait().ok().and_then(|status| status.code());
-    if let Some(text) = exit_error(code, last_nonempty_line(&stderr_text)) {
-        let _ = tx.send(FeedMessage::Error(text));
+    sink(FeedMessage::Error(exit_message(code, &tail)));
+}
+
+// edge
+/// Reads the child to the end, sending every message to `tx`. See [`read_feed_into`].
+pub fn read_feed(child: std::process::Child, tx: std::sync::mpsc::Sender<FeedMessage>) {
+    read_feed_into(child, |message| {
+        let _ = tx.send(message);
+    });
+}
+
+// edge
+/// Runs `spawn` and [`read_feed_into`] in a loop, sleeping `delay(attempt)` after each exit
+/// before the next spawn. A parsed snapshot resets `attempt` to 0. Stops when `spawn`
+/// returns `None` or the receiver is gone. `delay` and `sleep` are hooks so tests never wait.
+/// The counter is local mutable state; this is the imperative edge.
+pub fn supervise_feed(
+    mut spawn: impl FnMut() -> Option<std::process::Child>,
+    tx: std::sync::mpsc::Sender<FeedMessage>,
+    delay: impl Fn(u32) -> std::time::Duration,
+    mut sleep: impl FnMut(std::time::Duration),
+) {
+    let mut attempt = 0u32;
+    while let Some(child) = spawn() {
+        let mut open = true;
+        read_feed_into(child, |message| {
+            if matches!(message, FeedMessage::Snapshot(_)) {
+                attempt = 0;
+            }
+            open &= tx.send(message).is_ok();
+        });
+        if !open {
+            break;
+        }
+        sleep(delay(attempt));
+        attempt = attempt.saturating_add(1);
     }
 }
 
@@ -759,7 +870,9 @@ mod tests {
         let script = "printf 'Traceback (most recent call last):\\n  File \"x\"\\nValueError: boom\\n' >&2; exit 1";
         let messages = run_stub(script, "");
         assert_eq!(messages.len(), 1);
-        assert!(matches!(&messages[0], FeedMessage::Error(text) if text == "ValueError: boom"));
+        assert!(
+            matches!(&messages[0], FeedMessage::Error(text) if text.starts_with("ValueError: boom (exit status 1; stderr: Traceback"))
+        );
     }
 
     #[test]
@@ -769,15 +882,152 @@ mod tests {
         let messages = run_stub("printf '%s\\n' \"$LINE\"; echo boom >&2; exit 1", &line);
         assert_eq!(messages.len(), 2);
         assert!(matches!(&messages[0], FeedMessage::Snapshot(s) if s.schema == 1));
-        assert!(matches!(&messages[1], FeedMessage::Error(text) if text == "boom"));
+        assert!(matches!(&messages[1], FeedMessage::Error(text) if text == "boom (exit status 1)"));
     }
 
     #[test]
-    fn read_feed_falls_back_to_the_exit_status_when_stderr_is_empty() {
+    fn read_feed_reports_the_exit_status_when_stderr_is_empty() {
         let messages = run_stub("exit 3", "");
         assert!(
-            matches!(&messages[..], [FeedMessage::Error(text)] if text == "feed exited with status 3")
+            matches!(&messages[..], [FeedMessage::Error(text)] if text == "feed exited (exit status 3)")
         );
+    }
+
+    #[test]
+    fn restart_delay_doubles_from_one_second_and_caps_at_thirty() {
+        let secs = |attempt| restart_delay(attempt).as_secs();
+        assert_eq!(
+            [secs(0), secs(1), secs(2), secs(3), secs(4)],
+            [1, 2, 4, 8, 16]
+        );
+        assert_eq!([secs(5), secs(6), secs(50), secs(u32::MAX)], [30; 4]);
+    }
+
+    #[test]
+    fn push_tail_keeps_only_the_last_lines() {
+        let lines = (1..=25).map(|n| n.to_string());
+        let tail = lines.fold(Vec::new(), |tail, line| push_tail(tail, line, 20));
+        assert_eq!(tail.len(), 20);
+        assert_eq!((tail[0].as_str(), tail[19].as_str()), ("6", "25"));
+    }
+
+    #[test]
+    fn exit_message_always_names_the_status() {
+        let tail = |lines: &[&str]| lines.iter().map(|l| l.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            exit_message(Some(1), &tail(&["boom"])),
+            "boom (exit status 1)"
+        );
+        assert_eq!(exit_message(Some(0), &[]), "feed exited (exit status 0)");
+        assert_eq!(exit_message(None, &[]), "feed exited (no exit status)");
+        assert_eq!(
+            exit_message(Some(2), &tail(&["a", "", "b"])),
+            "b (exit status 2; stderr: a | b)"
+        );
+    }
+
+    #[test]
+    fn read_feed_sends_a_parse_error_per_bad_line() {
+        let messages = run_stub("printf '%s\\n' '{ not json' 'also bad'", "");
+        assert_eq!(messages.len(), 3);
+        assert!(matches!(&messages[0], FeedMessage::ParseError(text) if !text.is_empty()));
+        assert!(matches!(&messages[1], FeedMessage::ParseError(text) if !text.is_empty()));
+        assert!(matches!(&messages[2], FeedMessage::Error(_)));
+    }
+
+    #[test]
+    fn read_feed_error_carries_the_exit_status_and_stderr_text() {
+        let messages = run_stub("echo oops >&2; exit 1", "");
+        assert!(
+            matches!(&messages[..], [FeedMessage::Error(text)] if text.contains("status 1") && text.contains("oops"))
+        );
+    }
+
+    #[test]
+    fn read_feed_reports_a_clean_exit_too() {
+        let messages = run_stub("exit 0", "");
+        assert!(matches!(&messages[..], [FeedMessage::Error(text)] if text.contains("status 0")));
+    }
+
+    #[test]
+    fn read_feed_does_not_block_on_a_flood_of_stderr_and_keeps_only_the_tail() {
+        let value: serde_json::Value = serde_json::from_str(FIXTURE).expect("fixture is json");
+        let line = serde_json::to_string(&value).expect("value serializes");
+        let script = "seq 1 100000 >&2; printf '%s\\n' \"$LINE\"";
+        let messages = run_stub(script, &line);
+        assert!(matches!(&messages[0], FeedMessage::Snapshot(s) if s.schema == 1));
+        let FeedMessage::Error(text) = &messages[1] else {
+            panic!("expected the exit error second");
+        };
+        assert!(text.starts_with("100000 (exit status 0; stderr: 99981 | "));
+        assert_eq!(text.matches(" | ").count(), STDERR_TAIL_LINES - 1);
+    }
+
+    #[test]
+    fn read_feed_bounds_a_stderr_line_with_no_newline() {
+        let messages = run_stub("head -c 1000000 /dev/zero | tr '\\0' x >&2; exit 1", "");
+        let FeedMessage::Error(text) = &messages[0] else {
+            panic!("expected one exit error");
+        };
+        assert!(text.contains("status 1"));
+        assert!(text.len() < STDERR_TAIL_LINES * STDERR_LINE_BYTES as usize * 2);
+    }
+
+    #[test]
+    fn bounded_lines_splits_long_lines_into_pieces() {
+        let lines: Vec<String> = bounded_lines(&b"abcdefg\nhi"[..], 3).collect();
+        assert_eq!(lines, ["abc", "def", "g", "hi"]);
+    }
+
+    /// Runs `supervise_feed` over one stub script per spawn and returns every sleep it asked for.
+    fn supervise_stubs(scripts: &[&str], line: &str) -> Vec<u64> {
+        let mut pending: Vec<String> = scripts.iter().rev().map(|s| s.to_string()).collect();
+        let line = line.to_owned();
+        let spawn = move || {
+            pending.pop().map(|script| {
+                let mut command = std::process::Command::new("sh");
+                command.args(["-c", &script]).env("LINE", &line);
+                spawn_command(command)
+            })
+        };
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut slept = Vec::new();
+        supervise_feed(spawn, tx, restart_delay, |d| slept.push(d.as_secs()));
+        slept
+    }
+
+    #[test]
+    fn supervise_feed_backs_off_after_each_failed_run() {
+        assert_eq!(
+            supervise_stubs(&["exit 1", "exit 1", "exit 1"], ""),
+            [1, 2, 4]
+        );
+    }
+
+    #[test]
+    fn supervise_feed_resets_the_backoff_after_a_snapshot() {
+        let value: serde_json::Value = serde_json::from_str(FIXTURE).expect("fixture is json");
+        let line = serde_json::to_string(&value).expect("value serializes");
+        let good = "printf '%s\\n' \"$LINE\"; exit 1";
+        assert_eq!(
+            supervise_stubs(&["exit 1", "exit 1", good, "exit 1"], &line),
+            [1, 2, 1, 2]
+        );
+    }
+
+    #[test]
+    fn supervise_feed_stops_when_the_receiver_is_gone() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        drop(rx);
+        let mut spawns = 0;
+        let spawn = || {
+            spawns += 1;
+            let mut command = std::process::Command::new("sh");
+            command.args(["-c", "exit 1"]);
+            Some(spawn_command(command))
+        };
+        supervise_feed(spawn, tx, restart_delay, |_| {});
+        assert_eq!(spawns, 1);
     }
 
     #[test]
