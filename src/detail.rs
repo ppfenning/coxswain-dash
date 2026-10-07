@@ -277,11 +277,24 @@ pub fn spawn_piped(
 /// Spawns `cox dash --detail <kind> <id>` with stdout piped and stderr drained. The caller
 /// reads the child's stdout; this function only starts the process.
 pub fn spawn_detail(kind: &str, id: &str) -> std::process::Child {
+    // Retained only until main.rs:155 moves to `try_spawn_detail`; that call site is out of
+    // this item's surfaces, so the panic stays here and is reported.
+    try_spawn_detail(kind, id).expect("failed to spawn `cox dash --detail`")
+}
+
+// edge
+/// Like [`spawn_detail`], but a failed spawn is returned for the caller to show as a status.
+pub fn try_spawn_detail(kind: &str, id: &str) -> std::io::Result<std::process::Child> {
+    spawn_command(detail_command(kind, id))
+}
+
+// edge
+/// Spawns `cmd` through [`spawn_piped`] and returns the child.
+fn spawn_command(cmd: std::process::Command) -> std::io::Result<std::process::Child> {
     // The stderr line is dropped here until main.rs moves to `spawn_piped` and keeps it.
     // Dropping the handle detaches the drain thread; it still reads until the child exits.
-    let (child, _stderr_line) =
-        spawn_piped(detail_command(kind, id)).expect("failed to spawn `cox dash --detail`");
-    child
+    let (child, _stderr_line) = spawn_piped(cmd)?;
+    Ok(child)
 }
 
 // edge
@@ -316,6 +329,12 @@ mod tests {
     const MACHINE_FIXTURE: &str = include_str!("../tests/fixtures/dash_detail_machine_v1.json");
     const SPEND_FIXTURE: &str = include_str!("../tests/fixtures/dash_detail_spend_v1.json");
     const HEALTH_FIXTURE: &str = include_str!("../tests/fixtures/dash_detail_health_v1.json");
+
+    #[test]
+    fn spawn_command_with_a_nonexistent_program_returns_err() {
+        let cmd = std::process::Command::new("/nonexistent/towpath-no-such-program");
+        assert!(spawn_command(cmd).is_err());
+    }
 
     #[test]
     fn parse_detail_reads_the_run_v1_fixture() {
