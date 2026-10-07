@@ -13,6 +13,7 @@ use std::path::PathBuf;
 
 use chrono::{DateTime, FixedOffset};
 use crossterm::event::KeyEvent;
+use ratatui::layout::Rect;
 
 use crate::actions::{Target, action_for, move_prefill};
 use crate::chair_panel::{ChairPanel, CloseOutcome};
@@ -196,6 +197,10 @@ pub struct App {
     chair_panel_focused: bool,
     decision_card: DecisionCard,
     card_visible: bool,
+    /// The whole terminal, which sizes the chair pty. Set on each resize event.
+    terminal: Rect,
+    /// The `(rows, cols)` the chair pty was last spawned or resized to.
+    chair_pty_size: Option<(u16, u16)>,
     /// How many times a new decision asked for the bell. `main` rings once per increment.
     bells: u32,
     modal: Option<Modal>,
@@ -273,6 +278,8 @@ impl Default for App {
             chair_panel_focused: false,
             decision_card: DecisionCard::new(),
             card_visible: false,
+            terminal: Rect::new(0, 0, 120, 40),
+            chair_pty_size: None,
             bells: 0,
             modal: None,
             pending: None,
@@ -332,6 +339,44 @@ impl App {
     /// Hides the decision card without answering. The decision stays open in the feed.
     pub fn hide_card(&mut self) {
         self.card_visible = false;
+    }
+
+    /// Stores the terminal's size. It does not touch the pty; `sync_chair_pty_size` does.
+    pub fn set_terminal_size(&mut self, area: Rect) {
+        self.terminal = area;
+    }
+
+    /// The pty's `(rows, cols)` for the stored terminal, the panel's width and the shown card.
+    fn chair_inner_size(&self) -> (u16, u16) {
+        let card_options = self
+            .decision_card
+            .decision()
+            .filter(|_| self.card_visible)
+            .map(|decision| decision.options.len());
+        crate::chair_panel::inner_size(self.terminal, self.chair_panel.width(), card_options)
+    }
+
+    /// Resizes an open chair pty to its pane. Idempotent: the pty is touched only on a change.
+    pub fn sync_chair_pty_size(&mut self) {
+        if !self.chair_panel.is_open() {
+            return;
+        }
+        let size = self.chair_inner_size();
+        if self.chair_pty_size == Some(size) {
+            return;
+        }
+        self.chair_panel.resize(size.0, size.1);
+        self.chair_pty_size = Some(size);
+    }
+
+    /// Opens the panel on `id` at the pane size, and remembers that size when it spawned.
+    fn open_chair_panel(&mut self, id: Option<&str>) {
+        if self.chair_panel.is_open() {
+            return;
+        }
+        let (rows, cols) = self.chair_inner_size();
+        self.chair_panel.open(id, rows, cols);
+        self.chair_pty_size = self.chair_panel.is_open().then_some((rows, cols));
     }
 
     /// How many bells new decisions have asked for so far.
@@ -411,7 +456,7 @@ impl App {
         } else {
             self.chair_panel_shown = true;
             let id = self.published_session().map(str::to_string);
-            self.chair_panel.open(id.as_deref(), PANEL_ROWS, PANEL_COLS);
+            self.open_chair_panel(id.as_deref());
             self.chair_panel.set_focus(true);
             self.set_chair_panel_focus(true);
         }
@@ -553,9 +598,8 @@ impl App {
         let first = !self.feed.has_snapshot;
         let has_new = self.decision_card.note_decisions(&snap.decisions);
         if has_new && !first {
-            self.chair_panel
-                .open(session_id(&snap.chair), PANEL_ROWS, PANEL_COLS);
             self.card_visible = true;
+            self.open_chair_panel(session_id(&snap.chair));
             self.bells += 1;
         } else if self.decision_card.decision().is_none() {
             self.card_visible = false;
@@ -1398,13 +1442,64 @@ mod tests {
         assert!(app.card_visible());
         assert_eq!(app.bells(), 1);
         let argv = ["claude", "attach", "s1"].map(String::from).to_vec();
+        let (rows, cols) = crate::chair_panel::inner_size(
+            Rect::new(0, 0, 120, 40),
+            app.chair_panel().width(),
+            Some(2),
+        );
         assert_eq!(
             fake.0.borrow().calls(),
-            [crate::pty::PtyCall::Spawn {
-                argv,
-                rows: PANEL_ROWS,
-                cols: PANEL_COLS
-            }]
+            [crate::pty::PtyCall::Spawn { argv, rows, cols }]
+        );
+    }
+
+    #[test]
+    fn the_panel_spawns_at_the_inner_pane_size() {
+        let fake = crate::pty::SharedFakePty::default();
+        let mut app = App::default().with_pty(Box::new(fake.clone()));
+        app.set_terminal_size(Rect::new(0, 0, 120, 40));
+        app.apply_snapshot(snapshot_with_decisions(&[]));
+        app.toggle_chair_panel();
+        let (rows, cols) = crate::chair_panel::inner_size(
+            Rect::new(0, 0, 120, 40),
+            app.chair_panel().width(),
+            None,
+        );
+        assert_ne!((rows, cols), (PANEL_ROWS, PANEL_COLS));
+        let argv = ["claude", "attach", "s1"].map(String::from).to_vec();
+        assert_eq!(
+            fake.0.borrow().calls(),
+            [crate::pty::PtyCall::Spawn { argv, rows, cols }]
+        );
+    }
+
+    #[test]
+    fn showing_the_card_resizes_once_and_hiding_it_resizes_back() {
+        let fake = crate::pty::SharedFakePty::default();
+        let mut app = App::default().with_pty(Box::new(fake.clone()));
+        app.apply_snapshot(snapshot_with_decisions(&[]));
+        app.toggle_chair_panel();
+        let width = app.chair_panel().width();
+        let screen = Rect::new(0, 0, 120, 40);
+        let (rows, cols) = crate::chair_panel::inner_size(screen, width, None);
+        let (card_rows, card_cols) = crate::chair_panel::inner_size(screen, width, Some(2));
+        assert_ne!(rows, card_rows);
+        app.sync_chair_pty_size();
+        assert_eq!(fake.0.borrow().calls().len(), 1, "no change, no resize");
+
+        app.apply_snapshot(snapshot_with_decisions(&["d1"]));
+        assert!(app.card_visible());
+        app.sync_chair_pty_size();
+        app.sync_chair_pty_size();
+        let resize = |rows, cols| crate::pty::PtyCall::Resize { rows, cols };
+        assert_eq!(fake.0.borrow().calls()[1..], [resize(card_rows, card_cols)]);
+
+        app.hide_card();
+        app.sync_chair_pty_size();
+        app.sync_chair_pty_size();
+        assert_eq!(
+            fake.0.borrow().calls()[1..],
+            [resize(card_rows, card_cols), resize(rows, cols)]
         );
     }
 

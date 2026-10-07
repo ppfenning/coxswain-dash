@@ -47,8 +47,6 @@ fn pane_inner(rect: Rect) -> Rect {
 /// The pty's `(rows, cols)` for a panel in `mode` on a `screen`, with `card_options` the option
 /// count of a shown decision card. Follows `render_panel`: split the page, the card above, the
 /// border off.
-// The pty spawn and resize adopt this in a follow-up task.
-#[allow(dead_code)]
 pub fn inner_size(screen: Rect, mode: WidthMode, card_options: Option<usize>) -> (u16, u16) {
     let (_, side) = crate::ui::split_panel(screen, Some(mode.percent()));
     let side = side.unwrap_or_default();
