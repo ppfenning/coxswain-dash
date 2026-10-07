@@ -738,6 +738,15 @@ mod tests {
     }
 
     #[test]
+    fn local_time_follows_the_offset_passed_in() {
+        let stamp = "2026-11-01T05:30:00Z";
+        let at = |secs: i32| local_time(stamp, FixedOffset::east_opt(secs).unwrap());
+        assert_eq!(at(3600), "06:30");
+        assert_eq!(at(0), "05:30");
+        assert_eq!(at(-5 * 3600), "00:30");
+    }
+
+    #[test]
     fn local_time_reads_a_naive_timestamp_as_utc() {
         let et = FixedOffset::west_opt(4 * 3600).unwrap();
         assert_eq!(local_time("2026-09-29T18:00:00", et), "14:00");
