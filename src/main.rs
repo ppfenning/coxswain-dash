@@ -32,7 +32,6 @@ mod settings_stage;
 mod theme;
 mod ui;
 
-use std::collections::VecDeque;
 use std::io::{self, BufRead, BufReader, IsTerminal, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, mpsc};
@@ -308,12 +307,6 @@ fn restart_feed(mut child: std::process::Child) -> (std::process::Child, mpsc::R
     spawn_feed_reader()
 }
 
-/// The origin a finished command's result goes to: the oldest started command still waiting.
-/// `None` when no command is waiting, and the result is dropped.
-fn pair_origin(queue: &mut VecDeque<Origin>, _result: &ExecResult) -> Option<Origin> {
-    queue.pop_front()
-}
-
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let arg0 = args.first().map(String::as_str).unwrap_or_default();
@@ -376,8 +369,7 @@ fn run() {
     let (mut child, mut rx) = spawn_feed_reader();
 
     let runner: Arc<dyn CmdRunner> = Arc::new(exec::RealRunner::cox());
-    let (exec_tx, exec_rx) = mpsc::channel::<ExecResult>();
-    let mut origins: VecDeque<Origin> = VecDeque::new();
+    let (exec_tx, exec_rx) = mpsc::channel::<(Origin, ExecResult)>();
 
     if let Err(err) = enable_raw_mode() {
         abort_setup(&mut child, "failed to enable raw mode", &err);
@@ -522,19 +514,21 @@ fn run() {
         }
 
         if let Some(pending) = app.take_pending() {
-            origins.push_back(pending.origin);
-            exec::start(Arc::clone(&runner), pending.argv, exec_tx.clone());
+            exec::start(
+                Arc::clone(&runner),
+                pending.origin,
+                pending.argv,
+                exec_tx.clone(),
+            );
             changed = true;
         }
 
         let mut refresh = false;
-        while let Ok(result) = exec_rx.try_recv() {
+        while let Ok((origin, result)) = exec_rx.try_recv() {
             let code = result.code;
-            if let Some(origin) = pair_origin(&mut origins, &result) {
-                app.apply_exec_result(result, origin);
-                refresh = refresh || code == Some(0);
-                changed = true;
-            }
+            app.apply_exec_result(result, origin);
+            refresh = refresh || code == Some(0);
+            changed = true;
         }
         if refresh {
             (child, rx) = restart_feed(child);
@@ -701,27 +695,6 @@ mod tests {
         assert_eq!(enhancement_flags(Err(())), None);
     }
 
-    fn done() -> ExecResult {
-        ExecResult {
-            argv: vec!["cox".to_owned()],
-            code: Some(0),
-            output: String::new(),
-        }
-    }
-
-    #[test]
-    fn results_pair_with_origins_in_start_order() {
-        let mut queue = VecDeque::from([Origin::Action, Origin::Palette]);
-        assert_eq!(pair_origin(&mut queue, &done()), Some(Origin::Action));
-        assert_eq!(pair_origin(&mut queue, &done()), Some(Origin::Palette));
-    }
-
-    #[test]
-    fn an_extra_result_with_an_empty_queue_has_no_origin() {
-        let mut queue = VecDeque::new();
-        assert_eq!(pair_origin(&mut queue, &done()), None);
-    }
-
     struct FakeRunner {
         result: ExecResult,
         calls: Arc<std::sync::Mutex<Vec<Vec<String>>>>,
@@ -757,17 +730,14 @@ mod tests {
             },
             calls: Arc::clone(&calls),
         });
-        let (tx, rx) = mpsc::channel::<ExecResult>();
-        let mut origins = VecDeque::new();
+        let (tx, rx) = mpsc::channel::<(Origin, ExecResult)>();
 
         let pending = app.take_pending().expect("a confirmed action is pending");
-        origins.push_back(pending.origin);
-        exec::start(runner, pending.argv, tx);
-        let result = rx
+        exec::start(runner, pending.origin, pending.argv, tx);
+        let (origin, result) = rx
             .recv_timeout(Duration::from_secs(5))
             .expect("the runner should deliver a result");
         assert_eq!(app.status(), None);
-        let origin = pair_origin(&mut origins, &result).expect("the origin is queued");
         app.apply_exec_result(result, origin);
 
         assert_eq!(*calls.lock().unwrap(), vec![argv]);
@@ -775,23 +745,6 @@ mod tests {
             app.status(),
             Some(&(exec::StatusLevel::Ok, "stopped dash-feed-1".to_owned()))
         );
-    }
-
-    #[test]
-    fn settings_origins_pair_in_start_order() {
-        let dry = Origin::SettingsDryRun {
-            scope: "budgets".to_owned(),
-            key: "max_usd".to_owned(),
-        };
-        let apply = Origin::SettingsApply {
-            scope: "budgets".to_owned(),
-            key: "max_usd".to_owned(),
-        };
-        let mut queue = VecDeque::from([Origin::SettingsLoad, dry.clone(), apply.clone()]);
-        assert_eq!(pair_origin(&mut queue, &done()), Some(Origin::SettingsLoad));
-        assert_eq!(pair_origin(&mut queue, &done()), Some(dry));
-        assert_eq!(pair_origin(&mut queue, &done()), Some(apply));
-        assert_eq!(pair_origin(&mut queue, &done()), None);
     }
 
     const ROWS: &str = r#"{"sections":[{"id":"budgets","rows":[{"section":"budgets","scope":"budgets","key":"max_usd","value":"20","file":"f.toml","tracked":true,"pat_only":false}]}]}"#;
@@ -812,16 +765,13 @@ mod tests {
             },
             calls: Arc::clone(&calls),
         });
-        let (tx, rx) = mpsc::channel::<ExecResult>();
-        let mut origins = VecDeque::new();
+        let (tx, rx) = mpsc::channel::<(Origin, ExecResult)>();
 
         let pending = app.take_pending().expect("a call is pending");
-        origins.push_back(pending.origin);
-        exec::start(runner, pending.argv, tx);
-        let result = rx
+        exec::start(runner, pending.origin, pending.argv, tx);
+        let (origin, result) = rx
             .recv_timeout(Duration::from_secs(5))
             .expect("the runner should deliver a result");
-        let origin = pair_origin(&mut origins, &result).expect("the origin is queued");
         app.apply_exec_result(result, origin);
 
         calls.lock().unwrap().clone()
