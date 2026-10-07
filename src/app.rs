@@ -522,13 +522,21 @@ impl App {
         self.utc_offset
     }
 
-    /// Builder: sets the offset used to render every timestamp. Only `src/main.rs` should ever
-    /// pass anything but UTC in.
+    /// Builder: seeds the offset used to render timestamps before the first snapshot arrives.
+    /// Each snapshot then overwrites it through `apply_snapshot_at`. Only `src/main.rs` should
+    /// ever pass anything but UTC in.
     pub fn with_utc_offset(self, offset: FixedOffset) -> Self {
         App {
             utc_offset: offset,
             ..self
         }
+    }
+
+    /// Applies a snapshot and records `offset` as the local offset every clock renders in.
+    /// The caller reads the offset at the edge, so a DST change shows up on the next snapshot.
+    pub fn apply_snapshot_at(&mut self, snap: FeedSnapshot, offset: FixedOffset) {
+        self.utc_offset = offset;
+        self.apply_snapshot(snap);
     }
 
     /// The kept lanes-in-use samples, oldest first, each within 24h of the newest.
@@ -1448,6 +1456,22 @@ mod tests {
             App::default().utc_offset(),
             FixedOffset::east_opt(0).unwrap()
         );
+    }
+
+    #[test]
+    fn each_snapshot_replaces_the_offset_the_clocks_render_in() {
+        let mut app = App::default();
+        let stamp = "2026-11-01T05:30:00Z";
+        app.apply_snapshot_at(
+            make_snapshot(stamp, 1),
+            FixedOffset::east_opt(3600).unwrap(),
+        );
+        assert_eq!(app.utc_offset(), FixedOffset::east_opt(3600).unwrap());
+        let before = crate::ui::local_time(stamp, app.utc_offset());
+        app.apply_snapshot_at(make_snapshot(stamp, 1), FixedOffset::east_opt(0).unwrap());
+        assert_eq!(app.utc_offset(), FixedOffset::east_opt(0).unwrap());
+        let after = crate::ui::local_time(stamp, app.utc_offset());
+        assert_eq!((before.as_str(), after.as_str()), ("06:30", "05:30"));
     }
 
     #[test]

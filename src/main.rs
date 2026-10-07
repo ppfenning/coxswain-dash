@@ -370,6 +370,7 @@ fn run() {
 
     let (page, theme_id) =
         config::load_state(&config::state_path()).unwrap_or((AppPage::Regatta, ThemeId::Regatta));
+    // Seed only: every feed snapshot replaces this offset.
     let mut app = App::new(page, theme_id).with_utc_offset(*chrono::Local::now().offset());
 
     let (mut child, mut rx) = spawn_feed_reader();
@@ -425,7 +426,8 @@ fn run() {
     loop {
         while let Ok(line) = rx.try_recv() {
             if let Ok(snapshot) = feed::parse_snapshot(&line) {
-                app.apply_snapshot(snapshot);
+                // Re-read the offset per snapshot so a DST change reaches every clock.
+                app.apply_snapshot_at(snapshot, *chrono::Local::now().offset());
                 changed = true;
             }
         }
