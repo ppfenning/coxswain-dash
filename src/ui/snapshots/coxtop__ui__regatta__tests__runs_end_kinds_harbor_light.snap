@@ -1,15 +1,15 @@
 ---
 source: src/ui/regatta.rs
-assertion_line: 2378
+assertion_line: 2797
 expression: terminal.backend().to_string()
 ---
 "╭ 5 runs ──────────────────────────────────────────────────────────────────────────────────────────────────────────────╮"
-"│  RUN          MACHINE    STAGE                               ATT    COST STATUS                                      │"
-"│  a-1          m0         p · n                                 2   $1.50 ● running                                   │"
-"│  b-1          m0         p · n                                 2   $1.50 ● landed                                    │"
-"│  c-1          m0         p · n                                 2   $1.50 ● approved                                  │"
-"│  d-1          m0         p · n                                 2   $1.50 ● quarantined tests failed                  │"
-"│  e-1          m0         p · n                                 2   $1.50 ● idle                                      │"
-"│  f-1          m0         p · n                                 2   $1.50 ● died oom                                  │"
-"│  g-1          m0         p · n                                 2   $1.50 ● stopped                                   │"
+"│  RUN          PROJECT        MACHINE    STAGE                               ATT    COST STATUS                       │"
+"│  a-1          -              m0         p · n                                 2   $1.50 ● running                    │"
+"│  b-1          -              m0         p · n                                 2   $1.50 ● landed                     │"
+"│  c-1          -              m0         p · n                                 2   $1.50 ● approved                   │"
+"│  d-1          -              m0         p · n                                 2   $1.50 ● quarantined tests failed   │"
+"│  e-1          -              m0         p · n                                 2   $1.50 ● idle                       │"
+"│  f-1          -              m0         p · n                                 2   $1.50 ● died oom                   │"
+"│  g-1          -              m0         p · n                                 2   $1.50 ● stopped                    │"
 "╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯"

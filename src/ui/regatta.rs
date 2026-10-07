@@ -19,7 +19,7 @@ use crate::actions::{Target, bindings};
 use crate::app::{App, Focus, group_queue};
 use crate::feed::{
     Chair, CurrentAction, FeedSnapshot, HistoryRow, HistoryToday, InboxEntry, Machine, Outcome,
-    QueueEntry, Run,
+    QueueEntry, Run, RunEnd,
 };
 use crate::form::{KEY_ADD_MACHINE, KEY_EDIT, KEY_NEW, KEY_REMOVE};
 use crate::theme::Theme;
@@ -1064,6 +1064,24 @@ const RUN_COLUMNS: [usize; 4] = [12, 10, 22, 12];
 const STAGE_WIDTH: usize = RUN_COLUMNS[2] + 1 + RUN_COLUMNS[3];
 const ATT_WIDTH: usize = 3;
 const COST_WIDTH: usize = 7;
+/// The PROJECT column at full width; a narrow runs frame gives it less, down to nothing.
+const PROJECT_WIDTH: usize = 14;
+/// Columns a runs row spends left of the project cell and the end chip: the prefix, RUN, MACHINE,
+/// the stage and the run tail, each with its separator. PROJECT never takes any of these.
+const RUN_FIXED_WIDTH: usize =
+    2 + RUN_COLUMNS[0] + 1 + RUN_COLUMNS[1] + 1 + STAGE_WIDTH + ATT_WIDTH + COST_WIDTH + 3;
+/// Status words a run row can fall back to when its feed sends no end kind.
+const STATUS_WORDS: [&str; 9] = [
+    "running",
+    "paused",
+    "needs_person",
+    "needs_chair",
+    "approved",
+    "landed",
+    "quarantined",
+    "failed",
+    "waiting",
+];
 
 /// `text` cut to `width` chars with a trailing `…` when it was longer, then padded to `width`.
 fn fit_cell(text: &str, width: usize) -> String {
@@ -1141,14 +1159,55 @@ fn stage_span(r: &Run, width: usize, theme: &Theme) -> Span<'static> {
     Span::styled(fit_cell(&label, width), style)
 }
 
-/// The runs line up to the stage column; the header and the rows share it so they align.
-fn run_lead(prefix: &str, run: &str, machine: &str) -> String {
+/// A project in one dim `width`-char cell: cut like RUN and MACHINE, `-` when the row has none.
+fn project_cell(project: Option<&str>, width: usize, theme: &Theme) -> Span<'static> {
+    let text = project.filter(|p| !p.is_empty()).unwrap_or("-");
+    Span::styled(fit_cell(text, width), Style::default().fg(theme.dim))
+}
+
+/// Chars the widest end chip can draw: the longest `\u{25cf} label` over every end kind and every
+/// status word, taken from `end_chip` itself so a new label cannot outgrow the reserve.
+fn widest_end_chip(theme: &Theme) -> usize {
+    let ends = [
+        RunEnd::Running,
+        RunEnd::Landed,
+        RunEnd::Approved,
+        RunEnd::Quarantined { cause: None },
+        RunEnd::Idle,
+        RunEnd::Died { cause: None },
+        RunEnd::Stopped,
+    ];
+    let chips = ends
+        .iter()
+        .map(|end| end_chip(Some(end), "", theme))
+        .chain(STATUS_WORDS.iter().map(|s| end_chip(None, s, theme)));
+    chips
+        .map(|chip| chip.spans.iter().map(|s| s.content.chars().count()).sum())
+        .max()
+        .unwrap_or(0)
+}
+
+/// The PROJECT column's width in a runs frame `inner_width` wide. It takes only what is left
+/// after the fixed columns, the end chip's `chip_reserve` and its own separator, so it shrinks
+/// first and can reach 0; RUN, MACHINE and the stage keep their widths.
+fn project_width(inner_width: usize, chip_reserve: usize) -> usize {
+    let spare = inner_width.saturating_sub(RUN_FIXED_WIDTH + chip_reserve);
+    PROJECT_WIDTH.min(spare.saturating_sub(1))
+}
+
+/// The runs line up to the stage column; the header and the rows share it so they align. A
+/// `project` cell sits between RUN and MACHINE with its own separator; `None` leaves it out.
+fn run_lead(
+    prefix: &str,
+    run: &str,
+    project: Option<Span<'static>>,
+    machine: &str,
+) -> Vec<Span<'static>> {
     let [run_w, machine_w, ..] = RUN_COLUMNS;
-    format!(
-        "{prefix}{} {} ",
-        fit_cell(run, run_w),
-        fit_cell(machine, machine_w)
-    )
+    std::iter::once(Span::raw(format!("{prefix}{} ", fit_cell(run, run_w))))
+        .chain(project.into_iter().flat_map(|p| [p, Span::raw(" ")]))
+        .chain([Span::raw(format!("{} ", fit_cell(machine, machine_w)))])
+        .collect()
 }
 
 /// The runs line from the stage column to the status column.
@@ -1156,32 +1215,37 @@ fn run_tail(att: &str, cost: &str) -> String {
     format!(" {att:>ATT_WIDTH$} {cost:>COST_WIDTH$} ")
 }
 
-fn run_header(theme: &Theme) -> Line<'static> {
-    let line = format!(
-        "{}{}{}STATUS",
-        run_lead("  ", "RUN", "MACHINE"),
+fn run_header(project_w: usize, theme: &Theme) -> Line<'static> {
+    let project = (project_w > 0).then(|| project_cell(Some("PROJECT"), project_w, theme));
+    let rest = format!(
+        "{}{}STATUS",
         fit_cell("STAGE", STAGE_WIDTH),
         run_tail("ATT", "COST")
     );
-    Line::styled(line, Style::default().fg(theme.dim))
+    let spans = run_lead("  ", "RUN", project, "MACHINE")
+        .into_iter()
+        .chain([Span::raw(rest)])
+        .collect::<Vec<_>>();
+    Line::from(spans).style(Style::default().fg(theme.dim))
 }
 
 /// One initiative's row: its newest run, the run's end chip, and a dim `×N` when the initiative
 /// had more than one run. A selected row is prefixed `▶` and sits on `theme.selected_row`.
-fn run_row(row: &CollapsedRun, selected: bool, theme: &Theme) -> Line<'static> {
+fn run_row(row: &CollapsedRun, selected: bool, project_w: usize, theme: &Theme) -> Line<'static> {
     let r = row.run;
     let prefix = if selected { "\u{25b6} " } else { "  " };
-    let lead = [
-        Span::raw(run_lead(prefix, &r.run, &r.machine)),
+    let project = (project_w > 0).then(|| project_cell(r.project.as_deref(), project_w, theme));
+    let lead = run_lead(prefix, &r.run, project, &r.machine);
+    let stage = [
         stage_span(r, STAGE_WIDTH, theme),
         Span::raw(run_tail(&r.attempt.to_string(), &cost_text(r.cost))),
     ];
     let chip = end_chip(r.end.as_ref(), &r.status, theme).spans;
     let line = Line::from(
         lead.into_iter()
+            .chain(stage)
             .chain(chip)
             .chain(count_suffix(row.count, theme))
-            .chain(project_span(r.project.as_deref(), theme))
             .collect::<Vec<_>>(),
     );
     if selected {
@@ -1200,13 +1264,20 @@ fn render_runs(
 ) {
     let block = numbered_block(5, FRAME_NAMES[4], theme, selected.is_some());
     let inner = block.inner(rect);
-    let header = std::iter::once(run_header(theme));
     let collapsed = collapse_runs(&snapshot.runs);
+    let count_w = collapsed
+        .iter()
+        .filter_map(|row| count_suffix(row.count, theme))
+        .map(|s| s.content.chars().count())
+        .max()
+        .unwrap_or(0);
+    let project_w = project_width(usize::from(inner.width), widest_end_chip(theme) + count_w);
+    let header = std::iter::once(run_header(project_w, theme));
     let shown = selected_run_row(&snapshot.runs, selected);
     let rows = collapsed
         .iter()
         .enumerate()
-        .map(|(i, row)| run_row(row, shown == Some(i), theme));
+        .map(|(i, row)| run_row(row, shown == Some(i), project_w, theme));
     let paragraph = Paragraph::new(header.chain(rows).collect::<Vec<_>>())
         .block(block)
         .style(base_style(theme));
@@ -2665,7 +2736,10 @@ mod tests {
         let rect = frame_rects(Rect::new(0, 0, 120, 40), &app)[4].expect("runs rect");
         let header = row_text(&terminal, rect.y + 1);
         let words: Vec<&str> = header.split_whitespace().skip(1).collect();
-        assert_eq!(words[..6].join(" "), "RUN MACHINE STAGE ATT COST STATUS");
+        assert_eq!(
+            words[..7].join(" "),
+            "RUN PROJECT MACHINE STAGE ATT COST STATUS"
+        );
         assert_eq!(
             fg_at(&terminal, rect.y + 1, "RUN"),
             Some(Color::Rgb(0x8b, 0x94, 0x9e))
@@ -3264,9 +3338,9 @@ mod tests {
         crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"))
     }
 
-    fn draw_project_runs_frame(app: &App, theme: &Theme) -> Terminal<TestBackend> {
+    fn draw_project_runs_frame(app: &App, theme: &Theme, width: u16) -> Terminal<TestBackend> {
         let snapshot = app.snapshot().expect("snapshot");
-        let mut terminal = Terminal::new(TestBackend::new(100, 6)).expect("terminal");
+        let mut terminal = Terminal::new(TestBackend::new(width, 6)).expect("terminal");
         terminal
             .draw(|f| render_runs(f, f.area(), snapshot, None, theme))
             .expect("draw should not fail");
@@ -3291,13 +3365,119 @@ mod tests {
     }
 
     #[test]
-    fn the_runs_frame_shows_a_dim_project_at_the_end_of_its_row() {
+    fn the_runs_frame_shows_a_dim_project_column_between_run_and_machine() {
         let theme = project_theme();
-        let terminal = draw_project_runs_frame(&runs_with_projects(), &theme);
+        let terminal = draw_project_runs_frame(&runs_with_projects(), &theme, 120);
         insta::assert_snapshot!(terminal.backend().to_string());
+        let header = col_of(&terminal, 1, "PROJECT");
         let x = col_of(&terminal, 2, "pat-skylight");
+        assert_eq!(x, header);
+        assert!(col_of(&terminal, 2, "alpha-1") < x && x < col_of(&terminal, 2, "m0"));
         assert_eq!(terminal.backend().buffer()[(x, 2)].fg, theme.dim);
-        assert!(!row_text(&terminal, 3).contains("pat-"));
+        assert!(!row_text(&terminal, 2).trim_end().ends_with("pat-skylight"));
+    }
+
+    #[test]
+    fn a_run_with_no_project_draws_a_dim_dash_in_the_project_column() {
+        let theme = project_theme();
+        let terminal = draw_project_runs_frame(&runs_with_projects(), &theme, 120);
+        let x = col_of(&terminal, 1, "PROJECT");
+        let cell = &terminal.backend().buffer()[(x, 3)];
+        assert_eq!(cell.symbol(), "-");
+        assert_eq!(cell.fg, theme.dim);
+        assert_eq!(terminal.backend().buffer()[(x + 1, 3)].symbol(), " ");
+    }
+
+    /// The widths of the PROJECT and RUN columns, read off the header row. A cut header still
+    /// starts `PROJE`.
+    fn header_widths(terminal: &Terminal<TestBackend>) -> (usize, usize) {
+        let run = col_of(terminal, 1, "RUN");
+        let machine = col_of(terminal, 1, "MACHINE");
+        if row_text(terminal, 1).contains("PROJE") {
+            let project = col_of(terminal, 1, "PROJE");
+            (
+                usize::from(machine - project - 1),
+                usize::from(project - run - 1),
+            )
+        } else {
+            (0, usize::from(machine - run - 1))
+        }
+    }
+
+    #[test]
+    fn a_narrow_runs_frame_shrinks_project_first_and_keeps_the_longest_chip_whole() {
+        let theme = project_theme();
+        let runs = [
+            with_project(&run_json("alpha-1", "needs_person"), r#""pat-skylight""#),
+            with_project(&run_json("beta-1", "needs_person"), "null"),
+        ];
+        let app = feed_app(&runs.join(","), "", "");
+        let chip = "\u{25cf} needs_person";
+        let at = |width| draw_project_runs_frame(&app, &theme, width);
+        let (wide, hundred, ninety) = (at(120), at(100), at(90));
+        for terminal in [&wide, &hundred, &ninety] {
+            assert!(row_text(terminal, 1).contains("STATUS"));
+            assert!(row_text(terminal, 2).contains(chip));
+            assert!(row_text(terminal, 3).contains(chip));
+            assert_eq!(header_widths(terminal).1, RUN_COLUMNS[0]);
+        }
+        assert_eq!(header_widths(&wide).0, PROJECT_WIDTH);
+        let narrow = header_widths(&hundred).0;
+        assert!(0 < narrow && narrow < PROJECT_WIDTH);
+        assert_eq!(
+            col_of(&hundred, 2, "pat-sky"),
+            col_of(&hundred, 1, "PROJECT")
+        );
+        assert_eq!(header_widths(&ninety).0, 0);
+        assert!(!row_text(&ninety, 2).contains("pat-"));
+    }
+
+    #[test]
+    fn the_count_suffix_is_reserved_beside_the_longest_chip() {
+        let theme = project_theme();
+        let runs = [
+            with_project(&run_json("alpha-1", "needs_person"), r#""pat-skylight""#),
+            with_project(&run_json("alpha-2", "needs_person"), r#""pat-skylight""#),
+        ];
+        let app = feed_app(&runs.join(","), "", "");
+        let terminal = draw_project_runs_frame(&app, &theme, 100);
+        assert!(row_text(&terminal, 2).contains("\u{25cf} needs_person \u{d7}2"));
+        let (project, run) = header_widths(&terminal);
+        assert!(project < PROJECT_WIDTH);
+        assert_eq!(run, RUN_COLUMNS[0]);
+    }
+
+    #[test]
+    fn the_widest_end_chip_covers_the_longest_status_word() {
+        let theme = project_theme();
+        assert!(widest_end_chip(&theme) >= "\u{25cf} needs_person".chars().count());
+        assert!(widest_end_chip(&theme) >= "\u{25cf} quarantined".chars().count());
+    }
+
+    #[test]
+    fn project_width_takes_only_what_is_left_after_the_fixed_columns_and_chip() {
+        let chip = 14;
+        let full = RUN_FIXED_WIDTH + chip;
+        assert_eq!(project_width(full + 100, chip), PROJECT_WIDTH);
+        assert_eq!(project_width(full + 10, chip), 9);
+        assert_eq!(project_width(full + 10, chip + 3), 6);
+        assert_eq!(project_width(full + 1, chip), 0);
+        assert_eq!(project_width(full, chip), 0);
+        assert_eq!(project_width(0, chip), 0);
+    }
+
+    #[test]
+    fn project_cell_cuts_pads_dims_and_falls_back_to_a_dash() {
+        let theme = project_theme();
+        let cell = project_cell(Some("alpha"), 8, &theme);
+        assert_eq!(cell.content, "alpha   ");
+        assert_eq!(cell.style.fg, Some(theme.dim));
+        assert_eq!(project_cell(None, 4, &theme).content, "-   ");
+        assert_eq!(project_cell(Some(""), 4, &theme).content, "-   ");
+        assert_eq!(
+            project_cell(Some("pat-skylight"), 6, &theme).content,
+            "pat-s\u{2026}"
+        );
     }
 
     fn queue_with_projects() -> App {

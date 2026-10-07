@@ -1,0 +1,11 @@
+---
+source: src/ui/regatta.rs
+assertion_line: 3371
+expression: terminal.backend().to_string()
+---
+"╭ 5 runs ──────────────────────────────────────────────────────────────────────────────────────────────────────────────╮"
+"│  RUN          PROJECT        MACHINE    STAGE                               ATT    COST STATUS                       │"
+"│  alpha-1      pat-skylight   m0         p · n                                 2   $1.50 ● running                    │"
+"│  beta-1       -              m0         p · n                                 2   $1.50 ● running                    │"
+"│                                                                                                                      │"
+"╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯"
