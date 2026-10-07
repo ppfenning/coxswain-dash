@@ -39,6 +39,24 @@ impl WidthMode {
     }
 }
 
+/// The terminal's cells inside the panel's border, for the rect the panel is drawn into.
+fn pane_inner(rect: Rect) -> Rect {
+    Block::bordered().inner(rect)
+}
+
+/// The pty's `(rows, cols)` for a panel in `mode` on a `screen`, with `card_options` the option
+/// count of a shown decision card. Follows `render_panel`: split the page, the card above, the
+/// border off.
+// The pty spawn and resize adopt this in a follow-up task.
+#[allow(dead_code)]
+pub fn inner_size(screen: Rect, mode: WidthMode, card_options: Option<usize>) -> (u16, u16) {
+    let (_, side) = crate::ui::split_panel(screen, Some(mode.percent()));
+    let side = side.unwrap_or_default();
+    let (_, terminal) = crate::ui::panel_rects(side, card_options);
+    let inner = pane_inner(terminal);
+    (inner.height, inner.width)
+}
+
 /// What `handle_key` did with a key, so the caller can route on it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyOutcome {
@@ -312,7 +330,7 @@ impl<P: PtySession> ChairPanel<P> {
             .title(title(self.focused))
             .style(Style::new().fg(theme.fg).bg(theme.bg))
             .border_style(Style::new().fg(border).bg(theme.bg));
-        let inner = block.inner(area);
+        let inner = pane_inner(area);
         frame.render_widget(block, area);
         match (&self.screen, &self.error) {
             (Some(parser), _) => {
@@ -644,6 +662,92 @@ mod tests {
         assert_eq!((page.right(), pane.x), (78, 78));
         assert_eq!(rects[3].map(|lanes| lanes.right()), Some(page.right()));
         assert!(rects.iter().flatten().all(|r| r.right() <= pane.x));
+    }
+
+    #[test]
+    fn the_inner_size_on_120x40_is_the_pane_less_borders_and_card() {
+        let sizes = [
+            (WidthMode::Narrow, None, (38, 40)),
+            (WidthMode::Narrow, Some(2), (26, 40)),
+            (WidthMode::Wide, None, (38, 70)),
+            (WidthMode::Wide, Some(2), (26, 70)),
+            (WidthMode::Full, None, (38, 118)),
+            (WidthMode::Full, Some(2), (26, 118)),
+        ];
+        for (mode, card, expected) in sizes {
+            assert_eq!(
+                inner_size(SCREEN, mode, card),
+                expected,
+                "{mode:?} {card:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_card_never_takes_more_than_half_the_pane() {
+        assert_eq!(inner_size(SCREEN, WidthMode::Narrow, Some(40)), (18, 40));
+    }
+
+    /// A feed whose chair session is `s1`, with one open two-option decision when `decided`.
+    fn feed(decided: bool) -> crate::feed::FeedSnapshot {
+        let decisions = if decided {
+            r#"[{"id":"d1","question":"Ship the preview?","options":["ship","hold"],"context":"Spend is under the stop.","asked_at":"2026-09-29T00:00:00Z"}]"#
+        } else {
+            "[]"
+        };
+        let json = format!(
+            r#"{{"schema":1,"at":"2026-09-29T00:00:00Z","chair":{{"holder":"chair@omarchy:1","host":"omarchy","epoch":1,"liveness":"live","beat_age_s":4,"session":"s1"}},"spend":{{"five_hour_fraction":0.1,"five_hour_source":"meter","weekly_fraction":0.2,"weekly_source":"meter","hard_stop_fraction":0.9,"five_hour_resets_at":"2026-09-29T02:00:00Z","weekly_resets_at":"2026-10-04T04:00:00Z"}},"machines":[],"runs":[],"queue":[],"inbox":[],"watch":[],"decisions":{decisions}}}"#
+        );
+        crate::feed::parse_snapshot(&json).expect("literal snapshot should parse")
+    }
+
+    /// The `(rows, cols)` of the cells inside the border `render_panel` drew on a 120x40 screen.
+    /// The panel runs to the screen's right and bottom edges, so its title row gives the rest.
+    fn drawn_inner(app: &crate::app::App) -> (u16, u16) {
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        terminal
+            .draw(|f| crate::ui::render(f, app, &resolve(ThemeId::Regatta)))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let side = crate::ui::split_page(SCREEN, app).1.expect("pane is shown");
+        let (title_x, title_y) = (0..SCREEN.height)
+            .find_map(|y| {
+                let row: String = (side.x..SCREEN.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect();
+                row.find(" chair \u{b7}")
+                    .map(|byte| (side.x + row[..byte].chars().count() as u16, y))
+            })
+            .expect("the panel title is on screen");
+        // The title starts one cell right of the top-left corner.
+        (
+            SCREEN.height - title_y - 2,
+            SCREEN.width - (title_x - 1) - 2,
+        )
+    }
+
+    #[test]
+    fn the_inner_size_is_the_size_render_panel_draws_at_each_width_and_with_the_card() {
+        for card in [None, Some(2)] {
+            let mut app = crate::app::App::default()
+                .with_pty(Box::new(FakePty::with_output(b"chair> waiting\r\n")));
+            app.apply_snapshot(feed(false));
+            if card.is_some() {
+                app.apply_snapshot(feed(true));
+                assert!(app.card_visible());
+            } else {
+                app.toggle_chair_panel();
+            }
+            for _ in 0..3 {
+                let mode = app.chair_panel().width();
+                assert_eq!(
+                    drawn_inner(&app),
+                    inner_size(SCREEN, mode, card),
+                    "{mode:?} {card:?}"
+                );
+                app.chair_panel_mut().cycle_width();
+            }
+        }
     }
 
     fn click(column: u16, row: u16) -> crossterm::event::MouseEvent {
