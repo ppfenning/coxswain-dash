@@ -1777,7 +1777,7 @@ fn render_run_cost(
 }
 
 /// Key and label pairs of the key bar: exactly the keys `input::handle_key` and `main` act on.
-const KEY_BAR: [(&str, &str); 8] = [
+const KEY_BAR: [(&str, &str); 9] = [
     ("1-9", "frames"),
     ("\u{2190}\u{2192}", "focus"),
     ("\u{2191}\u{2193}", "select"),
@@ -1785,6 +1785,7 @@ const KEY_BAR: [(&str, &str); 8] = [
     ("t", "theme"),
     ("v", "layout"),
     ("g", "group queue"),
+    ("`", "chair"),
     ("q", "quit"),
 ];
 
@@ -1809,8 +1810,9 @@ pub(super) fn action_hints(focus: Focus) -> Vec<(char, &'static str)> {
 
 /// The key bar for a `width`-column row: the fixed keys, a `│`, the focused list's action keys,
 /// `:` for the palette, then the view keys. The part after the `│` shows before the fixed keys do.
-/// When the row is too narrow, fixed keys are dropped whole from the end. Only if the tail alone is
-/// still too wide are action hints dropped whole from the end. A hint is never cut mid-word.
+/// When the row is too narrow, fixed keys are dropped whole from the end, except `q quit`, which goes
+/// last. Only if the tail alone is still too wide are action hints dropped whole from the end. A hint
+/// is never cut mid-word.
 fn key_bar_line(focus: Focus, width: u16, theme: &Theme) -> Line<'static> {
     let key = Style::default().fg(theme.border_focus);
     let label = Style::default().fg(theme.dim);
@@ -1858,19 +1860,31 @@ fn key_bar_line(focus: Focus, width: u16, theme: &Theme) -> Line<'static> {
         })
         .collect();
     let room = usize::from(width).saturating_sub(Line::from(tail.clone()).width());
-    let fit = fixed
+    let item_width = |item: &Vec<Span<'static>>| Line::from(item.clone()).width();
+    let (quit, others) = fixed.split_last().expect("KEY_BAR is not empty");
+    let quit_width = item_width(quit);
+    let fit = others
         .iter()
         .scan(0, |used, item| {
-            *used += Line::from(item.clone()).width();
+            *used += item_width(item);
             Some(*used)
         })
-        .take_while(|used| *used <= room)
+        .take_while(|used| *used + quit_width <= room)
         .count();
+    // With no other fixed key shown, `q quit` loses its leading separator.
+    let bare_quit = quit[1..].to_vec();
+    let quit_shown = match (fit, item_width(&bare_quit) <= room) {
+        (0, true) => bare_quit,
+        (0, false) => Vec::new(),
+        _ => quit.clone(),
+    };
     Line::from(
-        fixed
-            .into_iter()
+        others
+            .iter()
             .take(fit)
             .flatten()
+            .cloned()
+            .chain(quit_shown)
             .chain(tail)
             .collect::<Vec<_>>(),
     )
@@ -3069,7 +3083,7 @@ mod tests {
         let row = row_text(&terminal, 39);
         assert_eq!(
             row.trim_end(),
-            "1-9 frames \u{b7} \u{2190}\u{2192} focus \u{b7} \u{2191}\u{2193} select \u{b7} \u{23ce} drill down \u{b7} t theme \u{b7} v layout \u{b7} g group queue \u{b7} q quit \u{2502} p pause  k kill  m move \u{b7} : palette  w watch  $ spend  h health"
+            "1-9 frames \u{b7} \u{2190}\u{2192} focus \u{b7} \u{2191}\u{2193} select \u{b7} \u{23ce} drill down \u{b7} t theme \u{b7} v layout \u{b7} g group queue \u{b7} ` chair \u{b7} q quit \u{2502} p pause  k kill  m move \u{b7} : palette  w watch  $ spend  h health"
         );
         assert_eq!(
             fg_at(&terminal, 39, "$ spend"),
@@ -3128,7 +3142,7 @@ mod tests {
         row_text(&terminal, 39).trim_end().to_string()
     }
 
-    const FIXED_KEYS: &str = "1-9 frames \u{b7} \u{2190}\u{2192} focus \u{b7} \u{2191}\u{2193} select \u{b7} \u{23ce} drill down \u{b7} t theme \u{b7} v layout \u{b7} g group queue \u{b7} q quit";
+    const FIXED_KEYS: &str = "1-9 frames \u{b7} \u{2190}\u{2192} focus \u{b7} \u{2191}\u{2193} select \u{b7} \u{23ce} drill down \u{b7} t theme \u{b7} v layout \u{b7} g group queue \u{b7} ` chair \u{b7} q quit";
 
     const FOCUS_ACTIONS: [(Focus, &str); 4] = [
         (Focus::Runs, "p pause  k kill  m move"),
@@ -3155,19 +3169,33 @@ mod tests {
                 )),
                 "{row}"
             );
-            assert!(row.starts_with("1-9 frames"), "{row}");
+            assert!(row.contains("q quit"), "{row}");
         }
     }
 
     #[test]
-    fn a_fixed_key_that_does_not_fit_is_dropped_whole_from_the_end() {
+    fn the_key_bar_lists_the_backtick_chair_key() {
+        assert!(KEY_BAR.contains(&("`", "chair")));
+        assert!(key_bar_row(Focus::Runs, 200).contains("` chair"));
+    }
+
+    #[test]
+    fn q_quit_is_the_last_fixed_key_to_be_cut() {
+        for (focus, _) in FOCUS_ACTIONS.into_iter().chain([(Focus::History, "")]) {
+            let row = key_bar_row(focus, 120);
+            assert!(row.contains("q quit"), "{row}");
+        }
+    }
+
+    #[test]
+    fn a_fixed_key_that_does_not_fit_is_dropped_whole_before_q_quit() {
         assert_eq!(
             key_bar_row(Focus::Machines, 120),
-            "1-9 frames \u{2502} + lanes up  - lanes down  d drain  a activate  A add machine \u{b7} : palette  w watch  $ spend  h health"
+            "q quit \u{2502} + lanes up  - lanes down  d drain  a activate  A add machine \u{b7} : palette  w watch  $ spend  h health"
         );
         assert_eq!(
             key_bar_row(Focus::Queue, 160),
-            "1-9 frames \u{b7} \u{2190}\u{2192} focus \u{b7} \u{2191}\u{2193} select \u{b7} \u{23ce} drill down \u{b7} t theme \u{2502} ] priority up  [ priority down  n new  e edit  x remove \u{b7} : palette  w watch  $ spend  h health"
+            "1-9 frames \u{b7} \u{2190}\u{2192} focus \u{b7} \u{2191}\u{2193} select \u{b7} \u{23ce} drill down \u{b7} q quit \u{2502} ] priority up  [ priority down  n new  e edit  x remove \u{b7} : palette  w watch  $ spend  h health"
         );
     }
 
@@ -3217,7 +3245,7 @@ mod tests {
     fn the_key_bar_keeps_its_fixed_keys_and_adds_the_focused_lists_actions() {
         for (focus, actions) in FOCUS_ACTIONS {
             assert_eq!(
-                key_bar_row(focus, 200),
+                key_bar_row(focus, 240),
                 format!("{FIXED_KEYS} \u{2502} {actions} \u{b7} : palette  {VIEW_KEYS}")
             );
         }

@@ -1,6 +1,6 @@
 ---
 source: src/ui/mod.rs
-assertion_line: 922
+assertion_line: 1065
 expression: "excerpt(&app, ThemeId::HarborLight, &[15..23, 39..40])"
 ---
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
@@ -11,4 +11,4 @@ expression: "excerpt(&app, ThemeId::HarborLight, &[15..23, 39..40])"
 │                             │ y run    n cancel                                        │                             │
 │                             └──────────────────────────────────────────────────────────┘                             │
 ╰───────────────────────────────────────────────────────────────────╯╰─────────────────────────────────────────────────╯
-1-9 frames · ←→ focus · ↑↓ select · ⏎ drill down │ p pause  k kill  m move · : palette  w watch  $ spend  h health
+1-9 frames · ←→ focus · ↑↓ select · q quit │ p pause  k kill  m move · : palette  w watch  $ spend  h health

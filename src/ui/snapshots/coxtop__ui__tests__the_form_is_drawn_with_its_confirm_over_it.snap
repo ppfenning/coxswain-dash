@@ -1,6 +1,6 @@
 ---
 source: src/ui/mod.rs
-assertion_line: 944
+assertion_line: 1087
 expression: text
 ---
 │                                                                                                                      │
@@ -15,4 +15,4 @@ expression: text
 ╭ 8 run cost ───────────────└──────────────────────────────────────────────────────────────┘───────────────────────────╮
 │$2  │                                                                                                    ┌───────────┐│
 │    │                                                                                                    │dash-feed-1││
-1-9 frames · ←→ focus · ↑↓ select · ⏎ drill down │ p pause  k kill  m move · : palette  w watch  $ spend  h health
+1-9 frames · ←→ focus · ↑↓ select · q quit │ p pause  k kill  m move · : palette  w watch  $ spend  h health
