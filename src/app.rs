@@ -869,6 +869,12 @@ impl App {
         self.status.as_ref()
     }
 
+    /// Sets a Failed status describing why `cmd` could not be spawned.
+    #[allow(dead_code)] // The feed, detail and exec spawn sites adopt this in follow-up tasks.
+    pub(crate) fn set_spawn_error(&mut self, cmd: &str, err: &std::io::Error) {
+        self.status = Some((StatusLevel::Failed, spawn_error_status(cmd, err)));
+    }
+
     /// What an action key applies to: the open detail's entity, else the focused list's row.
     pub fn target(&self) -> Option<Target> {
         // The watch, spend and health views name no entity, so no action key applies to them.
@@ -1237,6 +1243,16 @@ pub fn group_queue(rows: &[QueueEntry]) -> Vec<(&str, Vec<&QueueEntry>)> {
     named
         .chain((!unassigned.is_empty()).then_some((OTHER_GROUP, unassigned)))
         .collect()
+}
+
+/// One status-line sentence for a command that failed to spawn. A missing binary is the common case.
+#[allow(dead_code)] // The feed, detail and exec spawn sites adopt this in follow-up tasks.
+pub(crate) fn spawn_error_status(cmd: &str, err: &std::io::Error) -> String {
+    match err.kind() {
+        std::io::ErrorKind::NotFound => format!("{cmd} not found on PATH"),
+        std::io::ErrorKind::PermissionDenied => format!("{cmd}: permission denied"),
+        _ => format!("{cmd}: {err}"),
+    }
 }
 
 #[cfg(test)]
@@ -2288,6 +2304,35 @@ mod tests {
         app.open_palette();
         app.modal_key(press(crossterm::event::KeyCode::Esc));
         assert_eq!(app.modal(), None);
+    }
+
+    #[test]
+    fn spawn_error_status_names_a_missing_binary() {
+        let err = std::io::Error::from(std::io::ErrorKind::NotFound);
+        assert_eq!(spawn_error_status("cox", &err), "cox not found on PATH");
+    }
+
+    #[test]
+    fn spawn_error_status_names_a_permission_denial() {
+        let err = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+        assert_eq!(spawn_error_status("cox", &err), "cox: permission denied");
+    }
+
+    #[test]
+    fn spawn_error_status_includes_the_text_of_any_other_error() {
+        let err = std::io::Error::other("boom");
+        assert_eq!(spawn_error_status("cox", &err), "cox: boom");
+    }
+
+    #[test]
+    fn set_spawn_error_sets_a_failed_status() {
+        let mut app = App::default();
+        let err = std::io::Error::from(std::io::ErrorKind::NotFound);
+        app.set_spawn_error("cox", &err);
+        assert_eq!(
+            app.status(),
+            Some(&(StatusLevel::Failed, "cox not found on PATH".to_string()))
+        );
     }
 
     #[test]
