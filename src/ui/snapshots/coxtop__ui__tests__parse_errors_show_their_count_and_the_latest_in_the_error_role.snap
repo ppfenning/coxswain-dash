@@ -1,0 +1,7 @@
+---
+source: src/ui/mod.rs
+assertion_line: 1585
+expression: "rows(&buffer)[38..40].join(\"\\n\")"
+---
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+3 bad lines: expected value at line 1
