@@ -30,6 +30,7 @@ use crate::pty::{PtySession, RealPty};
 use crate::settings;
 use crate::settings_screen::{ScreenEvent, SettingsScreen};
 use crate::settings_stage::{StagedEdit, argv as set_argv, command_string};
+use crate::ui::rows;
 
 /// The pty size the panel opens at. The rendering task sizes it from the layout; until then a
 /// resize event from `main` is the only thing that changes it.
@@ -718,13 +719,12 @@ impl App {
     }
 
     fn focus_index(&self) -> usize {
-        match self.focus() {
-            Focus::Runs => 0,
-            Focus::Queue => 1,
-            Focus::Machines => 2,
-            Focus::History => 3,
-            Focus::Inbox => 4,
-        }
+        focus_slot(self.focus())
+    }
+
+    /// The selection index `focus`'s list holds on the current page, whichever list has focus.
+    pub fn selected_in(&self, focus: Focus) -> usize {
+        self.selected[self.page_index()][focus_slot(focus)]
     }
 
     /// The current page's, current focus's selection index. The history and inbox rows are
@@ -791,10 +791,36 @@ impl App {
         }
     }
 
+    /// The drawn rows of the focused list when it is the runs or the queue, `None` for any other
+    /// list or before the first snapshot.
+    fn focused_rows(&self) -> Option<rows::Rows> {
+        let snap = self.snapshot.as_ref()?;
+        match self.focus() {
+            Focus::Runs => Some(rows::runs_rows(&snap.runs)),
+            Focus::Queue => Some(rows::queue_rows(&snap.queue, self.queue_grouped)),
+            _ => None,
+        }
+    }
+
+    /// Moves a runs or queue selection one entity line over, skipping headers and stopping at the
+    /// ends. `false`, having done nothing, when the focused list is not drawn from rows.
+    fn step_rows(&mut self, forward: bool) -> bool {
+        let Some(rows) = self.focused_rows() else {
+            return false;
+        };
+        let (p, f) = (self.page_index(), self.focus_index());
+        self.selected[p][f] = rows.step(self.selected(), forward).unwrap_or(0);
+        true
+    }
+
     /// Moves the focused list's selection index forward one row, wrapping past the end. The
-    /// history list stops at its last row instead of wrapping. A no-op, staying at 0, when the
-    /// focused list is empty or there is no snapshot yet.
+    /// runs and queue lists move over their drawn rows and stop at the last one, as does the
+    /// history list. A no-op, staying at 0, when the focused list is empty or there is no
+    /// snapshot yet.
     pub fn select_next(&mut self) {
+        if self.step_rows(true) {
+            return;
+        }
         let len = self.focused_list_len();
         let (p, f) = (self.page_index(), self.focus_index());
         let current = self.selected();
@@ -806,8 +832,11 @@ impl App {
     }
 
     /// Moves the focused list's selection index back one row, wrapping before the start. The
-    /// history list stops at its first row instead of wrapping.
+    /// runs, queue and history lists stop at their first row instead of wrapping.
     pub fn select_prev(&mut self) {
+        if self.step_rows(false) {
+            return;
+        }
         let len = self.focused_list_len();
         let (p, f) = (self.page_index(), self.focus_index());
         let current = self.selected();
@@ -1268,6 +1297,17 @@ impl App {
     }
 }
 
+/// The slot of `focus` in the per-page selection array.
+fn focus_slot(focus: Focus) -> usize {
+    match focus {
+        Focus::Runs => 0,
+        Focus::Queue => 1,
+        Focus::Machines => 2,
+        Focus::History => 3,
+        Focus::Inbox => 4,
+    }
+}
+
 /// The label of the group holding rows with no project.
 const OTHER_GROUP: &str = "other";
 
@@ -1684,13 +1724,80 @@ mod tests {
         app.select_next();
         assert_eq!(app.selected(), 2);
         app.select_next();
-        assert_eq!(app.selected(), 0);
+        assert_eq!(app.selected(), 2);
     }
 
     #[test]
-    fn select_prev_wraps_around_the_runs_list() {
+    fn select_prev_stops_at_the_first_run() {
         let mut app = App::default();
         app.apply_snapshot(make_rich_snapshot());
+        app.select_prev();
+        assert_eq!(app.selected(), 0);
+    }
+
+    /// A snapshot holding the given run ids and queue rows, as `(initiative, project)`.
+    fn snapshot_with_runs_and_queue(runs: &[&str], queue: &[(&str, Option<&str>)]) -> FeedSnapshot {
+        let runs = runs
+            .iter()
+            .map(|id| {
+                format!(
+                    r#"{{"run":"{id}","machine":"m0","phase":"p","node":"n","attempt":1,"turns":1,"cost":0.0,"verdict":"ok","status":"running"}}"#
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        let queue = queue
+            .iter()
+            .map(|(initiative, project)| {
+                let project = project.map_or("null".to_string(), |p| format!("\"{p}\""));
+                format!(
+                    r#"{{"initiative":"{initiative}","priority":1,"phases_landed":0,"phases_total":1,"current_phase":"p","project":{project}}}"#
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        let json = format!(
+            r#"{{"schema":1,"at":"2026-09-29T00:00:00Z","chair":{{"holder":"h","host":"h","epoch":1,"liveness":"live","beat_age_s":0}},"spend":{{"five_hour_fraction":0.0,"five_hour_source":"meter","weekly_fraction":0.0,"weekly_source":"meter","hard_stop_fraction":0.0,"five_hour_resets_at":"2026-09-29T00:00:00Z","weekly_resets_at":"2026-09-29T00:00:00Z"}},"machines":[],"runs":[{runs}],"queue":[{queue}],"inbox":[],"watch":[]}}"#
+        );
+        crate::feed::parse_snapshot(&json).expect("literal snapshot should parse")
+    }
+
+    #[test]
+    fn an_arrow_steps_over_a_collapsed_initiative_row_once() {
+        let mut app = App::default();
+        app.apply_snapshot(snapshot_with_runs_and_queue(&["a-1", "a-2", "b-1"], &[]));
+        // Rows drawn: a (opens a-2), b. One arrow from a lands on b.
+        app.select_next();
+        assert_eq!(app.selected(), 2);
+        app.select_next();
+        assert_eq!(app.selected(), 2);
+        app.select_prev();
+        assert_eq!(app.selected(), 1);
+    }
+
+    #[test]
+    fn arrows_on_the_grouped_queue_walk_the_drawn_order_and_skip_headers() {
+        let mut app = App::default();
+        app.apply_snapshot(snapshot_with_runs_and_queue(
+            &[],
+            &[
+                ("q0", Some("x")),
+                ("q1", None),
+                ("q2", Some("y")),
+                ("q3", Some("x")),
+            ],
+        ));
+        app.toggle_queue_grouped();
+        app.cycle_focus_next();
+        assert_eq!(app.focus(), Focus::Queue);
+        // Drawn: x, q0, q3, y, q2, other, q1.
+        let walked: Vec<usize> = (0..4)
+            .map(|_| {
+                app.select_next();
+                app.selected()
+            })
+            .collect();
+        assert_eq!(walked, vec![3, 2, 1, 1]);
         app.select_prev();
         assert_eq!(app.selected(), 2);
     }
