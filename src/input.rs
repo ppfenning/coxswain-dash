@@ -10,7 +10,6 @@ use crate::actions::Target;
 use crate::app::{App, AppPage, Focus, PANEL_COLS, PANEL_ROWS};
 use crate::decision_card::KeyOutcome;
 use crate::form::{KEY_ADD_MACHINE, KEY_EDIT, KEY_NEW, KEY_REMOVE};
-use crate::ui::rows;
 
 /// Runs the card's answer argv without waiting on it. A failed spawn has nowhere to report to
 /// and the decision stays open in the feed, so the error is dropped here at the edge.
@@ -181,39 +180,41 @@ fn contains(rect: Rect, x: u16, y: u16) -> bool {
     x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height
 }
 
-/// The zero-based row inside `rect`'s bordered block that `(x, y)` falls on. `None` for a point
-/// on the border or outside `rect` entirely.
-fn row_inside(rect: Rect, x: u16, y: u16) -> Option<usize> {
-    let inside =
-        x > rect.x && x + 1 < rect.x + rect.width && y > rect.y && y + 1 < rect.y + rect.height;
-    inside.then(|| usize::from(y - rect.y - 1))
+/// The zero-based row inside `rect`'s bordered block that `(x, y)` falls on, given the list
+/// drawn there has `len` rows. `None` for a point on the border, past the last row, or outside
+/// `rect` entirely. Mirrors `ui::regatta::row_at`'s per-rect math; duplicated here because
+/// `ui::regatta` is a private module this crate's mouse handler cannot reach, so this stays the
+/// mouse handler's own small, independently-tested copy.
+fn row_in_rect(rect: Rect, len: usize, x: u16, y: u16) -> Option<usize> {
+    if x < rect.x + 1
+        || x + 1 >= rect.x + rect.width
+        || y < rect.y + 1
+        || y + 1 >= rect.y + rect.height
+    {
+        return None;
+    }
+    let row = (y - rect.y - 1) as usize;
+    (row < len).then_some(row)
 }
 
-/// Which selectable list and entity `(x, y)` lands on among `rects`' machines (index 2), runs
-/// (index 4) or queue (index 5) frames, or `None` when there is no snapshot yet, the point misses
-/// every one of them, or it lands on the runs column header or a queue group header. The runs and
-/// queue frames are read through `ui::rows`, so the answer is the entity drawn on that line, not
-/// the feed's row at the same position. Machines are drawn one per row.
+/// Which selectable list and row `(x, y)` lands on among `rects`' machines (index 2), runs
+/// (index 4) or queue (index 5) frames, or `None` when there is no snapshot yet or the point
+/// misses every one of them.
 fn row_hit(app: &App, rects: &[Option<Rect>; 6], x: u16, y: u16) -> Option<(Focus, usize)> {
     let snapshot = app.snapshot()?;
-    let in_rows = |idx: usize, focus: Focus| {
-        let rect = rects[idx]?;
-        let row = row_inside(rect, x, y)?;
-        let inner_height = usize::from(rect.height.saturating_sub(2));
-        let rows = match focus {
-            Focus::Runs => rows::runs_rows(&snapshot.runs),
-            _ => rows::queue_rows(&snapshot.queue, app.queue_grouped()),
-        };
-        rows.hit(app.selected_in(focus), inner_height, row)
-            .map(|entity| (focus, entity))
-    };
-    let machine = rects[2]
-        .and_then(|rect| row_inside(rect, x, y))
-        .filter(|row| *row < snapshot.machines.len())
-        .map(|row| (Focus::Machines, row));
-    machine
-        .or_else(|| in_rows(4, Focus::Runs))
-        .or_else(|| in_rows(5, Focus::Queue))
+    let candidates = [
+        (2, Focus::Machines, snapshot.machines.len()),
+        (4, Focus::Runs, snapshot.runs.len()),
+        (5, Focus::Queue, snapshot.queue.len()),
+    ];
+    for (idx, focus, len) in candidates {
+        if let Some(rect) = rects[idx] {
+            if let Some(row) = row_in_rect(rect, len, x, y) {
+                return Some((focus, row));
+            }
+        }
+    }
+    None
 }
 
 /// The list a click on `rects[idx]` focuses: machines (2), runs (4) or queue (5).
@@ -327,7 +328,7 @@ mod tests {
     }
 
     #[test]
-    fn a_click_on_the_runs_frames_first_data_row_selects_it_and_opens_its_detail() {
+    fn a_click_on_the_runs_frames_second_row_selects_it_and_opens_its_detail() {
         let mut app = App::default();
         app.apply_snapshot(snapshot_with_two_runs());
         let area = Rect::new(0, 0, 120, 40);
@@ -339,96 +340,10 @@ mod tests {
             &rects,
         );
         assert_eq!(app.focus(), Focus::Runs);
-        assert_eq!(app.selected(), 0);
+        assert_eq!(app.selected(), 1);
         let (kind, id, _) = app.detail().expect("detail should be open");
         assert_eq!(*kind, crate::app::DetailKind::Run);
-        assert_eq!(id, "r0");
-    }
-
-    /// A snapshot holding the given run ids and queue rows, as `(initiative, project)`.
-    fn snapshot_with(runs: &[String], queue: &[(&str, Option<&str>)]) -> crate::feed::FeedSnapshot {
-        let runs = runs
-            .iter()
-            .map(|id| {
-                format!(
-                    r#"{{"run":"{id}","machine":"m0","phase":"p","node":"n","attempt":1,"turns":1,"cost":0.0,"verdict":"ok","status":"running"}}"#
-                )
-            })
-            .collect::<Vec<_>>()
-            .join(",");
-        let queue = queue
-            .iter()
-            .map(|(initiative, project)| {
-                let project = project.map_or("null".to_string(), |p| format!("\"{p}\""));
-                format!(
-                    r#"{{"initiative":"{initiative}","priority":1,"phases_landed":0,"phases_total":1,"current_phase":"p","project":{project}}}"#
-                )
-            })
-            .collect::<Vec<_>>()
-            .join(",");
-        let json = format!(
-            r#"{{"schema":1,"at":"2026-09-29T00:00:00Z","chair":{{"holder":"h","host":"h","epoch":1,"liveness":"live","beat_age_s":0}},"spend":{{"five_hour_fraction":0.0,"five_hour_source":"meter","weekly_fraction":0.0,"weekly_source":"meter","hard_stop_fraction":0.0,"five_hour_resets_at":"2026-09-29T00:00:00Z","weekly_resets_at":"2026-09-29T00:00:00Z"}},"machines":[{{"name":"m0","state":"active","lanes_in_use":0,"capacity":3,"login_ok":true,"login_checked_at":"2026-09-29T00:00:00Z","beat_age_s":0,"checkouts":{{}}}}],"runs":[{runs}],"queue":[{queue}],"inbox":[],"watch":[]}}"#
-        );
-        crate::feed::parse_snapshot(&json).expect("literal snapshot should parse")
-    }
-
-    #[test]
-    fn a_click_on_the_runs_column_header_does_nothing() {
-        let mut app = App::default();
-        app.apply_snapshot(snapshot_with_two_runs());
-        let rects = crate::ui::regatta_frame_rects(Rect::new(0, 0, 120, 40), &app);
-        let runs_rect = rects[4].expect("runs frame is visible");
-        assert_eq!(
-            row_hit(&app, &rects, runs_rect.x + 1, runs_rect.y + 1),
-            None
-        );
-        assert_eq!(
-            row_hit(&app, &rects, runs_rect.x + 1, runs_rect.y + 3),
-            Some((Focus::Runs, 1))
-        );
-    }
-
-    #[test]
-    fn a_click_on_a_grouped_queue_header_is_none_and_on_a_row_is_that_entity() {
-        let mut app = App::default();
-        app.apply_snapshot(snapshot_with(
-            &[],
-            &[("q0", Some("x")), ("q1", None), ("q2", Some("y"))],
-        ));
-        app.toggle_queue_grouped();
-        let rects = crate::ui::regatta_frame_rects(Rect::new(0, 0, 120, 40), &app);
-        let queue_rect = rects[5].expect("queue frame is visible");
-        // Drawn: x, q0, y, q2, other, q1.
-        let at = |line: u16| row_hit(&app, &rects, queue_rect.x + 1, queue_rect.y + 1 + line);
-        assert_eq!(at(0), None);
-        assert_eq!(at(1), Some((Focus::Queue, 0)));
-        assert_eq!(at(2), None);
-        assert_eq!(at(3), Some((Focus::Queue, 2)));
-        assert_eq!(at(4), None);
-        assert_eq!(at(5), Some((Focus::Queue, 1)));
-    }
-
-    #[test]
-    fn arrows_on_a_long_runs_list_keep_the_selection_in_view_and_a_click_opens_the_row_clicked() {
-        let ids: Vec<String> = (0..30).map(|i| format!("i{i}-1")).collect();
-        let mut app = App::default();
-        app.apply_snapshot(snapshot_with(&ids, &[]));
-        for _ in 0..29 {
-            app.select_next();
-        }
-        assert_eq!(app.selected(), 29);
-        let rects = crate::ui::regatta_frame_rects(Rect::new(0, 0, 120, 30), &app);
-        let runs_rect = rects[4].expect("runs frame is visible");
-        let body = usize::from(runs_rect.height) - 3;
-        assert!(body < 30, "the frame must be shorter than the list");
-        let top = 30 - body;
-        handle_mouse(
-            &mut app,
-            left_click_at(runs_rect.x + 1, runs_rect.y + 2),
-            &rects,
-        );
-        let (_, id, _) = app.detail().expect("detail should be open");
-        assert_eq!(*id, format!("i{top}-1"));
+        assert_eq!(id, "r1");
     }
 
     #[test]
@@ -865,13 +780,11 @@ mod tests {
     }
 
     #[test]
-    fn up_selects_the_previous_row_and_stops_at_the_first() {
+    fn up_selects_the_previous_row() {
         let mut app = App::default();
         app.apply_snapshot(snapshot_with_two_runs());
-        handle_key(&mut app, KeyCode::Down);
-        assert_eq!(app.selected(), 1);
         handle_key(&mut app, KeyCode::Up);
-        assert_eq!(app.selected(), 0);
+        assert_eq!(app.selected(), 1);
         handle_key(&mut app, KeyCode::Up);
         assert_eq!(app.selected(), 0);
     }

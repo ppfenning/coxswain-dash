@@ -9,7 +9,6 @@ pub mod initiative_drill;
 pub mod machine_drill;
 pub mod palette_frame;
 mod regatta;
-pub(crate) mod rows;
 mod run_cost;
 pub mod run_drill;
 pub mod settings_frame;

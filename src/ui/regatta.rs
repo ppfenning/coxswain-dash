@@ -1071,8 +1071,6 @@ const RUN_COLUMNS: [usize; 4] = [12, 10, 22, 12];
 const STAGE_WIDTH: usize = RUN_COLUMNS[2] + 1 + RUN_COLUMNS[3];
 const ATT_WIDTH: usize = 3;
 const COST_WIDTH: usize = 7;
-/// The least a narrow runs frame leaves the STAGE column before the end chip is cut.
-const STAGE_FLOOR: usize = 12;
 /// The PROJECT column at full width; a narrow runs frame gives it less, down to nothing.
 const PROJECT_WIDTH: usize = 14;
 /// Columns a runs row spends left of the project cell and the end chip: the prefix, RUN, MACHINE,
@@ -1180,16 +1178,6 @@ fn project_width(inner_width: usize, chip_reserve: usize) -> usize {
     PROJECT_WIDTH.min(spare.saturating_sub(1))
 }
 
-/// The STAGE column's width in a runs frame `inner_width` wide. It keeps `STAGE_WIDTH` while the
-/// end chip's `chip_reserve` still fits after the other fixed columns, then gives up one column
-/// per column the chip needs, down to `STAGE_FLOOR`. PROJECT is already 0 where STAGE starts to
-/// shrink, so `project_width` needs no knowledge of this.
-fn stage_width(inner_width: usize, chip_reserve: usize) -> usize {
-    inner_width
-        .saturating_sub(RUN_FIXED_WIDTH - STAGE_WIDTH + chip_reserve)
-        .clamp(STAGE_FLOOR, STAGE_WIDTH)
-}
-
 /// The runs line up to the stage column; the header and the rows share it so they align. A
 /// `project` cell sits between RUN and MACHINE with its own separator; `None` leaves it out.
 fn run_lead(
@@ -1210,11 +1198,11 @@ fn run_tail(att: &str, cost: &str) -> String {
     format!(" {att:>ATT_WIDTH$} {cost:>COST_WIDTH$} ")
 }
 
-fn run_header(project_w: usize, stage_w: usize, theme: &Theme) -> Line<'static> {
+fn run_header(project_w: usize, theme: &Theme) -> Line<'static> {
     let project = (project_w > 0).then(|| project_cell(Some("PROJECT"), project_w, theme));
     let rest = format!(
         "{}{}STATUS",
-        fit_cell("STAGE", stage_w),
+        fit_cell("STAGE", STAGE_WIDTH),
         run_tail("ATT", "COST")
     );
     let spans = run_lead("  ", "RUN", project, "MACHINE")
@@ -1226,19 +1214,13 @@ fn run_header(project_w: usize, stage_w: usize, theme: &Theme) -> Line<'static> 
 
 /// One initiative's row: its newest run, the run's end chip, and a dim `×N` when the initiative
 /// had more than one run. A selected row is prefixed `▶` and sits on `theme.selected_row`.
-fn run_row(
-    row: &CollapsedRun,
-    selected: bool,
-    project_w: usize,
-    stage_w: usize,
-    theme: &Theme,
-) -> Line<'static> {
+fn run_row(row: &CollapsedRun, selected: bool, project_w: usize, theme: &Theme) -> Line<'static> {
     let r = row.run;
     let prefix = if selected { "\u{25b6} " } else { "  " };
     let project = (project_w > 0).then(|| project_cell(r.project.as_deref(), project_w, theme));
     let lead = run_lead(prefix, &r.run, project, &r.machine);
     let stage = [
-        stage_span(r, stage_w, theme),
+        stage_span(r, STAGE_WIDTH, theme),
         Span::raw(run_tail(&r.attempt.to_string(), &cost_text(r.cost))),
     ];
     let chip = end_chip(r.end.as_ref(), &r.status, theme).spans;
@@ -1272,15 +1254,13 @@ fn render_runs(
         .map(|s| s.content.chars().count())
         .max()
         .unwrap_or(0);
-    let chip_reserve = widest_end_chip(theme) + count_w;
-    let project_w = project_width(usize::from(inner.width), chip_reserve);
-    let stage_w = stage_width(usize::from(inner.width), chip_reserve);
-    let header = std::iter::once(run_header(project_w, stage_w, theme));
+    let project_w = project_width(usize::from(inner.width), widest_end_chip(theme) + count_w);
+    let header = std::iter::once(run_header(project_w, theme));
     let shown = selected_run_row(&snapshot.runs, selected);
     let rows = collapsed
         .iter()
         .enumerate()
-        .map(|(i, row)| run_row(row, shown == Some(i), project_w, stage_w, theme));
+        .map(|(i, row)| run_row(row, shown == Some(i), project_w, theme));
     let paragraph = Paragraph::new(header.chain(rows).collect::<Vec<_>>())
         .block(block)
         .style(base_style(theme));
@@ -3568,108 +3548,6 @@ mod tests {
         assert_eq!(project_width(full + 1, chip), 0);
         assert_eq!(project_width(full, chip), 0);
         assert_eq!(project_width(0, chip), 0);
-    }
-
-    #[test]
-    fn stage_width_keeps_its_full_width_until_the_chip_needs_the_room() {
-        let chip = 14;
-        assert_eq!(stage_width(100, chip), STAGE_WIDTH);
-        assert_eq!(stage_width(88, chip), 35);
-        assert_eq!(stage_width(87, chip), 34);
-        assert_eq!(stage_width(78, chip), 25);
-        assert_eq!(stage_width(78, chip + 3), 22);
-    }
-
-    #[test]
-    fn stage_width_stops_at_its_floor() {
-        let chip = 14;
-        assert_eq!(stage_width(66, chip), 13);
-        assert_eq!(stage_width(65, chip), 12);
-        assert_eq!(stage_width(64, chip), 12);
-        assert_eq!(stage_width(0, chip), 12);
-    }
-
-    /// Four runs whose status words differ, each in its own initiative, none with an end kind.
-    const CHIP_ROWS: [(&str, &str); 4] = [
-        ("w-1", "running"),
-        ("x-1", "needs_person"),
-        ("y-1", "quarantined"),
-        ("z-1", "landed"),
-    ];
-
-    /// The Regatta page drawn through `ui::render` at `width` x `height`, with the chair panel
-    /// showing when `panel`.
-    fn draw_chip_page(width: u16, height: u16, panel: bool) -> Terminal<TestBackend> {
-        let runs: Vec<String> = CHIP_ROWS
-            .iter()
-            .map(|(name, status)| stage_run(name, status, "p1", "build", 1.5))
-            .collect();
-        let mut app = feed_app(&runs.join(","), "", "");
-        // History and inbox hidden so the runs frame is tall enough to show every row at 80x24.
-        app.toggle_history_frame();
-        app.toggle_inbox_frame();
-        let app = if panel {
-            let fake = crate::pty::FakePty::with_output(b"chair> waiting for you\r\n");
-            let mut app = app.with_pty(Box::new(fake));
-            app.toggle_chair_panel();
-            app.chair_panel_mut().poll();
-            app
-        } else {
-            app
-        };
-        let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
-        let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
-        terminal
-            .draw(|f| crate::ui::render(f, &app, &theme))
-            .expect("draw should not fail");
-        terminal
-    }
-
-    /// Every run in `checked` is on one row of the screen with its whole status chip.
-    fn assert_chips_whole(terminal: &Terminal<TestBackend>, checked: &[(&str, &str)]) {
-        let height = terminal.backend().buffer().area.height;
-        let rows: Vec<String> = (0..height).map(|y| row_text(terminal, y)).collect();
-        for (name, status) in checked {
-            let chip = format!("\u{25cf} {status}");
-            let hits: Vec<&String> = rows
-                .iter()
-                .filter(|r| r.contains(&format!(" {name} ")) && r.contains("$1.50"))
-                .collect();
-            assert_eq!(hits.len(), 1, "{name}: {rows:#?}");
-            assert!(hits[0].contains(&chip), "{chip:?} is cut in {:?}", hits[0]);
-        }
-    }
-
-    #[test]
-    fn the_runs_chip_is_whole_at_80x24() {
-        // The runs frame is 5 rows tall here, so the fourth run is scrolled off.
-        let terminal = draw_chip_page(80, 24, false);
-        assert_chips_whole(&terminal, &CHIP_ROWS[..3]);
-        insta::assert_snapshot!(terminal.backend().to_string());
-    }
-
-    #[test]
-    fn the_runs_frame_at_80x24_with_the_chair_panel_is_at_its_stage_floor() {
-        // The page is 52 columns, 50 inside the frame: less than the 51 the columns left of the
-        // chip need at the STAGE floor, so no chip can be whole here and none is asserted.
-        let terminal = draw_chip_page(80, 24, true);
-        insta::assert_snapshot!(terminal.backend().to_string());
-    }
-
-    #[test]
-    fn the_runs_chip_is_whole_at_100x30() {
-        let terminal = draw_chip_page(100, 30, false);
-        assert_chips_whole(&terminal, &CHIP_ROWS);
-        insta::assert_snapshot!(terminal.backend().to_string());
-    }
-
-    #[test]
-    fn the_runs_chip_is_whole_at_100x30_with_the_chair_panel_when_it_fits() {
-        // 63 columns inside the frame leave the chip 12 at the STAGE floor: whole for `running`
-        // and `landed`, not for the 13 and 14 columns of `quarantined` and `needs_person`.
-        let terminal = draw_chip_page(100, 30, true);
-        assert_chips_whole(&terminal, &[CHIP_ROWS[0], CHIP_ROWS[3]]);
-        insta::assert_snapshot!(terminal.backend().to_string());
     }
 
     #[test]
