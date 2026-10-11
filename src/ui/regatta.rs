@@ -1350,7 +1350,7 @@ const HISTORY_OUTCOME_WIDTH: usize = 28;
 fn outcome_detail(row: &HistoryRow) -> String {
     match (row.outcome, row.cause.as_deref(), row.landed.first()) {
         (Outcome::Quarantined, Some(cause), _) => format!(" {cause}"),
-        (Outcome::Landed, _, Some(task)) => format!(" #{}", task.pr),
+        (Outcome::Landed, _, Some(task)) => task.pr.map(|n| format!(" #{n}")).unwrap_or_default(),
         _ => String::new(),
     }
 }
