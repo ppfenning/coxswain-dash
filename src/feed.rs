@@ -95,7 +95,9 @@ where
 #[derive(Debug, Deserialize, PartialEq)]
 pub struct LandedTask {
     pub task: String,
-    pub pr: u64,
+    /// The pull request that merged it; absent when the land recorded none (a hand finish, or a merge
+    /// whose number the record never carried). A feed that sends null here must not freeze the board.
+    pub pr: Option<u64>,
 }
 
 /// One ended run. `cause` is the first cause and is present only on a quarantined row.
@@ -527,6 +529,13 @@ pub fn supervise_feed(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_landed_task_without_a_pr_number_still_parses() {
+        let json = r#"{"schema":1,"at":"2026-10-11T19:00:00Z","chair":{"holder":"h","host":"x","epoch":1,"liveness":"live","beat_age_s":1,"session":"s","today":{"lands":0,"launches":0,"refused_or_failed":0,"needs_chair_open":0}},"spend":{"five_hour_fraction":0.1,"five_hour_source":"meter","weekly_fraction":0.1,"weekly_source":"meter","hard_stop_fraction":0.99,"five_hour_resets_at":"","weekly_resets_at":""},"spend_series":[],"machines":[],"runs":[],"queue":[],"queue_total":0,"inbox":[],"inbox_total":0,"decisions":[],"watch":[],"history":[{"run":"r-1","machine":"m","initiative":"i","ended_at":"2026-10-11T18:00:00Z","outcome":"landed","cost_usd":1.0,"landed":[{"task":"t","pr":null}],"cause":null,"project":"p"}],"history_today":{"lands":1,"quarantines":0,"cost_usd":1.0,"runs":1}}"#;
+        let snapshot = parse_snapshot(json).expect("a null pr parses");
+        assert_eq!(snapshot.history[0].landed[0].pr, None);
+    }
+
     use super::*;
 
     const FIXTURE: &str = include_str!("../tests/fixtures/dash_feed_v1.json");
@@ -750,7 +759,7 @@ mod tests {
             landed.landed,
             vec![LandedTask {
                 task: "p1-foundations-task".to_string(),
-                pr: 41
+                pr: Some(41)
             }]
         );
         assert!(landed.cause.is_none());
