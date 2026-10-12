@@ -1,0 +1,7 @@
+---
+source: src/ui/mod.rs
+assertion_line: 1563
+expression: "rows(&healthy)[38..40].join(\"\\n\")"
+---
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+1-9 frames · ←→ focus · ↑↓ select · q quit │ p pause  k kill  m move · : palette  w watch  $ spend  h health

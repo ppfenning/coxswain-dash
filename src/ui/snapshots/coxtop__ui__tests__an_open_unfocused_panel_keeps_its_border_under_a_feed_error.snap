@@ -1,0 +1,8 @@
+---
+source: src/ui/mod.rs
+assertion_line: 1630
+expression: "rows(&buffer)[37..40].join(\"\\n\")"
+---
+│no runs ended yet                                                           ││                                        │
+╰────────────────────────────────────────────────────────────────────────────╯│                                        │
+feed error: ValueError: boom                                                  └────────────────────────────────────────┘
