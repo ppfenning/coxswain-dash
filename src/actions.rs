@@ -291,29 +291,29 @@ mod tests {
             ),
             (
                 Action::LanesUp {
-                    machine: "omarchy".into(),
+                    machine: "host-a".into(),
                     lanes: 4,
                 },
-                s(&["cox", "host", "capacity", "omarchy", "4"]),
+                s(&["cox", "host", "capacity", "host-a", "4"]),
             ),
             (
                 Action::LanesDown {
-                    machine: "omarchy".into(),
+                    machine: "host-a".into(),
                     lanes: 2,
                 },
-                s(&["cox", "host", "capacity", "omarchy", "2"]),
+                s(&["cox", "host", "capacity", "host-a", "2"]),
             ),
             (
                 Action::MachineDrain {
-                    machine: "omarchy".into(),
+                    machine: "host-a".into(),
                 },
-                s(&["cox", "host", "drain", "omarchy"]),
+                s(&["cox", "host", "drain", "host-a"]),
             ),
             (
                 Action::MachineActivate {
-                    machine: "omarchy".into(),
+                    machine: "host-a".into(),
                 },
-                s(&["cox", "host", "activate", "omarchy"]),
+                s(&["cox", "host", "activate", "host-a"]),
             ),
             (
                 Action::PriorityUp {
@@ -368,14 +368,9 @@ mod tests {
     fn lanes_down_clamps_at_zero() {
         let mut snap = snapshot();
         snap.machines[0].capacity = 0;
-        let got = action_for('-', &Target::Machine("omarchy".into()), &snap);
-        assert_eq!(
-            got,
-            Some(Action::LanesDown {
-                machine: "omarchy".into(),
-                lanes: 0
-            })
-        );
+        let machine = snap.machines[0].name.clone();
+        let got = action_for('-', &Target::Machine(machine.clone()), &snap);
+        assert_eq!(got, Some(Action::LanesDown { machine, lanes: 0 }));
     }
 
     #[test]
@@ -395,14 +390,9 @@ mod tests {
     #[test]
     fn lanes_and_priority_step_from_the_feed_values() {
         let snap = snapshot();
-        let up = action_for('+', &Target::Machine("omarchy".into()), &snap);
-        assert_eq!(
-            up,
-            Some(Action::LanesUp {
-                machine: "omarchy".into(),
-                lanes: 4
-            })
-        );
+        let machine = snap.machines[0].name.clone();
+        let up = action_for('+', &Target::Machine(machine.clone()), &snap);
+        assert_eq!(up, Some(Action::LanesUp { machine, lanes: 4 }));
         let prio = action_for(']', &Target::Initiative(INITIATIVE.into()), &snap);
         assert_eq!(
             prio,
