@@ -1,16 +1,15 @@
 ---
 source: src/ui/slipstream.rs
-assertion_line: 1042
 expression: "snapshot_text(ThemeId::HarborLight, 160, 46)"
 ---
 towpath                                                                                                                                  Tue Sep 29 00:00 v1.2.3
 R U N S                                                                                                                 S P E N D
 ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮5h █████░░░░░░░░░░░░░░░░░░░░░░░░░░░  16%
 │dash-feed-2 ● running ×2                                                                                         $0.00│wk ███████████░░░░░░░░░░░░░░░░░░░░░  35%
-│host-b p1-foundations   plan   build   handoff   review   arbitrate   land                                           │
+│host-b p1-foundations   plan   build   handoff   review   arbitrate   land                                            │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯M A C H I N E S
                                                                                                                         ╭──────────────────────────────────────╮
-                                                                                                                        │host-b                            2/3│
+                                                                                                                        │host-b                             2/3│
                                                                                                                         │████████████ ████████████ ░░░░░░░░░░░░│
                                                                                                                         ╰──────────────────────────────────────╯
                                                                                                                         I N B O X
@@ -44,7 +43,7 @@ R U N S                                                                         
 
                                                                                                                         C H A I R
                                                                                                                         ╭──────────────────────────────────────╮
-                                                                                                                        │● chair@host-b:12345 @ host-b       │
+                                                                                                                        │● chair@host-b:12345 @ host-b         │
                                                                                                                         │2 lands today · beat 4s               │
                                                                                                                         │                                      │
                                                                                                                         ╰──────────────────────────────────────╯

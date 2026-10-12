@@ -318,11 +318,11 @@ mod tests {
 
     #[test]
     fn shell_join_quotes_a_space_and_a_quote_and_leaves_plain_tokens() {
-        let argv: Vec<String> = ["cox", "x", "a b", "it's", "ops@h"]
+        let argv: Vec<String> = ["cox", "x", "a b", "it's", "operator@h"]
             .iter()
             .map(|s| s.to_string())
             .collect();
-        assert_eq!(shell_join(&argv), "cox x 'a b' 'it'\\''s' ops@h");
+        assert_eq!(shell_join(&argv), "cox x 'a b' 'it'\\''s' operator@h");
         assert_eq!(argv[2], "a b");
     }
 }

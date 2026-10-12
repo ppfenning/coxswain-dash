@@ -1,6 +1,5 @@
 ---
 source: src/ui/form_frame.rs
-assertion_line: 133
 expression: "draw(&form, 80, 24)"
 ---
 "                                                                                "
@@ -12,7 +11,7 @@ expression: "draw(&form, 80, 24)"
 "                                                                                "
 "        ┌Add machine───────────────────────────────────────────────────┐        "
 "        │   name          bad name                                     │        "
-"        │ > ssh           ops@edge-1                                   │        "
+"        │ > ssh           operator@edge-1                              │        "
 "        │   capacity      1                                            │        "
 "        │   capabilities                                               │        "
 "        │ name must be non-empty with no whitespace                    │        "

@@ -2804,7 +2804,7 @@ mod tests {
         app.open_add_machine();
         type_into_form(&mut app, "edge-1");
         form_keys(&mut app, &[Enter]);
-        type_into_form(&mut app, "ops@edge-1");
+        type_into_form(&mut app, "operator@edge-1");
         form_keys(&mut app, &[Enter, Backspace]);
         type_into_form(&mut app, "4");
         form_keys(&mut app, &[Enter, Enter]);
@@ -2825,7 +2825,7 @@ mod tests {
         "add",
         "edge-1",
         "--ssh",
-        "ops@edge-1",
+        "operator@edge-1",
         "--capacity",
         "4",
     ];
@@ -2838,7 +2838,7 @@ mod tests {
         };
         assert_eq!(
             confirm.command,
-            "cox host add edge-1 --ssh ops@edge-1 --capacity 4"
+            "cox host add edge-1 --ssh operator@edge-1 --capacity 4"
         );
         assert!(app.form().is_some());
     }
@@ -2851,7 +2851,7 @@ mod tests {
         assert_eq!(app.take_pending(), None);
         let form = app.form().expect("the form stays open");
         assert_eq!(form.value_of("name"), "edge-1");
-        assert_eq!(form.value_of("ssh"), "ops@edge-1");
+        assert_eq!(form.value_of("ssh"), "operator@edge-1");
         assert_eq!(form.value_of("capacity"), "4");
     }
 

@@ -2124,8 +2124,8 @@ mod tests {
         assert_eq!(buffer[(1, 1)].fg, LOW);
         let host = col_of(&terminal, 1, " @ ") + 3;
         assert_eq!(buffer[(host, 1)].fg, Color::Rgb(0x79, 0xc0, 0xff));
-        assert_eq!(buffer[(host + 6, 1)].fg, Color::Rgb(0x79, 0xc0, 0xff));
-        assert_ne!(buffer[(host + 7, 1)].fg, Color::Rgb(0x79, 0xc0, 0xff));
+        assert_eq!(buffer[(host + 5, 1)].fg, Color::Rgb(0x79, 0xc0, 0xff));
+        assert_ne!(buffer[(host + 6, 1)].fg, Color::Rgb(0x79, 0xc0, 0xff));
     }
 
     #[test]
@@ -3515,7 +3515,7 @@ mod tests {
             col_of(&hundred, 1, "PROJECT")
         );
         assert_eq!(header_widths(&ninety).0, 0);
-        assert!(!row_text(&ninety, 2).contains("example-"));
+        assert!(!row_text(&ninety, 2).contains("example"));
     }
 
     #[test]
@@ -3713,7 +3713,7 @@ mod tests {
         let queue = [
             entry("alpha", r#""example-repo""#),
             entry("beta", "null"),
-            entry("gamma", r#""example-app""#),
+            entry("gamma", r#""example-web""#),
             entry("delta", r#""example-repo""#),
         ];
         feed_app("", &queue.join(","), "")

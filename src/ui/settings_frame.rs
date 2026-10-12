@@ -22,7 +22,7 @@ const GAP: usize = 2;
 const MARKER: usize = 2;
 /// Width of `machine-local`, the longer of the two provenance strings.
 const PROVENANCE_WIDTH: usize = 13;
-const PAT_ONLY: &str = "Operator-only";
+const OPERATOR_ONLY: &str = "operator-only";
 const CURSOR: char = '▏';
 const KEY_CAP: usize = 26;
 const VALUE_CAP: usize = 24;
@@ -119,14 +119,14 @@ fn widths(rows: &[SettingsRow]) -> Widths {
 }
 
 /// The cells of one field row inside `width` columns. A narrow width drops the source, then
-/// the provenance, then the `Operator-only` mark. The value is shortened only after all three.
+/// the provenance, then the `operator-only` mark. The value is shortened only after all three.
 fn field_cells(row: &SettingsRow, w: &Widths, width: usize) -> Vec<(Col, String)> {
     let key_w = w.key.min(width);
     let base = key_w + GAP + w.value;
     let cost = |source: bool, prov: bool, mark: bool| {
         usize::from(source) * (GAP + w.source)
             + usize::from(prov) * (GAP + PROVENANCE_WIDTH)
-            + usize::from(mark) * (GAP + PAT_ONLY.len())
+            + usize::from(mark) * (GAP + OPERATOR_ONLY.len())
     };
     let (show_source, show_prov, show_mark) = [
         (true, true, row.operator_only),
@@ -155,7 +155,7 @@ fn field_cells(row: &SettingsRow, w: &Widths, width: usize) -> Vec<(Col, String)
             PROVENANCE_WIDTH,
         )
     }))
-    .chain(show_mark.then(|| (Col::Mark, PAT_ONLY.to_string(), PAT_ONLY.len())))
+    .chain(show_mark.then(|| (Col::Mark, OPERATOR_ONLY.to_string(), OPERATOR_ONLY.len())))
     .collect();
     let last = cells.len().saturating_sub(1);
     cells

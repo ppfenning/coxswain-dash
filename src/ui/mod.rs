@@ -1194,12 +1194,12 @@ mod tests {
         app.open_add_machine();
         let mut keys: Vec<KeyCode> = "edge-1".chars().map(KeyCode::Char).collect();
         keys.push(KeyCode::Enter);
-        keys.extend("ops@edge-1".chars().map(KeyCode::Char));
+        keys.extend("operator@edge-1".chars().map(KeyCode::Char));
         keys.extend([KeyCode::Enter, KeyCode::Backspace, KeyCode::Char('4')]);
         keys.extend([KeyCode::Enter, KeyCode::Enter]);
         form_type(&mut app, &keys);
         let text = excerpt(&app, ThemeId::Regatta, &[14..26, 39..40]);
-        assert!(text.contains("$ cox host add edge-1 --ssh ops@edge-1 --capacity 4"));
+        assert!(text.contains("$ cox host add edge-1 --ssh operator@edge-1 --capacity 4"));
         assert!(text.contains("Add machine"));
         insta::assert_snapshot!(text);
     }
