@@ -152,7 +152,7 @@ mod tests {
         terminal
             .draw(|f| render(f, f.area(), &detail, &theme, offset))
             .expect("draw should not fail");
-        assert!(terminal.backend().to_string().contains("Machine omarchy"));
+        assert!(terminal.backend().to_string().contains("Machine host-b"));
     }
 
     #[test]

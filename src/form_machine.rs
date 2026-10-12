@@ -77,7 +77,7 @@ mod tests {
 
     #[test]
     fn the_fields_become_an_add_and_a_doctor_step() {
-        let plan = filled("edge-1", "pat@edge-1", "4", "gpu, arm")
+        let plan = filled("edge-1", "operator@edge-1", "4", "gpu, arm")
             .submit()
             .unwrap();
         assert_eq!(
@@ -89,7 +89,7 @@ mod tests {
                     "add",
                     "edge-1",
                     "--ssh",
-                    "pat@edge-1",
+                    "operator@edge-1",
                     "--capacity",
                     "4",
                     "--capabilities",
@@ -106,7 +106,9 @@ mod tests {
 
     #[test]
     fn empty_capabilities_drop_the_flag() {
-        let plan = filled("edge-1", "pat@edge-1", "2", " , ").submit().unwrap();
+        let plan = filled("edge-1", "operator@edge-1", "2", " , ")
+            .submit()
+            .unwrap();
         assert_eq!(
             plan.steps[0],
             argv(&[
@@ -115,7 +117,7 @@ mod tests {
                 "add",
                 "edge-1",
                 "--ssh",
-                "pat@edge-1",
+                "operator@edge-1",
                 "--capacity",
                 "2"
             ])

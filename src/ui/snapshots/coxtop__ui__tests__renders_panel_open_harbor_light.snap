@@ -1,22 +1,21 @@
 ---
 source: src/ui/mod.rs
-assertion_line: 1378
 expression: text
 ---
 ╭ 1 chair ────────────────────────────╮╭ 2 spend ────────────────────────────╮┌ chair · Ctrl-] leaves ─────────────────┐
-│● chair@omarchy:1 @ omarchy · epoch 1││5 hour ░░░░ 10% · resets 2 AM        ││chair> waiting for you                  │
+│● chair@host-b:1 @ host-b · epoch 1 ·││5 hour ░░░░ 10% · resets 2 AM        ││chair> waiting for you                  │
 │lands today 0 (- phases) · needs you ││week   █░░│ 20% of 90% stop · Sun 4 A││                                        │
 │tick - · idle · 0 refused or failed t││                                     ││                                        │
 ╰─────────────────────────────────────╯╰─────────────────────────────────────╯│                                        │
 ╭ 3 machines ──────────────────────────────────╮╭ 4 lanes over 24h ──────────╮│                                        │
-│  omarchy ■■■ 1/3 ● login ok 12s              ││                           ⢸││                                        │
+│  host-b ■■■ 1/3 ● login ok 12s               ││                           ⢸││                                        │
 │                                              ││                           ⢸││                                        │
 │                                              ││                           ⢸││                                        │
 │                                              ││00:00 lanes in use · peak 1 ││                                        │
 ╰──────────────────────────────────────────────╯╰────────────────────────────╯│                                        │
 ╭ 5 runs ────────────────────────────────────────────────────────────────────╮│                                        │
 │  RUN          MACHINE    STAGE                   ATT    COST STATUS        ││                                        │
-│▶ alpha-1      omarchy    p1 · build                1   $0.50 ● running     ││                                        │
+│▶ alpha-1      host-b     p1 · build                1   $0.50 ● running     ││                                        │
 ╰────────────────────────────────────────────────────────────────────────────╯│                                        │
 ╭ 6 queue ──────────────────────────────────╮╭ 9 inbox ──────────────────────╮│                                        │
 │                                           ││✓ nothing waiting on you       ││                                        │

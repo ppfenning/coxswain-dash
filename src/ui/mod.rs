@@ -662,7 +662,7 @@ mod tests {
     fn run(id: &str, end: Option<RunEnd>) -> Run {
         Run {
             run: id.to_string(),
-            machine: "omarchy".to_string(),
+            machine: "host-b".to_string(),
             phase: "p1".to_string(),
             node: "build".to_string(),
             attempt: 1,
@@ -930,7 +930,7 @@ mod tests {
         app.open_health();
         app.apply_detail_snapshot(detail::parse_detail(HEALTH_FIXTURE.trim()).expect("health"));
         let text = screen(&draw(&app, &crate::theme::resolve(ThemeId::Regatta)));
-        assert!(text.contains("chair-loop@omarchy"), "{text}");
+        assert!(text.contains("chair-loop@host-b"), "{text}");
         assert!(!text.contains("loading"), "{text}");
     }
 
@@ -1043,7 +1043,7 @@ mod tests {
         let theme = crate::theme::resolve(ThemeId::Regatta);
         let buffer = draw(&app, &theme);
         let text = screen(&buffer);
-        assert!(text.contains("chair@omarchy:12345 @ omarchy"));
+        assert!(text.contains("chair@host-b:12345 @ host-b"));
         assert_drawn_in(&buffer, ERROR_LINE, theme.status_failed);
         assert_eq!(text.matches("feed error").count(), 1);
         for traceback in ["Traceback", "most recent call", "File \"x\""] {
@@ -1194,12 +1194,12 @@ mod tests {
         app.open_add_machine();
         let mut keys: Vec<KeyCode> = "edge-1".chars().map(KeyCode::Char).collect();
         keys.push(KeyCode::Enter);
-        keys.extend("pat@edge-1".chars().map(KeyCode::Char));
+        keys.extend("operator@edge-1".chars().map(KeyCode::Char));
         keys.extend([KeyCode::Enter, KeyCode::Backspace, KeyCode::Char('4')]);
         keys.extend([KeyCode::Enter, KeyCode::Enter]);
         form_type(&mut app, &keys);
         let text = excerpt(&app, ThemeId::Regatta, &[14..26, 39..40]);
-        assert!(text.contains("$ cox host add edge-1 --ssh pat@edge-1 --capacity 4"));
+        assert!(text.contains("$ cox host add edge-1 --ssh operator@edge-1 --capacity 4"));
         assert!(text.contains("Add machine"));
         insta::assert_snapshot!(text);
     }
@@ -1404,7 +1404,7 @@ mod tests {
             "[]"
         };
         let json = format!(
-            r#"{{"schema":1,"at":"2026-09-29T00:00:00Z","chair":{{"holder":"chair@omarchy:1","host":"omarchy","epoch":1,"liveness":"live","beat_age_s":4,"session":"s1"}},"spend":{{"five_hour_fraction":0.1,"five_hour_source":"meter","weekly_fraction":0.2,"weekly_source":"meter","hard_stop_fraction":0.9,"five_hour_resets_at":"2026-09-29T02:00:00Z","weekly_resets_at":"2026-10-04T04:00:00Z"}},"machines":[{{"name":"omarchy","state":"active","lanes_in_use":1,"capacity":3,"login_ok":true,"login_checked_at":"2026-09-29T00:00:00Z","beat_age_s":12,"checkouts":{{}}}}],"runs":[{{"run":"alpha-1","machine":"omarchy","phase":"p1","node":"build","attempt":1,"turns":3,"cost":0.5,"verdict":"none","status":"running"}}],"queue":[],"inbox":[],"watch":[],"decisions":{decisions}}}"#
+            r#"{{"schema":1,"at":"2026-09-29T00:00:00Z","chair":{{"holder":"chair@host-b:1","host":"host-b","epoch":1,"liveness":"live","beat_age_s":4,"session":"s1"}},"spend":{{"five_hour_fraction":0.1,"five_hour_source":"meter","weekly_fraction":0.2,"weekly_source":"meter","hard_stop_fraction":0.9,"five_hour_resets_at":"2026-09-29T02:00:00Z","weekly_resets_at":"2026-10-04T04:00:00Z"}},"machines":[{{"name":"host-b","state":"active","lanes_in_use":1,"capacity":3,"login_ok":true,"login_checked_at":"2026-09-29T00:00:00Z","beat_age_s":12,"checkouts":{{}}}}],"runs":[{{"run":"alpha-1","machine":"host-b","phase":"p1","node":"build","attempt":1,"turns":3,"cost":0.5,"verdict":"none","status":"running"}}],"queue":[],"inbox":[],"watch":[],"decisions":{decisions}}}"#
         );
         crate::feed::parse_snapshot(&json).expect("literal snapshot should parse")
     }
@@ -1483,8 +1483,8 @@ mod tests {
             );
             let (x, _) = find(&buffer, "chair> waiting for you").expect("terminal on screen");
             assert!(x >= 120 * 65 / 100, "terminal starts at column {x}");
-            assert!(closed.contains("omarchy"));
-            assert!(screen(&buffer).contains("omarchy"));
+            assert!(closed.contains("host-b"));
+            assert!(screen(&buffer).contains("host-b"));
         }
     }
 

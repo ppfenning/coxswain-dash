@@ -126,7 +126,7 @@ mod tests {
     fn the_add_machine_form_filled_with_an_error_line() {
         let mut form = crate::form_machine::form();
         form.fields[0].value = "bad name".to_string();
-        form.fields[1].value = "pat@edge-1".to_string();
+        form.fields[1].value = "operator@edge-1".to_string();
         form.focus = 1;
         assert!(form.submit().is_none());
         assert!(form.error.is_some());

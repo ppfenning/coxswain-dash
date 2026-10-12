@@ -332,7 +332,7 @@ mod tests {
     #[test]
     fn the_new_initiative_form() {
         // Literal kept: the snapshot renders it; the snapshot task renames both.
-        let form = new_form(vec!["coxtop".into(), "pat-skills".into()]);
+        let form = new_form(vec!["coxtop".into(), "example-skills".into()]);
         insta::with_settings!({snapshot_path => "ui/snapshots"}, {
             insta::assert_snapshot!(draw(&form));
         });

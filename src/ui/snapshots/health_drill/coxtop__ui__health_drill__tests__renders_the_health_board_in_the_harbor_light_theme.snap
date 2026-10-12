@@ -1,22 +1,21 @@
 ---
 source: src/ui/health_drill.rs
-assertion_line: 230
 expression: terminal.backend().to_string()
 ---
 "┌Health────────────────────────────────────────────────────────────────────────────────────────────┐"
 "│Hosts                                                                                             │"
-"│  omarchy      up    lanes 2/3                                                                    │"
+"│  host-b       up    lanes 2/3                                                                    │"
 "│  studio       down  lanes 0/3                                                                    │"
 "│                                                                                                  │"
 "│Logins                                                                                            │"
-"│  claude     omarchy      logged in                                                               │"
+"│  claude     host-b       logged in                                                               │"
 "│  claude     studio       token expired                                                           │"
 "│                                                                                                  │"
 "│Store                                                                                             │"
 "│  status ok  reachable  latency 42 ms                                                             │"
 "│                                                                                                  │"
 "│Chair lease                                                                                       │"
-"│  holder chair-loop@omarchy  expires 12:05                                                        │"
+"│  holder chair-loop@host-b  expires 12:05                                                         │"
 "│                                                                                                  │"
 "│Housekeeping                                                                                      │"
 "│  last run 08:30  age 3.5 h                                                                       │"

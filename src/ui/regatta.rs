@@ -1979,11 +1979,11 @@ mod tests {
         terminal
     }
 
-    const MID_LAND: &str = r#"{"holder": "chair@omarchy:12345", "host": "omarchy", "epoch": 7, "liveness": "live", "beat_age_s": 4, "last_tick_at": "2026-09-28T23:59:00Z", "last_status": "chair 09-28 19:59 EDT | landed 2, launched 1, waiting on api-runners review before the next land", "current_action": {"kind": "land_phase", "target": "api-runners/runner-parity", "since": "2026-09-28T23:58:30Z"}, "today": {"lands": 2, "launches": 1, "refused_or_failed": 0, "needs_chair_open": 0}}"#;
+    const MID_LAND: &str = r#"{"holder": "chair@host-b:12345", "host": "host-b", "epoch": 7, "liveness": "live", "beat_age_s": 4, "last_tick_at": "2026-09-28T23:59:00Z", "last_status": "chair 09-28 19:59 EDT | landed 2, launched 1, waiting on api-runners review before the next land", "current_action": {"kind": "land_phase", "target": "api-runners/runner-parity", "since": "2026-09-28T23:58:30Z"}, "today": {"lands": 2, "launches": 1, "refused_or_failed": 0, "needs_chair_open": 0}}"#;
 
-    const IDLE: &str = r#"{"holder": "chair@omarchy:12345", "host": "omarchy", "epoch": 7, "liveness": "live", "beat_age_s": 20, "last_tick_at": "2026-09-28T23:58:00Z", "last_status": "chair idle", "current_action": null, "today": {"lands": 1, "launches": 0, "refused_or_failed": 3, "needs_chair_open": 1}}"#;
+    const IDLE: &str = r#"{"holder": "chair@host-b:12345", "host": "host-b", "epoch": 7, "liveness": "live", "beat_age_s": 20, "last_tick_at": "2026-09-28T23:58:00Z", "last_status": "chair idle", "current_action": null, "today": {"lands": 1, "launches": 0, "refused_or_failed": 3, "needs_chair_open": 1}}"#;
 
-    const STALE: &str = r#"{"holder": "chair@omarchy:12345", "host": "omarchy", "epoch": 7, "liveness": "stale", "beat_age_s": 130, "last_tick_at": "09-28 19:59 EDT", "last_status": "no tick since the beat went quiet", "current_action": null, "today": {"lands": 0, "launches": 0, "refused_or_failed": 0, "needs_chair_open": 0}}"#;
+    const STALE: &str = r#"{"holder": "chair@host-b:12345", "host": "host-b", "epoch": 7, "liveness": "stale", "beat_age_s": 130, "last_tick_at": "09-28 19:59 EDT", "last_status": "no tick since the beat went quiet", "current_action": null, "today": {"lands": 0, "launches": 0, "refused_or_failed": 0, "needs_chair_open": 0}}"#;
 
     #[test]
     fn chair_card_mid_land() {
@@ -2007,9 +2007,9 @@ mod tests {
         assert_eq!(buffer[(beat + 8, 1)].fg, HIGH);
     }
 
-    const TICK_FRESH: &str = r#"{"holder": "chair@omarchy:12345", "host": "omarchy", "epoch": 7, "liveness": "live", "beat_age_s": 4, "tick_age_s": 12, "last_tick_at": "2026-09-28T23:59:48Z", "last_status": "landing", "current_action": {"kind": "land_phase", "target": "api-runners/runner-parity", "since": "2026-09-28T23:58:30Z"}, "today": {"lands": 2, "launches": 1, "refused_or_failed": 0, "needs_chair_open": 0}}"#;
+    const TICK_FRESH: &str = r#"{"holder": "chair@host-b:12345", "host": "host-b", "epoch": 7, "liveness": "live", "beat_age_s": 4, "tick_age_s": 12, "last_tick_at": "2026-09-28T23:59:48Z", "last_status": "landing", "current_action": {"kind": "land_phase", "target": "api-runners/runner-parity", "since": "2026-09-28T23:58:30Z"}, "today": {"lands": 2, "launches": 1, "refused_or_failed": 0, "needs_chair_open": 0}}"#;
 
-    const TICK_STALLED: &str = r#"{"holder": "chair@omarchy:12345", "host": "omarchy", "epoch": 7, "liveness": "live", "beat_age_s": 20, "tick_age_s": 400, "last_tick_at": "2026-09-28T23:53:20Z", "last_status": "chair idle", "current_action": null, "today": {"lands": 1, "launches": 0, "refused_or_failed": 3, "needs_chair_open": 1}}"#;
+    const TICK_STALLED: &str = r#"{"holder": "chair@host-b:12345", "host": "host-b", "epoch": 7, "liveness": "live", "beat_age_s": 20, "tick_age_s": 400, "last_tick_at": "2026-09-28T23:53:20Z", "last_status": "chair idle", "current_action": null, "today": {"lands": 1, "launches": 0, "refused_or_failed": 3, "needs_chair_open": 1}}"#;
 
     const BOTH_THEMES: [(ThemeId, &str); 2] = [
         (ThemeId::Regatta, "regatta"),
@@ -2117,15 +2117,15 @@ mod tests {
     fn the_chair_dot_is_the_live_color_and_the_host_the_accent() {
         let terminal = draw_chair(MID_LAND);
         assert!(row_text(&terminal, 1).contains(
-            "\u{25cf} chair@omarchy:12345 @ omarchy \u{b7} epoch 7 \u{b7} beat 4s \u{b7} live"
+            "\u{25cf} chair@host-b:12345 @ host-b \u{b7} epoch 7 \u{b7} beat 4s \u{b7} live"
         ));
         let buffer = terminal.backend().buffer();
         assert_eq!(buffer[(1, 1)].symbol(), "\u{25cf}");
         assert_eq!(buffer[(1, 1)].fg, LOW);
         let host = col_of(&terminal, 1, " @ ") + 3;
         assert_eq!(buffer[(host, 1)].fg, Color::Rgb(0x79, 0xc0, 0xff));
-        assert_eq!(buffer[(host + 6, 1)].fg, Color::Rgb(0x79, 0xc0, 0xff));
-        assert_ne!(buffer[(host + 7, 1)].fg, Color::Rgb(0x79, 0xc0, 0xff));
+        assert_eq!(buffer[(host + 5, 1)].fg, Color::Rgb(0x79, 0xc0, 0xff));
+        assert_ne!(buffer[(host + 6, 1)].fg, Color::Rgb(0x79, 0xc0, 0xff));
     }
 
     #[test]
@@ -3339,7 +3339,7 @@ mod tests {
 
     /// A feed with two machines, no runs, and the `HISTORY` and `TODAY` placeholders filled in.
     fn history_app(history: &str, today: &str) -> App {
-        let json = r#"{"schema":1,"at":"2026-10-04T20:00:00Z","chair":{"holder":"h","host":"h","epoch":1,"liveness":"live","beat_age_s":0},"spend":{"five_hour_fraction":0.0,"five_hour_source":"meter","weekly_fraction":0.0,"weekly_source":"meter","hard_stop_fraction":0.0,"five_hour_resets_at":"2026-10-04T22:00:00Z","weekly_resets_at":"2026-10-11T04:00:00Z"},"machines":[{"name":"omarchy","state":"active","lanes_in_use":0,"capacity":3,"login_ok":true,"login_checked_at":"2026-10-04T19:00:00Z","beat_age_s":0,"checkouts":{}},{"name":"spare","state":"active","lanes_in_use":0,"capacity":2,"login_ok":true,"login_checked_at":"2026-10-04T19:00:00Z","beat_age_s":0,"checkouts":{}}],"runs":[],"queue":[],"inbox":[],"watch":[],"history":[HISTORY],"history_today":TODAY}"#
+        let json = r#"{"schema":1,"at":"2026-10-04T20:00:00Z","chair":{"holder":"h","host":"h","epoch":1,"liveness":"live","beat_age_s":0},"spend":{"five_hour_fraction":0.0,"five_hour_source":"meter","weekly_fraction":0.0,"weekly_source":"meter","hard_stop_fraction":0.0,"five_hour_resets_at":"2026-10-04T22:00:00Z","weekly_resets_at":"2026-10-11T04:00:00Z"},"machines":[{"name":"host-b","state":"active","lanes_in_use":0,"capacity":3,"login_ok":true,"login_checked_at":"2026-10-04T19:00:00Z","beat_age_s":0,"checkouts":{}},{"name":"spare","state":"active","lanes_in_use":0,"capacity":2,"login_ok":true,"login_checked_at":"2026-10-04T19:00:00Z","beat_age_s":0,"checkouts":{}}],"runs":[],"queue":[],"inbox":[],"watch":[],"history":[HISTORY],"history_today":TODAY}"#
             .replace("HISTORY", history)
             .replace("TODAY", today);
         let snapshot = crate::feed::parse_snapshot(&json).expect("literal feed should parse");
@@ -3352,11 +3352,11 @@ mod tests {
 
     /// One row of each outcome, newest first, ended 2026-10-04 between 08:00Z and 13:12Z.
     const MIXED: &str = r#"
-{"run":"r6","machine":"omarchy","initiative":"dash-feed","ended_at":"2026-10-04T13:12:00Z","outcome":"landed","cost_usd":1.25,"landed":[{"task":"p1","pr":41}]},
-{"run":"r5","machine":"omarchy","initiative":"dash-feed","ended_at":"2026-10-04T12:40:00Z","outcome":"approved","cost_usd":0.5},
+{"run":"r6","machine":"host-b","initiative":"dash-feed","ended_at":"2026-10-04T13:12:00Z","outcome":"landed","cost_usd":1.25,"landed":[{"task":"p1","pr":41}]},
+{"run":"r5","machine":"host-b","initiative":"dash-feed","ended_at":"2026-10-04T12:40:00Z","outcome":"approved","cost_usd":0.5},
 {"run":"r4","machine":"spare","initiative":"history-frame","ended_at":"2026-10-04T11:05:00Z","outcome":"quarantined","cost_usd":2.1,"cause":"verify_failed"},
 {"run":"r3","machine":"spare","initiative":"history-frame","ended_at":"2026-10-04T10:30:00Z","outcome":"stopped","cost_usd":0.3},
-{"run":"r2","machine":"omarchy","initiative":"dash-feed","ended_at":"2026-10-04T09:15:00Z","outcome":"crashed","cost_usd":0.1},
+{"run":"r2","machine":"host-b","initiative":"dash-feed","ended_at":"2026-10-04T09:15:00Z","outcome":"crashed","cost_usd":0.1},
 {"run":"r1","machine":"spare","initiative":"history-frame","ended_at":"2026-10-04T08:00:00Z","outcome":"mystery","cost_usd":0.0}"#;
 
     fn rgb(r: u8, g: u8, b: u8) -> Color {
@@ -3444,7 +3444,7 @@ mod tests {
 
     fn runs_with_projects() -> App {
         let runs = [
-            with_project(&run_json("alpha-1", "running"), r#""pat-skylight""#),
+            with_project(&run_json("alpha-1", "running"), r#""example-repo""#),
             with_project(&run_json("beta-1", "running"), "null"),
         ];
         feed_app(&runs.join(","), "", "")
@@ -3456,11 +3456,11 @@ mod tests {
         let terminal = draw_project_runs_frame(&runs_with_projects(), &theme, 120);
         insta::assert_snapshot!(terminal.backend().to_string());
         let header = col_of(&terminal, 1, "PROJECT");
-        let x = col_of(&terminal, 2, "pat-skylight");
+        let x = col_of(&terminal, 2, "example-repo");
         assert_eq!(x, header);
         assert!(col_of(&terminal, 2, "alpha-1") < x && x < col_of(&terminal, 2, "m0"));
         assert_eq!(terminal.backend().buffer()[(x, 2)].fg, theme.dim);
-        assert!(!row_text(&terminal, 2).trim_end().ends_with("pat-skylight"));
+        assert!(!row_text(&terminal, 2).trim_end().ends_with("example-repo"));
     }
 
     #[test]
@@ -3494,7 +3494,7 @@ mod tests {
     fn a_narrow_runs_frame_shrinks_project_first_and_keeps_the_longest_chip_whole() {
         let theme = project_theme();
         let runs = [
-            with_project(&run_json("alpha-1", "needs_person"), r#""pat-skylight""#),
+            with_project(&run_json("alpha-1", "needs_person"), r#""example-repo""#),
             with_project(&run_json("beta-1", "needs_person"), "null"),
         ];
         let app = feed_app(&runs.join(","), "", "");
@@ -3511,19 +3511,19 @@ mod tests {
         let narrow = header_widths(&hundred).0;
         assert!(0 < narrow && narrow < PROJECT_WIDTH);
         assert_eq!(
-            col_of(&hundred, 2, "pat-sky"),
+            col_of(&hundred, 2, "example"),
             col_of(&hundred, 1, "PROJECT")
         );
         assert_eq!(header_widths(&ninety).0, 0);
-        assert!(!row_text(&ninety, 2).contains("pat-"));
+        assert!(!row_text(&ninety, 2).contains("example"));
     }
 
     #[test]
     fn the_count_suffix_is_reserved_beside_the_longest_chip() {
         let theme = project_theme();
         let runs = [
-            with_project(&run_json("alpha-1", "needs_person"), r#""pat-skylight""#),
-            with_project(&run_json("alpha-2", "needs_person"), r#""pat-skylight""#),
+            with_project(&run_json("alpha-1", "needs_person"), r#""example-repo""#),
+            with_project(&run_json("alpha-2", "needs_person"), r#""example-repo""#),
         ];
         let app = feed_app(&runs.join(","), "", "");
         let terminal = draw_project_runs_frame(&app, &theme, 100);
@@ -3663,8 +3663,8 @@ mod tests {
         assert_eq!(project_cell(None, 4, &theme).content, "-   ");
         assert_eq!(project_cell(Some(""), 4, &theme).content, "-   ");
         assert_eq!(
-            project_cell(Some("pat-skylight"), 6, &theme).content,
-            "pat-s\u{2026}"
+            project_cell(Some("example-repo"), 6, &theme).content,
+            "examp\u{2026}"
         );
     }
 
@@ -3675,7 +3675,7 @@ mod tests {
             )
         };
         let queue = [
-            entry("alpha", r#""pat-skylight""#),
+            entry("alpha", r#""example-repo""#),
             entry("beta", "null"),
             entry("gamma", r#""""#),
         ];
@@ -3688,7 +3688,7 @@ mod tests {
         let terminal = draw_queue_frame(&queue_with_projects(), &theme);
         insta::assert_snapshot!(terminal.backend().to_string());
         assert!(row_text(&terminal, 1).contains("alpha"));
-        assert!(!row_text(&terminal, 1).contains("pat-skylight"));
+        assert!(!row_text(&terminal, 1).contains("example-repo"));
         let bar = |y| col_of(&terminal, y, "\u{2588}");
         assert_eq!(bar(1), bar(2));
         assert_eq!(bar(2), bar(3));
@@ -3711,10 +3711,10 @@ mod tests {
             )
         };
         let queue = [
-            entry("alpha", r#""pat-skylight""#),
+            entry("alpha", r#""example-repo""#),
             entry("beta", "null"),
-            entry("gamma", r#""pat-towpath""#),
-            entry("delta", r#""pat-skylight""#),
+            entry("gamma", r#""example-web""#),
+            entry("delta", r#""example-repo""#),
         ];
         feed_app("", &queue.join(","), "")
     }
@@ -3742,7 +3742,7 @@ mod tests {
         app.toggle_queue_grouped();
         let terminal = draw_tall_queue_frame(&app, &theme);
         insta::assert_snapshot!(terminal.backend().to_string());
-        let x = col_of(&terminal, 1, "pat-skylight");
+        let x = col_of(&terminal, 1, "example-repo");
         assert_eq!(terminal.backend().buffer()[(x, 1)].fg, theme.dim);
     }
 
@@ -3830,7 +3830,7 @@ mod tests {
         assert_eq!(cell(&terminal, 50, 3).bg, theme.selected_row);
         assert!(!any_selected_bg(&terminal, 1, 3));
         assert!(!any_selected_bg(&terminal, 4, 8));
-        let x = col_of(&terminal, 1, "pat-skylight");
+        let x = col_of(&terminal, 1, "example-repo");
         assert_eq!(cell(&terminal, x, 1).fg, theme.dim);
     }
 
@@ -3901,8 +3901,8 @@ mod tests {
     fn history_with_a_project() -> App {
         let rows = [
             with_project(
-                r#"{"run":"r2","machine":"omarchy","initiative":"dash-feed","ended_at":"2026-10-04T13:12:00Z","outcome":"landed","cost_usd":1.25}"#,
-                r#""pat-skylight""#,
+                r#"{"run":"r2","machine":"host-b","initiative":"dash-feed","ended_at":"2026-10-04T13:12:00Z","outcome":"landed","cost_usd":1.25}"#,
+                r#""example-repo""#,
             ),
             with_project(
                 r#"{"run":"r1","machine":"spare","initiative":"history-frame","ended_at":"2026-10-04T12:40:00Z","outcome":"approved","cost_usd":0.5}"#,
@@ -3920,7 +3920,7 @@ mod tests {
         let terminal = draw_history_at(&app, ThemeId::Regatta, 120, 9, None);
         insta::assert_snapshot!(terminal.backend().to_string());
         let x = col_of(&terminal, 2, "PROJECT");
-        assert_eq!(col_of(&terminal, 3, "pat-skylight"), x);
+        assert_eq!(col_of(&terminal, 3, "example-repo"), x);
         assert_eq!(terminal.backend().buffer()[(x, 3)].fg, theme.dim);
         assert!(col_of(&terminal, 2, "MACHINE") < x);
         assert!(x < col_of(&terminal, 2, "INITIATIVE"));
@@ -4015,11 +4015,11 @@ mod tests {
         let header = row_text(&terminal, 2);
         let first = row_text(&terminal, 3);
         assert!(!header.contains("PROJ"), "{header:?}");
-        assert!(!first.contains("pat-skylight"), "{first:?}");
+        assert!(!first.contains("example-repo"), "{first:?}");
         for name in ["TIME", "MACHINE", "INITIATIVE", "STATUS", "COST"] {
             assert!(header.contains(name), "{name} {header:?}");
         }
-        for cell in ["13:12 omarchy", "dash-feed", "landed", "$1.25"] {
+        for cell in ["13:12 host-b", "dash-feed", "landed", "$1.25"] {
             assert!(first.contains(cell), "{cell} {first:?}");
         }
     }
@@ -4028,7 +4028,7 @@ mod tests {
     fn at_120_wide_the_project_column_is_drawn() {
         let terminal = draw_history_at(&history_with_a_project(), ThemeId::Regatta, 120, 9, None);
         assert!(row_text(&terminal, 2).contains("PROJECT"));
-        assert!(row_text(&terminal, 3).contains("pat-skylight"));
+        assert!(row_text(&terminal, 3).contains("example-repo"));
     }
 
     #[test]
@@ -4114,7 +4114,7 @@ mod tests {
         let row = |i: u16| row_text(&terminal, rect.y + 3 + i);
         let lead = format!(
             "13:12 {} {} dash-feed",
-            fit_cell("omarchy", RUN_COLUMNS[1]),
+            fit_cell("host-b", RUN_COLUMNS[1]),
             fit_cell("-", PROJECT_WIDTH)
         );
         assert!(row(0).contains(&lead), "{}", row(0));
@@ -4131,7 +4131,7 @@ mod tests {
         let utc = FixedOffset::east_opt(0).unwrap();
         let row = |ended_at: &str| HistoryRow {
             run: "r1".to_string(),
-            machine: "omarchy".to_string(),
+            machine: "host-b".to_string(),
             initiative: "dash-feed".to_string(),
             ended_at: ended_at.to_string(),
             outcome: Outcome::Landed,
@@ -4159,10 +4159,10 @@ mod tests {
         assert_eq!(naive, zoned);
         let unparsed = text("not a time at all");
         let start = |s: &str, needle: &str| s[..s.find(needle).unwrap()].chars().count();
-        for needle in ["omarchy", "dash-feed", "$1.25"] {
+        for needle in ["host-b", "dash-feed", "$1.25"] {
             assert_eq!(start(&naive, needle), start(&unparsed, needle), "{needle}");
         }
-        assert!(naive.starts_with("  13:12 omarchy"), "{naive}");
+        assert!(naive.starts_with("  13:12 host-b"), "{naive}");
     }
 
     #[test]
@@ -4172,9 +4172,9 @@ mod tests {
         let terminal = draw_page(&app, ThemeId::Regatta, 120, 40);
         let rect = history_rect(Rect::new(0, 0, 120, 40), &app).expect("history rect");
         let buffer = terminal.backend().buffer();
-        let omarchy = col_of(&terminal, rect.y + 3, "omarchy");
+        let host_b = col_of(&terminal, rect.y + 3, "host-b");
         let spare = col_of(&terminal, rect.y + 5, "spare");
-        assert_eq!(buffer[(omarchy, rect.y + 3)].fg, theme.machine_accents[0]);
+        assert_eq!(buffer[(host_b, rect.y + 3)].fg, theme.machine_accents[0]);
         assert_eq!(buffer[(spare, rect.y + 5)].fg, theme.machine_accents[1]);
         assert_ne!(theme.machine_accents[0], theme.machine_accents[1]);
     }
@@ -4185,7 +4185,7 @@ mod tests {
         let app = history_app(MIXED, TODAY).with_utc_offset(et);
         let terminal = draw_page(&app, ThemeId::Regatta, 120, 40);
         let rect = history_rect(Rect::new(0, 0, 120, 40), &app).expect("history rect");
-        assert!(row_text(&terminal, rect.y + 3).contains("09:12 omarchy"));
+        assert!(row_text(&terminal, rect.y + 3).contains("09:12 host-b"));
     }
 
     #[test]
@@ -4307,7 +4307,7 @@ mod tests {
     /// Two machines and the `RUNS` and `SPEND` placeholders filled in. The feed's `at` is
     /// 2026-10-04T14:10:00Z.
     fn cost_app(runs: &str, spend: &str) -> App {
-        let json = r#"{"schema":1,"at":"2026-10-04T14:10:00Z","chair":{"holder":"h","host":"h","epoch":1,"liveness":"live","beat_age_s":0},"spend":{"five_hour_fraction":0.0,"five_hour_source":"meter","weekly_fraction":0.0,"weekly_source":"meter","hard_stop_fraction":0.0,"five_hour_resets_at":"2026-10-04T22:00:00Z","weekly_resets_at":"2026-10-11T04:00:00Z"},"machines":[{"name":"omarchy","state":"active","lanes_in_use":1,"capacity":3,"login_ok":true,"login_checked_at":"2026-10-04T14:00:00Z","beat_age_s":0,"checkouts":{}},{"name":"spare","state":"active","lanes_in_use":1,"capacity":2,"login_ok":true,"login_checked_at":"2026-10-04T14:00:00Z","beat_age_s":0,"checkouts":{}}],"runs":[RUNS],"queue":[],"inbox":[],"watch":[],"spend_series":[SPEND]}"#
+        let json = r#"{"schema":1,"at":"2026-10-04T14:10:00Z","chair":{"holder":"h","host":"h","epoch":1,"liveness":"live","beat_age_s":0},"spend":{"five_hour_fraction":0.0,"five_hour_source":"meter","weekly_fraction":0.0,"weekly_source":"meter","hard_stop_fraction":0.0,"five_hour_resets_at":"2026-10-04T22:00:00Z","weekly_resets_at":"2026-10-11T04:00:00Z"},"machines":[{"name":"host-b","state":"active","lanes_in_use":1,"capacity":3,"login_ok":true,"login_checked_at":"2026-10-04T14:00:00Z","beat_age_s":0,"checkouts":{}},{"name":"spare","state":"active","lanes_in_use":1,"capacity":2,"login_ok":true,"login_checked_at":"2026-10-04T14:00:00Z","beat_age_s":0,"checkouts":{}}],"runs":[RUNS],"queue":[],"inbox":[],"watch":[],"spend_series":[SPEND]}"#
             .replace("RUNS", runs)
             .replace("SPEND", spend);
         let snapshot = crate::feed::parse_snapshot(&json).expect("literal feed should parse");
@@ -4329,7 +4329,7 @@ mod tests {
     fn two_run_app() -> App {
         let runs = format!(
             "{},{}",
-            cost_run("r-alpha", "omarchy", ALPHA_SERIES),
+            cost_run("r-alpha", "host-b", ALPHA_SERIES),
             cost_run("r-beta", "spare", BETA_SERIES)
         );
         cost_app(&runs, SPEND_SERIES)
@@ -4430,7 +4430,7 @@ mod tests {
     fn a_run_with_an_empty_series_draws_nothing_and_is_not_in_the_legend() {
         let runs = format!(
             "{},{}",
-            cost_run("r-empty", "omarchy", ""),
+            cost_run("r-empty", "host-b", ""),
             cost_run("r-beta", "spare", BETA_SERIES)
         );
         let app = cost_app(&runs, SPEND_SERIES);
@@ -4447,7 +4447,7 @@ mod tests {
 
     #[test]
     fn with_no_point_anywhere_only_the_titled_block_is_drawn() {
-        let app = cost_app(&cost_run("r-empty", "omarchy", ""), "");
+        let app = cost_app(&cost_run("r-empty", "host-b", ""), "");
         let terminal = draw_cost(&app, ThemeId::Regatta);
         assert!(row_text(&terminal, 0).contains(" 8 run cost "));
         assert!(braille_fgs(&terminal).is_empty());
@@ -4457,7 +4457,7 @@ mod tests {
 
     #[test]
     fn a_run_that_is_not_running_is_not_drawn() {
-        let landed = cost_run("r-done", "omarchy", ALPHA_SERIES).replace("running", "landed");
+        let landed = cost_run("r-done", "host-b", ALPHA_SERIES).replace("running", "landed");
         let terminal = draw_cost(&cost_app(&landed, ""), ThemeId::Regatta);
         assert!(braille_fgs(&terminal).is_empty());
     }

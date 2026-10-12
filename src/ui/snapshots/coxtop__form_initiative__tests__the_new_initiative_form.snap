@@ -1,6 +1,5 @@
 ---
 source: src/form_initiative.rs
-assertion_line: 336
 expression: draw(&form)
 ---
 "                                                                                "
@@ -12,7 +11,7 @@ expression: draw(&form)
 "                                                                                "
 "                                                                                "
 "        ┌New initiative────────────────────────────────────────────────┐        "
-"        │ > repo   coxtop  [coxtop/pat-skills]                         │        "
+"        │ > repo   coxtop  [coxtop/example-skills]                     │        "
 "        │   title                                                      │        "
 "        │   body     (0 chars)                                         │        "
 "        │                                                              │        "
