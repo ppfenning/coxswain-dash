@@ -126,7 +126,10 @@ pub fn handle_key(app: &mut App, key: KeyCode) {
     match key {
         KeyCode::Char('`') => app.toggle_chair_panel(),
         KeyCode::Char('\\') => app.hide_chair_panel(),
-        KeyCode::Char('~') => app.chair_panel_mut().cycle_width(),
+        KeyCode::Char('~') => {
+            app.chair_panel_mut().cycle_width();
+            app.sync_chair_pty_size();
+        }
         KeyCode::Tab => app.next_page(),
         KeyCode::BackTab => app.prev_page(),
         KeyCode::Char('t') => app.toggle_theme(),
@@ -493,6 +496,42 @@ mod tests {
             assert!(!app.chair_panel().is_open());
             assert!(fake.0.borrow().calls().contains(&crate::pty::PtyCall::Kill));
         }
+    }
+
+    fn resizes(fake: &crate::pty::SharedFakePty) -> Vec<(u16, u16)> {
+        let calls = fake.0.borrow();
+        calls
+            .calls()
+            .iter()
+            .filter_map(|c| match c {
+                crate::pty::PtyCall::Resize { rows, cols } => Some((*rows, *cols)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn tilde_resizes_the_pty_to_each_width_mode_and_the_cycle_returns_to_the_first_size() {
+        let area = Rect::new(0, 0, 120, 40);
+        let (mut app, fake) = app_with_card();
+        app.set_terminal_size(area);
+        // Release focus so the tilde reaches `handle_key`. The shown card has two options.
+        let release = KeyEvent::new(KeyCode::Char(']'), KeyModifiers::CONTROL);
+        handle_event_with(&mut app, release, &mut |_| {});
+        let first = app.chair_panel().width();
+        let mut sizes = Vec::new();
+        for _ in 0..3 {
+            handle_event_with(&mut app, press(KeyCode::Char('~')), &mut |_| {});
+            sizes.push((app.chair_panel().width(), resizes(&fake).last().copied()));
+        }
+        for (mode, last) in &sizes {
+            let (rows, cols) = crate::chair_panel::inner_size(area, *mode, Some(2));
+            assert_eq!(*last, Some((rows, cols)), "{mode:?}");
+        }
+        assert_eq!(sizes[2].0, first);
+        let (rows, cols) = crate::chair_panel::inner_size(area, first, Some(2));
+        assert_eq!(resizes(&fake).last(), Some(&(rows, cols)));
+        assert_eq!(resizes(&fake).len(), 3);
     }
 
     /// An app on a shared fake pty with runs and machines rows and no published chair session.
