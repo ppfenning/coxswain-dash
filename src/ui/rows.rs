@@ -10,18 +10,19 @@ use crate::feed::{QueueEntry, Run};
 /// The runs frame draws one column header line above its body.
 const RUNS_PINNED: usize = 1;
 
-/// One drawn body line. An entity line holds the index, in the feed list, of the entity it opens.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Line {
-    Header,
+/// One drawn body line. A header holds its group label. An entity line holds the index, in the
+/// feed list, of the entity it opens.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Body {
+    Header(String),
     Entity(usize),
 }
 
-impl Line {
-    fn entity(self) -> Option<usize> {
+impl Body {
+    fn entity(&self) -> Option<usize> {
         match self {
-            Line::Header => None,
-            Line::Entity(index) => Some(index),
+            Body::Header(_) => None,
+            Body::Entity(index) => Some(*index),
         }
     }
 }
@@ -30,7 +31,7 @@ impl Line {
 /// index the line that stands for it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Rows {
-    lines: Vec<Line>,
+    lines: Vec<Body>,
     pinned: usize,
     owner: Vec<Option<usize>>,
 }
@@ -38,10 +39,10 @@ pub(crate) struct Rows {
 /// One entity line per initiative, in the order the runs frame draws them. A collapsed row opens
 /// the initiative's newest run. Older runs of the initiative are owned by that same line.
 pub(crate) fn runs_rows(runs: &[Run]) -> Rows {
-    let lines: Vec<Line> = collapse_runs(runs)
+    let lines: Vec<Body> = collapse_runs(runs)
         .iter()
         .filter_map(|row| runs.iter().position(|r| std::ptr::eq(r, row.run)))
-        .map(Line::Entity)
+        .map(Body::Entity)
         .collect();
     let owner = runs
         .iter()
@@ -62,22 +63,22 @@ pub(crate) fn runs_rows(runs: &[Run]) -> Rows {
 /// The queue's lines. Ungrouped they are the feed order. Grouped, each project gets a header line
 /// over its rows, and rows with no project come last.
 pub(crate) fn queue_rows(queue: &[QueueEntry], grouped: bool) -> Rows {
-    let lines: Vec<Line> = if grouped {
+    let lines: Vec<Body> = if grouped {
         group_queue(queue)
             .into_iter()
-            .flat_map(|(_, members)| {
-                std::iter::once(Line::Header)
+            .flat_map(|(label, members)| {
+                std::iter::once(Body::Header(label.to_string()))
                     .chain(
                         members
                             .into_iter()
                             .filter_map(|m| queue.iter().position(|q| std::ptr::eq(q, m)))
-                            .map(Line::Entity),
+                            .map(Body::Entity),
                     )
                     .collect::<Vec<_>>()
             })
             .collect()
     } else {
-        (0..queue.len()).map(Line::Entity).collect()
+        (0..queue.len()).map(Body::Entity).collect()
     };
     let owner = (0..queue.len())
         .map(|i| lines.iter().position(|line| line.entity() == Some(i)))
@@ -121,9 +122,32 @@ impl Rows {
     pub(crate) fn hit(&self, selected: usize, inner_height: usize, row: usize) -> Option<usize> {
         let body = inner_height.checked_sub(self.pinned)?;
         let in_body = row.checked_sub(self.pinned).filter(|r| *r < body)?;
-        let selected_line = self.owner.get(selected).copied().flatten().unwrap_or(0);
-        let top = window(selected_line, body, self.lines.len());
+        let (top, _) = self.view(selected, body);
         self.lines.get(top + in_body).and_then(|line| line.entity())
+    }
+
+    /// The body lines drawn under the pinned lines, and the position among them of the line
+    /// holding `selected`. `None` when that line is scrolled out of view or `selected` has none.
+    pub(crate) fn visible(
+        &self,
+        selected: usize,
+        inner_height: usize,
+    ) -> (Vec<Body>, Option<usize>) {
+        let body = inner_height.saturating_sub(self.pinned);
+        let (top, line) = self.view(selected, body);
+        let shown: Vec<Body> = self.lines.iter().skip(top).take(body).cloned().collect();
+        let at = self.owner.get(selected).copied().flatten().and(
+            line.checked_sub(top)
+                .filter(|position| *position < shown.len()),
+        );
+        (shown, at)
+    }
+
+    /// The first visible line and the selected line, for a body of `body` lines. A `selected`
+    /// that no line holds counts as the first line. `hit` and `visible` both read this.
+    fn view(&self, selected: usize, body: usize) -> (usize, usize) {
+        let line = self.owner.get(selected).copied().flatten().unwrap_or(0);
+        (window(line, body, self.lines.len()), line)
     }
 }
 
@@ -166,7 +190,7 @@ mod tests {
     #[test]
     fn a_collapsed_initiative_is_one_line_opening_its_newest_run() {
         let rows = runs_rows(&runs(&["a-1", "b-1", "a-2"]));
-        assert_eq!(rows.lines, vec![Line::Entity(2), Line::Entity(1)]);
+        assert_eq!(rows.lines, vec![Body::Entity(2), Body::Entity(1)]);
         assert_eq!(rows.pinned, 1);
         assert_eq!(rows.owner, vec![Some(0), Some(1), Some(0)]);
     }
@@ -183,13 +207,13 @@ mod tests {
         assert_eq!(
             rows.lines,
             vec![
-                Line::Header,
-                Line::Entity(0),
-                Line::Entity(3),
-                Line::Header,
-                Line::Entity(2),
-                Line::Header,
-                Line::Entity(1),
+                Body::Header("x".to_string()),
+                Body::Entity(0),
+                Body::Entity(3),
+                Body::Header("y".to_string()),
+                Body::Entity(2),
+                Body::Header("other".to_string()),
+                Body::Entity(1),
             ]
         );
         assert_eq!(rows.pinned, 0);
@@ -198,7 +222,7 @@ mod tests {
     #[test]
     fn the_ungrouped_queue_keeps_feed_order() {
         let rows = queue_rows(&queue(&[("q0", Some("x")), ("q1", None)]), false);
-        assert_eq!(rows.lines, vec![Line::Entity(0), Line::Entity(1)]);
+        assert_eq!(rows.lines, vec![Body::Entity(0), Body::Entity(1)]);
     }
 
     #[test]
@@ -261,5 +285,52 @@ mod tests {
         assert_eq!(rows.hit(29, 11, 1), Some(20));
         assert_eq!(rows.hit(29, 11, 10), Some(29));
         assert_eq!(rows.hit(29, 11, 11), None);
+    }
+
+    #[test]
+    fn visible_windows_a_long_list_on_the_selection() {
+        let ids: Vec<String> = (0..30).map(|i| format!("i{i}-1")).collect();
+        let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
+        let rows = runs_rows(&runs(&ids));
+        let (shown, at) = rows.visible(24, 11);
+        assert_eq!(shown.len(), 10);
+        assert_eq!(shown.first(), Some(&Body::Entity(15)));
+        assert_eq!(shown.last(), Some(&Body::Entity(24)));
+        assert_eq!(at, Some(9));
+    }
+
+    #[test]
+    fn visible_keeps_the_group_labels_in_the_headers() {
+        let q = queue(&[("q0", Some("x")), ("q1", None), ("q2", Some("y"))]);
+        let (shown, at) = queue_rows(&q, true).visible(2, 10);
+        assert_eq!(
+            shown,
+            vec![
+                Body::Header("x".to_string()),
+                Body::Entity(0),
+                Body::Header("y".to_string()),
+                Body::Entity(2),
+                Body::Header("other".to_string()),
+                Body::Entity(1),
+            ]
+        );
+        assert_eq!(at, Some(3));
+    }
+
+    #[test]
+    fn visible_agrees_with_hit_on_every_row() {
+        let q = queue(&[
+            ("q0", Some("x")),
+            ("q1", None),
+            ("q2", Some("y")),
+            ("q3", Some("x")),
+        ]);
+        let rows = queue_rows(&q, true);
+        for (selected, height) in [(0, 4), (3, 4), (1, 5), (2, 3), (0, 20)] {
+            let (shown, _) = rows.visible(selected, height);
+            for (row, line) in shown.iter().enumerate() {
+                assert_eq!(rows.hit(selected, height, row), line.entity());
+            }
+        }
     }
 }

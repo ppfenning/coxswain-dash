@@ -16,7 +16,7 @@ use ratatui::{
 };
 
 use crate::actions::{Target, bindings};
-use crate::app::{App, Focus, group_queue};
+use crate::app::{App, Focus};
 use crate::feed::{
     Chair, CurrentAction, FeedSnapshot, HistoryRow, HistoryToday, InboxEntry, Machine, Outcome,
     QueueEntry, Run, RunEnd,
@@ -25,6 +25,7 @@ use crate::form::{KEY_ADD_MACHINE, KEY_EDIT, KEY_NEW, KEY_REMOVE};
 use crate::theme::Theme;
 
 use super::chair_card::{Freshness, TICK_INTERVAL_S, beat_freshness, short_age};
+use super::rows::{Body, queue_rows, runs_rows};
 use super::run_cost::{chart_bounds, dollar_labels, drawable};
 use super::{CollapsedRun, collapse_runs, count_suffix, end_chip, local_time};
 
@@ -542,12 +543,20 @@ fn render_frame(
             theme,
         ),
         3 => render_lanes(f, rect, app, theme),
-        4 => render_runs(f, rect, snapshot, frame_selection(app, Focus::Runs), theme),
+        4 => render_runs(
+            f,
+            rect,
+            snapshot,
+            app.selected_in(Focus::Runs),
+            app.focus() == Focus::Runs,
+            theme,
+        ),
         5 => render_queue(
             f,
             rect,
             snapshot,
-            frame_selection(app, Focus::Queue),
+            app.selected_in(Focus::Queue),
+            app.focus() == Focus::Queue,
             app.queue_grouped(),
             theme,
         ),
@@ -1256,14 +1265,17 @@ fn run_row(
     }
 }
 
+/// The runs frame. `selected` is the frame's own selection and fixes its window whether or not it
+/// has focus. Only a `focused` frame highlights a line.
 fn render_runs(
     f: &mut Frame,
     rect: Rect,
     snapshot: &FeedSnapshot,
-    selected: Option<usize>,
+    selected: usize,
+    focused: bool,
     theme: &Theme,
 ) {
-    let block = numbered_block(5, FRAME_NAMES[4], theme, selected.is_some());
+    let block = numbered_block(5, FRAME_NAMES[4], theme, focused);
     let inner = block.inner(rect);
     let collapsed = collapse_runs(&snapshot.runs);
     let count_w = collapsed
@@ -1276,29 +1288,26 @@ fn render_runs(
     let project_w = project_width(usize::from(inner.width), chip_reserve);
     let stage_w = stage_width(usize::from(inner.width), chip_reserve);
     let header = std::iter::once(run_header(project_w, stage_w, theme));
-    let shown = selected_run_row(&snapshot.runs, selected);
-    let rows = collapsed
-        .iter()
-        .enumerate()
-        .map(|(i, row)| run_row(row, shown == Some(i), project_w, stage_w, theme));
+    let (body, at) = runs_rows(&snapshot.runs).visible(selected, usize::from(inner.height));
+    let at = at.filter(|_| focused);
+    let rows = body.iter().enumerate().filter_map(|(i, line)| match line {
+        Body::Entity(index) => collapsed
+            .iter()
+            .find(|row| {
+                snapshot
+                    .runs
+                    .get(*index)
+                    .is_some_and(|r| std::ptr::eq(r, row.run))
+            })
+            .map(|row| run_row(row, at == Some(i), project_w, stage_w, theme)),
+        Body::Header(_) => None,
+    });
     let paragraph = Paragraph::new(header.chain(rows).collect::<Vec<_>>())
         .block(block)
         .style(base_style(theme));
     f.render_widget(paragraph, rect);
     // The header takes the first inner row.
-    paint_selected_row(f, inner, shown.map(|i| i + 1), theme);
-}
-
-/// The collapsed row that holds `runs[selected]`. `selected` indexes the uncollapsed list. Rows keep
-/// first-seen order, so the row is the one whose count grows when `runs[selected]` joins the runs
-/// before it, or the new last row when its initiative has not appeared yet.
-fn selected_run_row(runs: &[Run], selected: Option<usize>) -> Option<usize> {
-    let sel = selected?;
-    let with = collapse_runs(runs.get(..=sel)?);
-    let without = collapse_runs(&runs[..sel]);
-    with.iter()
-        .enumerate()
-        .position(|(i, w)| without.get(i).is_none_or(|o| o.count != w.count))
+    paint_selected_row(f, inner, at.map(|i| i + 1), theme);
 }
 
 /// Fills row `row` of `inner` with `theme.selected_row`, keeping what is drawn on it. A line's own
@@ -1599,65 +1608,39 @@ fn queue_line(q: &QueueEntry, selected: bool, width: usize, theme: &Theme) -> Li
     }
 }
 
-/// The queue's lines and the line the selected row lands on. Grouped, each project gets a dim
-/// header line over its rows, with no-project rows last under `other`. `selected` indexes `rows`.
-fn queue_lines(
-    rows: &[QueueEntry],
-    grouped: bool,
-    selected: Option<usize>,
-    width: usize,
-    theme: &Theme,
-) -> (Vec<Line<'static>>, Option<usize>) {
-    let chosen = selected.and_then(|i| rows.get(i));
-    let row = |q: &QueueEntry| {
-        let is_chosen = chosen.is_some_and(|c| std::ptr::eq(c, q));
-        (queue_line(q, is_chosen, width, theme), is_chosen)
-    };
-    let items: Vec<(Line<'static>, bool)> = if grouped {
-        group_queue(rows)
-            .into_iter()
-            .flat_map(|(label, members)| {
-                std::iter::once((
-                    Line::styled(label.to_string(), Style::default().fg(theme.dim)),
-                    false,
-                ))
-                .chain(members.into_iter().map(row))
-                .collect::<Vec<_>>()
-            })
-            .collect()
-    } else {
-        rows.iter().map(row).collect()
-    };
-    let at = items.iter().position(|(_, is_chosen)| *is_chosen);
-    (items.into_iter().map(|(line, _)| line).collect(), at)
-}
-
+/// The queue frame. `selected` indexes the queue and fixes the window whether or not the frame
+/// has focus. Only a `focused` frame highlights a line. Grouped, each project gets a dim header
+/// line over its rows, with no-project rows last under `other`.
 fn render_queue(
     f: &mut Frame,
     rect: Rect,
     snapshot: &FeedSnapshot,
-    selected: Option<usize>,
+    selected: usize,
+    focused: bool,
     grouped: bool,
     theme: &Theme,
 ) {
-    let block = numbered_block(6, FRAME_NAMES[5], theme, selected.is_some());
+    let block = numbered_block(6, FRAME_NAMES[5], theme, focused);
     let inner = block.inner(rect);
-    let (all, at) = queue_lines(
-        &snapshot.queue,
-        grouped,
-        selected,
-        usize::from(inner.width),
-        theme,
-    );
-    let (shown, more) = overflow_split(all.len(), usize::MAX, usize::from(inner.height));
-    let lines: Vec<Line> = all
-        .into_iter()
-        .take(shown)
-        .chain((more > 0).then(|| more_line(more, theme)))
+    let (body, at) =
+        queue_rows(&snapshot.queue, grouped).visible(selected, usize::from(inner.height));
+    let at = at.filter(|_| focused);
+    let lines: Vec<Line> = body
+        .iter()
+        .enumerate()
+        .filter_map(|(i, line)| match line {
+            Body::Header(label) => {
+                Some(Line::styled(label.clone(), Style::default().fg(theme.dim)))
+            }
+            Body::Entity(index) => snapshot
+                .queue
+                .get(*index)
+                .map(|q| queue_line(q, at == Some(i), usize::from(inner.width), theme)),
+        })
         .collect();
     let paragraph = Paragraph::new(lines).block(block).style(base_style(theme));
     f.render_widget(paragraph, rect);
-    paint_selected_row(f, inner, at.filter(|i| *i < shown), theme);
+    paint_selected_row(f, inner, at, theme);
 }
 
 /// Inbox items drawn before the rest fold into `+ N more`.
@@ -2835,7 +2818,7 @@ mod tests {
         let theme = crate::theme::resolve_for(theme_id, Some("truecolor"));
         let mut terminal = Terminal::new(TestBackend::new(120, height)).expect("terminal");
         terminal
-            .draw(|f| render_runs(f, f.area(), app.snapshot().expect("feed"), None, &theme))
+            .draw(|f| render_runs(f, f.area(), app.snapshot().expect("feed"), 0, false, &theme))
             .expect("draw should not fail");
         terminal
     }
@@ -2935,7 +2918,8 @@ mod tests {
                     f,
                     Rect::new(0, 6, 120, 7),
                     app.snapshot().expect("feed"),
-                    None,
+                    0,
+                    false,
                     &theme,
                 );
             })
@@ -3035,7 +3019,7 @@ mod tests {
     }
 
     #[test]
-    fn an_overflowing_queue_ends_on_a_dim_more_line() {
+    fn an_overflowing_queue_scrolls_and_draws_no_more_line() {
         let app = feed_app("", &queue_json(10, 0, 3), "");
         let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
         let mut terminal = Terminal::new(TestBackend::new(60, 5)).expect("terminal");
@@ -3045,18 +3029,16 @@ mod tests {
                     f,
                     f.area(),
                     app.snapshot().expect("snapshot"),
-                    None,
+                    0,
+                    false,
                     false,
                     &theme,
                 );
             })
             .expect("draw should not fail");
-        assert!(row_text(&terminal, 2).contains("init-1"));
-        assert!(row_text(&terminal, 3).contains("+ 8 more"));
-        assert_eq!(
-            fg_at(&terminal, 3, "+ 8"),
-            Some(Color::Rgb(0x8b, 0x94, 0x9e))
-        );
+        assert!(row_text(&terminal, 1).contains("init-0"));
+        assert!(row_text(&terminal, 3).contains("init-2"));
+        assert!((0..5).all(|y| !row_text(&terminal, y).contains("more")));
     }
 
     fn inbox_rect(app: &App) -> Rect {
@@ -3446,7 +3428,7 @@ mod tests {
         let snapshot = app.snapshot().expect("snapshot");
         let mut terminal = Terminal::new(TestBackend::new(width, 6)).expect("terminal");
         terminal
-            .draw(|f| render_runs(f, f.area(), snapshot, None, theme))
+            .draw(|f| render_runs(f, f.area(), snapshot, 0, false, theme))
             .expect("draw should not fail");
         terminal
     }
@@ -3455,7 +3437,7 @@ mod tests {
         let snapshot = app.snapshot().expect("snapshot");
         let mut terminal = Terminal::new(TestBackend::new(60, 5)).expect("terminal");
         terminal
-            .draw(|f| render_queue(f, f.area(), snapshot, None, app.queue_grouped(), theme))
+            .draw(|f| render_queue(f, f.area(), snapshot, 0, false, app.queue_grouped(), theme))
             .expect("draw should not fail");
         terminal
     }
@@ -3741,7 +3723,7 @@ mod tests {
         let snapshot = app.snapshot().expect("snapshot");
         let mut terminal = Terminal::new(TestBackend::new(60, 9)).expect("terminal");
         terminal
-            .draw(|f| render_queue(f, f.area(), snapshot, None, app.queue_grouped(), theme))
+            .draw(|f| render_queue(f, f.area(), snapshot, 0, false, app.queue_grouped(), theme))
             .expect("draw should not fail");
         terminal
     }
@@ -3764,27 +3746,149 @@ mod tests {
         assert_eq!(terminal.backend().buffer()[(x, 1)].fg, theme.dim);
     }
 
-    #[test]
-    fn grouped_queue_lines_follow_the_groups_and_move_the_selection_with_its_row() {
+    /// The queue frame alone, 60 wide, windowed on `selected`.
+    fn draw_queue_at(
+        app: &App,
+        selected: usize,
+        focused: bool,
+        height: u16,
+    ) -> Terminal<TestBackend> {
         let theme = project_theme();
-        let app = queue_with_two_projects_and_a_null();
-        let rows = &app.snapshot().expect("snapshot").queue;
-        let text = |line: &Line| {
-            line.spans
-                .iter()
-                .map(|s| s.content.as_ref())
-                .collect::<String>()
-        };
-        let (lines, at) = queue_lines(rows, true, Some(3), 60, &theme);
-        let heads: Vec<String> = lines
-            .iter()
-            .map(text)
-            .filter(|t| !t.starts_with(' ') && !t.starts_with('\u{25b6}'))
+        let snapshot = app.snapshot().expect("snapshot");
+        let mut terminal = Terminal::new(TestBackend::new(60, height)).expect("terminal");
+        terminal
+            .draw(|f| {
+                render_queue(
+                    f,
+                    f.area(),
+                    snapshot,
+                    selected,
+                    focused,
+                    app.queue_grouped(),
+                    &theme,
+                )
+            })
+            .expect("draw should not fail");
+        terminal
+    }
+
+    /// The runs frame alone, 120 wide, windowed on `selected`.
+    fn draw_runs_at(
+        app: &App,
+        selected: usize,
+        focused: bool,
+        height: u16,
+    ) -> Terminal<TestBackend> {
+        let theme = project_theme();
+        let snapshot = app.snapshot().expect("snapshot");
+        let mut terminal = Terminal::new(TestBackend::new(120, height)).expect("terminal");
+        terminal
+            .draw(|f| render_runs(f, f.area(), snapshot, selected, focused, &theme))
+            .expect("draw should not fail");
+        terminal
+    }
+
+    /// `n` runs, each its own initiative, named `r0-1` to `r{n-1}-1`.
+    fn thirty_runs(n: usize) -> App {
+        let runs: Vec<String> = (0..n)
+            .map(|i| run_json(&format!("r{i}-1"), "running"))
             .collect();
-        assert_eq!(heads, ["example-repo", "example-app", "other"]);
-        assert_eq!(at, Some(2));
-        assert!(text(&lines[2]).starts_with("\u{25b6} delta"));
-        assert_eq!(queue_lines(rows, false, Some(3), 60, &theme).1, Some(3));
+        feed_app(&runs.join(","), "", "")
+    }
+
+    /// Whether any cell in rows `from..to` sits on the selected-row background.
+    fn any_selected_bg(terminal: &Terminal<TestBackend>, from: u16, to: u16) -> bool {
+        let theme = project_theme();
+        let width = terminal.backend().buffer().area.width;
+        (from..to).any(|y| (0..width).any(|x| cell(terminal, x, y).bg == theme.selected_row))
+    }
+
+    #[test]
+    fn a_collapsed_row_is_one_highlighted_line_whichever_of_its_runs_is_selected() {
+        let theme = project_theme();
+        let runs = [
+            run_json("a-1", "running"),
+            run_json("a-2", "running"),
+            run_json("b-1", "running"),
+        ];
+        let app = feed_app(&runs.join(","), "", "");
+        let terminal = draw_runs_at(&app, 0, true, 6);
+        assert!(row_text(&terminal, 2).contains("\u{25b6} a-2"));
+        assert!(row_text(&terminal, 2).contains("\u{d7}2"));
+        assert_eq!(cell(&terminal, 100, 2).bg, theme.selected_row);
+        assert!(!any_selected_bg(&terminal, 1, 2));
+        assert!(!any_selected_bg(&terminal, 3, 5));
+    }
+
+    #[test]
+    fn the_grouped_queue_highlight_lands_on_an_entity_line_not_its_header() {
+        let theme = project_theme();
+        let mut app = queue_with_two_projects_and_a_null();
+        app.toggle_queue_grouped();
+        let terminal = draw_queue_at(&app, 3, true, 9);
+        assert!(row_text(&terminal, 3).starts_with("\u{2502}\u{25b6} delta"));
+        assert_eq!(cell(&terminal, 50, 3).bg, theme.selected_row);
+        assert!(!any_selected_bg(&terminal, 1, 3));
+        assert!(!any_selected_bg(&terminal, 4, 8));
+        let x = col_of(&terminal, 1, "example-repo");
+        assert_eq!(cell(&terminal, x, 1).fg, theme.dim);
+    }
+
+    #[test]
+    fn the_25th_of_thirty_runs_is_drawn_in_view() {
+        let app = thirty_runs(30);
+        let terminal = draw_runs_at(&app, 24, true, 8);
+        assert!(row_text(&terminal, 6).contains("\u{25b6} r24-1"));
+        assert!(any_selected_bg(&terminal, 6, 7));
+        assert!(row_text(&terminal, 2).contains("r20-1"));
+        assert!((0..8).all(|y| !row_text(&terminal, y).contains("more")));
+        insta::assert_snapshot!(terminal.backend().to_string());
+    }
+
+    #[test]
+    fn an_unfocused_frame_scrolls_to_its_own_selection_and_highlights_nothing() {
+        let theme = project_theme();
+        let mut app = thirty_runs(30);
+        app.select_at(24);
+        app.cycle_focus_next();
+        let snapshot = app.snapshot().expect("snapshot");
+        let mut terminal = Terminal::new(TestBackend::new(120, 8)).expect("terminal");
+        terminal
+            .draw(|f| render_frame(f, f.area(), 4, snapshot, &app, &theme))
+            .expect("draw should not fail");
+        assert!(row_text(&terminal, 6).contains("r24-1"));
+        assert!(!row_text(&terminal, 6).contains('\u{25b6}'));
+        assert!(!any_selected_bg(&terminal, 0, 8));
+    }
+
+    #[test]
+    fn every_drawn_body_row_is_the_entity_hit_returns_for_it() {
+        let runs_app = thirty_runs(30);
+        let runs = &runs_app.snapshot().expect("snapshot").runs;
+        let rows = runs_rows(runs);
+        let terminal = draw_runs_at(&runs_app, 24, true, 8);
+        for row in 0..6_u16 {
+            let text = row_text(&terminal, row + 1);
+            match rows.hit(24, 6, usize::from(row)) {
+                Some(i) => assert!(text.contains(&runs[i].run), "row {row}: {text:?}"),
+                None => assert!(!text.contains("r2"), "row {row}: {text:?}"),
+            }
+        }
+        let mut queue_app = queue_with_two_projects_and_a_null();
+        queue_app.toggle_queue_grouped();
+        let queue = &queue_app.snapshot().expect("snapshot").queue;
+        let rows = queue_rows(queue, true);
+        let terminal = draw_queue_at(&queue_app, 3, true, 6);
+        for row in 0..4_u16 {
+            let text = row_text(&terminal, row + 1);
+            match rows.hit(3, 4, usize::from(row)) {
+                Some(i) => assert!(text.contains(&queue[i].initiative), "row {row}: {text:?}"),
+                None => assert!(
+                    queue.iter().all(|q| !text.contains(&q.initiative)),
+                    "row {row}: {text:?}"
+                ),
+            }
+        }
     }
 
     #[test]
