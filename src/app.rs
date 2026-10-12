@@ -2804,7 +2804,7 @@ mod tests {
         app.open_add_machine();
         type_into_form(&mut app, "edge-1");
         form_keys(&mut app, &[Enter]);
-        type_into_form(&mut app, "pat@edge-1");
+        type_into_form(&mut app, "operator@edge-1");
         form_keys(&mut app, &[Enter, Backspace]);
         type_into_form(&mut app, "4");
         form_keys(&mut app, &[Enter, Enter]);
@@ -2825,7 +2825,7 @@ mod tests {
         "add",
         "edge-1",
         "--ssh",
-        "pat@edge-1",
+        "operator@edge-1",
         "--capacity",
         "4",
     ];
@@ -2838,7 +2838,7 @@ mod tests {
         };
         assert_eq!(
             confirm.command,
-            "cox host add edge-1 --ssh pat@edge-1 --capacity 4"
+            "cox host add edge-1 --ssh operator@edge-1 --capacity 4"
         );
         assert!(app.form().is_some());
     }
@@ -2851,7 +2851,7 @@ mod tests {
         assert_eq!(app.take_pending(), None);
         let form = app.form().expect("the form stays open");
         assert_eq!(form.value_of("name"), "edge-1");
-        assert_eq!(form.value_of("ssh"), "pat@edge-1");
+        assert_eq!(form.value_of("ssh"), "operator@edge-1");
         assert_eq!(form.value_of("capacity"), "4");
     }
 
@@ -3058,7 +3058,7 @@ mod tests {
 
     #[test]
     fn open_new_initiative_offers_the_queues_distinct_repos() {
-        let json = r#"{"schema":1,"at":"2026-09-29T00:00:00Z","chair":{"holder":"h","host":"h","epoch":1,"liveness":"live","beat_age_s":0},"spend":{"five_hour_fraction":0.0,"five_hour_source":"meter","weekly_fraction":0.0,"weekly_source":"meter","hard_stop_fraction":0.0,"five_hour_resets_at":"2026-09-29T00:00:00Z","weekly_resets_at":"2026-09-29T00:00:00Z"},"machines":[],"runs":[],"queue":[{"initiative":"a","priority":1,"phases_landed":0,"phases_total":1,"current_phase":"p","repo":"coxtop"},{"initiative":"b","priority":1,"phases_landed":0,"phases_total":1,"current_phase":"p","repo":"pat-skills"},{"initiative":"c","priority":1,"phases_landed":0,"phases_total":1,"current_phase":"p","repo":"coxtop"}],"inbox":[],"watch":[]}"#;
+        let json = r#"{"schema":1,"at":"2026-09-29T00:00:00Z","chair":{"holder":"h","host":"h","epoch":1,"liveness":"live","beat_age_s":0},"spend":{"five_hour_fraction":0.0,"five_hour_source":"meter","weekly_fraction":0.0,"weekly_source":"meter","hard_stop_fraction":0.0,"five_hour_resets_at":"2026-09-29T00:00:00Z","weekly_resets_at":"2026-09-29T00:00:00Z"},"machines":[],"runs":[],"queue":[{"initiative":"a","priority":1,"phases_landed":0,"phases_total":1,"current_phase":"p","repo":"coxtop"},{"initiative":"b","priority":1,"phases_landed":0,"phases_total":1,"current_phase":"p","repo":"example-skills"},{"initiative":"c","priority":1,"phases_landed":0,"phases_total":1,"current_phase":"p","repo":"coxtop"}],"inbox":[],"watch":[]}"#;
         let mut app = App::default();
         app.apply_snapshot(crate::feed::parse_snapshot(json).expect("literal snapshot"));
         app.open_new_initiative();
@@ -3067,7 +3067,7 @@ mod tests {
             kind,
             Some(crate::form::FieldKind::Choice(argv(&[
                 "coxtop",
-                "pat-skills"
+                "example-skills"
             ])))
         );
     }

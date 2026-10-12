@@ -544,7 +544,7 @@ mod tests {
     fn parse_snapshot_reads_the_v1_fixture() {
         let snapshot = parse_snapshot(FIXTURE).expect("fixture should parse");
         assert_eq!(snapshot.schema, 1);
-        assert_eq!(snapshot.chair.host, "omarchy");
+        assert_eq!(snapshot.chair.host, "host-b");
         assert_eq!(snapshot.runs[0].node, "build");
         assert_eq!(snapshot.inbox[0].kind, "needs_chair");
     }
@@ -610,7 +610,7 @@ mod tests {
     }
 
     const OLD_CHAIR: &str =
-        r#"{"holder":"h","host":"omarchy","epoch":1,"liveness":"live","beat_age_s":4"#;
+        r#"{"holder":"h","host":"host-b","epoch":1,"liveness":"live","beat_age_s":4"#;
 
     #[test]
     fn parse_snapshot_reads_the_chair_tick_fields() {
@@ -732,8 +732,8 @@ mod tests {
         assert!(snapshot.spend_series.is_empty());
     }
 
-    const LANDED_ROW: &str = r#"{"run":"dash-feed-0","machine":"omarchy","initiative":"dash-feed","ended_at":"2026-09-28T23:50:00Z","outcome":"landed","cost_usd":2.15,"landed":[{"task":"p1-foundations-task","pr":41}]}"#;
-    const QUARANTINED_ROW: &str = r#"{"run":"dash-feed-9","machine":"omarchy","initiative":"dash-feed","ended_at":"2026-09-28T23:40:00Z","outcome":"quarantined","cost_usd":0.42,"landed":[],"cause":"review rejected twice"}"#;
+    const LANDED_ROW: &str = r#"{"run":"dash-feed-0","machine":"host-b","initiative":"dash-feed","ended_at":"2026-09-28T23:50:00Z","outcome":"landed","cost_usd":2.15,"landed":[{"task":"p1-foundations-task","pr":41}]}"#;
+    const QUARANTINED_ROW: &str = r#"{"run":"dash-feed-9","machine":"host-b","initiative":"dash-feed","ended_at":"2026-09-28T23:40:00Z","outcome":"quarantined","cost_usd":0.42,"landed":[],"cause":"review rejected twice"}"#;
 
     fn with_history(history: &str, today: &str) -> String {
         with_chair(&format!("{OLD_CHAIR}}}")).replace(

@@ -257,19 +257,19 @@ mod tests {
 
     #[test]
     fn renders_the_header_with_a_project() {
-        let terminal = draw_with_project(ThemeId::Regatta, Some("pat-skylight"));
+        let terminal = draw_with_project(ThemeId::Regatta, Some("example-repo"));
         insta::assert_snapshot!(terminal.backend().to_string());
     }
 
     #[test]
     fn the_project_in_the_header_is_dim_and_the_rest_stays_accent() {
         let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
-        let terminal = draw_with(&theme, Some("pat-skylight"));
+        let terminal = draw_with(&theme, Some("example-repo"));
         let buffer = terminal.backend().buffer();
         let row: String = (1..119)
             .map(|x| buffer[(x, 1)].symbol().to_string())
             .collect();
-        let start = 1 + row.find("pat-skylight").expect("the project is drawn") as u16;
+        let start = 1 + row.find("example-repo").expect("the project is drawn") as u16;
         assert_eq!(buffer[(start, 1)].fg, theme.dim);
         assert_eq!(buffer[(start + 11, 1)].fg, theme.dim);
         assert_eq!(buffer[(1, 1)].fg, theme.accent);

@@ -1284,13 +1284,13 @@ mod tests {
         app.open_add_machine();
         type_keys(&mut app, "edge-1");
         handle_key(&mut app, KeyCode::Enter);
-        type_keys(&mut app, "pat@edge-1");
+        type_keys(&mut app, "operator@edge-1");
         [KeyCode::Enter, KeyCode::Enter, KeyCode::Enter]
             .into_iter()
             .for_each(|code| handle_key(&mut app, code));
         assert_eq!(
             confirm_command(&app),
-            Some("cox host add edge-1 --ssh pat@edge-1 --capacity 1")
+            Some("cox host add edge-1 --ssh operator@edge-1 --capacity 1")
         );
         handle_key(&mut app, KeyCode::Char('y'));
         let argv = app.take_pending().map(|p| p.argv);

@@ -694,7 +694,7 @@ mod tests {
             "[]"
         };
         let json = format!(
-            r#"{{"schema":1,"at":"2026-09-29T00:00:00Z","chair":{{"holder":"chair@omarchy:1","host":"omarchy","epoch":1,"liveness":"live","beat_age_s":4,"session":"s1"}},"spend":{{"five_hour_fraction":0.1,"five_hour_source":"meter","weekly_fraction":0.2,"weekly_source":"meter","hard_stop_fraction":0.9,"five_hour_resets_at":"2026-09-29T02:00:00Z","weekly_resets_at":"2026-10-04T04:00:00Z"}},"machines":[],"runs":[],"queue":[],"inbox":[],"watch":[],"decisions":{decisions}}}"#
+            r#"{{"schema":1,"at":"2026-09-29T00:00:00Z","chair":{{"holder":"chair@host-b:1","host":"host-b","epoch":1,"liveness":"live","beat_age_s":4,"session":"s1"}},"spend":{{"five_hour_fraction":0.1,"five_hour_source":"meter","weekly_fraction":0.2,"weekly_source":"meter","hard_stop_fraction":0.9,"five_hour_resets_at":"2026-09-29T02:00:00Z","weekly_resets_at":"2026-10-04T04:00:00Z"}},"machines":[],"runs":[],"queue":[],"inbox":[],"watch":[],"decisions":{decisions}}}"#
         );
         crate::feed::parse_snapshot(&json).expect("literal snapshot should parse")
     }

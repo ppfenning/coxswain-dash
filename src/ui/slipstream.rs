@@ -699,7 +699,7 @@ mod tests {
     /// One run for `id` that ended as `end`, a bare kind or a `{kind, cause}` object.
     fn run_json(id: &str, end: serde_json::Value) -> serde_json::Value {
         serde_json::json!({
-            "run": id, "machine": "omarchy", "phase": "p1", "node": "build", "attempt": 1,
+            "run": id, "machine": "host-b", "phase": "p1", "node": "build", "attempt": 1,
             "turns": 1, "cost": 1.5, "verdict": "none", "status": "running",
             "cost_series": [], "end": end
         })

@@ -3,7 +3,7 @@
   "kind": "run",
   "at": "2026-09-29T12:00:00Z",
   "run": "dash-feed-1",
-  "machine": "omarchy",
+  "machine": "host-b",
   "initiative": "dash-feed-streams-a-versioned-json-snapshot-of",
   "phase": "p1-foundations",
   "steps": [

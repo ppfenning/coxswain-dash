@@ -434,7 +434,7 @@ mod tests {
         assert_eq!(health.store.latency_ms, Some(42));
         assert_eq!(
             health.chair_lease.holder.as_deref(),
-            Some("chair-loop@omarchy")
+            Some("chair-loop@host-b")
         );
         assert_eq!(health.housekeeping.age_hours, Some(3.5));
     }
