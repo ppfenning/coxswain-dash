@@ -18,18 +18,49 @@ pub struct SettingsSection {
 
 /// One setting. `value` is the display string the verb gives, never interpreted.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(from = "WireRow")]
 pub struct SettingsRow {
     pub section: String,
     pub scope: String,
     pub key: String,
-    /// The verb prints the raw value (a number, a boolean or a string); it is kept as display text.
-    #[serde(deserialize_with = "display_value")]
     pub value: String,
-    // The verb names the source file `source_file`; `file` and `source` are accepted as spellings of the same field.
-    #[serde(rename = "source_file", alias = "file", alias = "source")]
     pub source: String,
     pub tracked: bool,
-    pub pat_only: bool,
+    pub operator_only: bool,
+}
+
+/// A row as the verb prints it, before the two spellings of the operator-only flag are merged.
+#[derive(Deserialize)]
+struct WireRow {
+    section: String,
+    scope: String,
+    key: String,
+    /// The verb prints the raw value (a number, a boolean or a string); it is kept as display text.
+    #[serde(deserialize_with = "display_value")]
+    value: String,
+    // The verb names the source file `source_file`; `file` and `source` are accepted as spellings of the same field.
+    #[serde(rename = "source_file", alias = "file", alias = "source")]
+    source: String,
+    tracked: bool,
+    #[serde(default)]
+    operator_only: Option<bool>,
+    #[serde(default)]
+    pat_only: Option<bool>,
+}
+
+impl From<WireRow> for SettingsRow {
+    fn from(w: WireRow) -> Self {
+        Self {
+            section: w.section,
+            scope: w.scope,
+            key: w.key,
+            value: w.value,
+            source: w.source,
+            tracked: w.tracked,
+            // An older tools release sends only `pat_only`.
+            operator_only: w.operator_only.or(w.pat_only).unwrap_or(false),
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -112,8 +143,18 @@ mod tests {
             value: "v".into(),
             source: "f".into(),
             tracked,
-            pat_only: false,
+            operator_only: false,
         }
+    }
+
+    fn one_row(flags: &str) -> String {
+        format!(
+            r#"{{"sections":[{{"id":"lanes","rows":[{{"section":"lanes","scope":"repo","key":"k","value":"1","file":"f","tracked":true{flags}}}]}}]}}"#
+        )
+    }
+
+    fn flag(flags: &str) -> bool {
+        parse(&one_row(flags)).unwrap().sections[0].rows[0].operator_only
     }
 
     #[test]
@@ -131,17 +172,38 @@ mod tests {
                 value: "4".into(),
                 source: ".cox/settings.toml".into(),
                 tracked: true,
-                pat_only: false,
+                operator_only: false,
             }]
         );
         assert_eq!(snap.sections[1].rows[0].value, "$20");
     }
 
     #[test]
-    fn a_pat_only_row_keeps_its_flag() {
+    fn an_operator_only_row_keeps_its_flag() {
         let snap = parse(TWO).unwrap();
-        assert!(!snap.sections[0].rows[0].pat_only);
-        assert!(snap.sections[1].rows[0].pat_only);
+        assert!(!snap.sections[0].rows[0].operator_only);
+        assert!(snap.sections[1].rows[0].operator_only);
+    }
+
+    #[test]
+    fn a_payload_with_only_operator_only_is_read() {
+        assert!(flag(r#","operator_only":true"#));
+    }
+
+    #[test]
+    fn a_payload_with_only_pat_only_falls_back() {
+        assert!(flag(r#","pat_only":true"#));
+    }
+
+    #[test]
+    fn operator_only_wins_when_both_keys_differ() {
+        assert!(!flag(r#","operator_only":false,"pat_only":true"#));
+        assert!(flag(r#","operator_only":true,"pat_only":false"#));
+    }
+
+    #[test]
+    fn neither_key_is_false() {
+        assert!(!flag(""));
     }
 
     #[test]
@@ -159,7 +221,7 @@ mod tests {
 
     #[test]
     fn a_missing_field_is_an_err() {
-        let text = r#"{"sections":[{"id":"lanes","rows":[{"section":"lanes","scope":"repo","key":"k","value":"1","file":"f","tracked":true}]}]}"#;
+        let text = r#"{"sections":[{"id":"lanes","rows":[{"section":"lanes","scope":"repo","key":"k","value":"1","file":"f"}]}]}"#;
         assert!(parse(text).is_err());
     }
 
