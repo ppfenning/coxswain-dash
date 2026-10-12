@@ -164,7 +164,7 @@ mod tests {
     }
 
     fn filled_new(repo: &str, title: &str, path: Option<&str>, text: &str) -> Form {
-        let mut form = new_form(vec!["coxtop".into(), "example-skills".into()]);
+        let mut form = new_form(vec!["coxtop".into(), "example-repo".into()]);
         form.fields[0].value = repo.to_string();
         form.fields[1].value = title.to_string();
         form.set_body(2, path.map(PathBuf::from), text.to_string());
@@ -182,7 +182,7 @@ mod tests {
 
     #[test]
     fn the_new_form_has_a_repo_choice_a_title_and_a_body() {
-        let form = new_form(vec!["coxtop".into(), "example-skills".into()]);
+        let form = new_form(vec!["coxtop".into(), "example-repo".into()]);
         let shape: Vec<(&str, bool)> = form
             .fields
             .iter()
@@ -263,7 +263,7 @@ mod tests {
     #[test]
     fn an_edit_with_every_field_changed_orders_title_repo_body_file() {
         let mut form = edit_form("p2-x", prefill());
-        form.fields[0].value = "example-skills".into();
+        form.fields[0].value = "example-repo".into();
         form.fields[1].value = "T".into();
         form.set_body(2, Some(PathBuf::from("/tmp/e.md")), "new body".into());
         let plan = form.submit().unwrap();
@@ -277,7 +277,7 @@ mod tests {
                 "--title",
                 "T",
                 "--repo",
-                "example-skills",
+                "example-repo",
                 "--body-file",
                 "/tmp/e.md"
             ])
@@ -331,6 +331,7 @@ mod tests {
 
     #[test]
     fn the_new_initiative_form() {
+        // Literal kept: the snapshot renders it; the snapshot task renames both.
         let form = new_form(vec!["coxtop".into(), "example-skills".into()]);
         insta::with_settings!({snapshot_path => "ui/snapshots"}, {
             insta::assert_snapshot!(draw(&form));
