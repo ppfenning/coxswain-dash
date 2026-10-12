@@ -30,12 +30,15 @@ mod settings_screen;
 #[allow(dead_code)]
 mod settings_stage;
 mod theme;
+// `ui::render` is now read only by tests: the loop draws through `ui::render_at`.
+#[allow(dead_code)]
 mod ui;
 
 use std::io::{self, BufRead, BufReader, IsTerminal, Write};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, mpsc};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
@@ -55,6 +58,13 @@ use chair_panel::CloseOutcome;
 use exec::{CmdRunner, ExecResult};
 
 const ALIAS_NOTICE: &str = "coxtop is now towpath; this alias goes away in 0.37";
+
+/// The feed's `--interval`, and the unit its staleness is judged in.
+const FEED_INTERVAL_SECS: u64 = 2;
+
+/// How long the loop waits before it redraws a board nothing has changed, so a feed that has
+/// gone quiet still gets its age re-evaluated.
+const REDRAW_TICK: Duration = Duration::from_secs(1);
 
 /// The notice a binary prints on start, given the name it was invoked as.
 fn alias_notice(invoked: &str) -> Option<&'static str> {
@@ -283,27 +293,91 @@ fn run_editor(
     (Some(path), outcome)
 }
 
-/// Spawns `cox dash --feed` and reads its stdout on a thread into a fresh channel.
-fn spawn_feed_reader() -> (std::process::Child, mpsc::Receiver<String>) {
-    let mut child = feed::spawn_feed(Some(2));
-    let stdout = child.stdout.take().expect("feed stdout should be piped");
-    let (tx, rx) = mpsc::channel::<String>();
-    std::thread::spawn(move || {
-        let reader = BufReader::new(stdout);
-        for line in reader.lines().map_while(Result::ok) {
-            if tx.send(line).is_err() {
-                break;
-            }
-        }
-    });
-    (child, rx)
+/// Routes one feed message into the app. The caller reads the local offset at the edge, so a
+/// DST change reaches every clock with the next snapshot.
+fn apply_feed_message(app: &mut App, message: feed::FeedMessage, offset: chrono::FixedOffset) {
+    match message {
+        feed::FeedMessage::Snapshot(snapshot) => app.apply_snapshot_at(*snapshot, offset),
+        feed::FeedMessage::ParseError(text) => app.record_parse_error(text),
+        feed::FeedMessage::Error(text) => app.apply_feed_error(text),
+    }
 }
 
-/// Replaces the feed child with a fresh one, which emits a snapshot at once. The loop has no
-/// refresh tick of its own: the feed's `--interval` is the tick, so this is the early one.
-fn restart_feed(mut child: std::process::Child) -> (std::process::Child, mpsc::Receiver<String>) {
-    let _ = child.kill();
-    let _ = child.wait();
+// edge
+/// Runs the supervised feed on a thread and returns the receiving end of its messages.
+fn start_feed(
+    spawn: impl FnMut() -> Option<std::process::Child> + Send + 'static,
+) -> mpsc::Receiver<feed::FeedMessage> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        feed::supervise_feed(spawn, tx, feed::restart_delay, std::thread::sleep);
+    });
+    rx
+}
+
+/// The running feed: its messages, plus what is needed to stop the child the supervisor owns.
+struct FeedHandle {
+    rx: mpsc::Receiver<feed::FeedMessage>,
+    pid: Arc<AtomicU32>,
+    stopped: Arc<AtomicBool>,
+}
+
+impl FeedHandle {
+    // edge
+    /// Ends the supervisor's restarts and terminates the current child, which the supervisor
+    /// thread owns and so cannot be killed through a `Child`.
+    fn stop(&self) {
+        self.stopped.store(true, Ordering::SeqCst);
+        let pid = self.pid.load(Ordering::SeqCst);
+        if pid != 0 {
+            let _ = std::process::Command::new("kill")
+                .arg(pid.to_string())
+                .stderr(std::process::Stdio::null())
+                .status();
+        }
+    }
+}
+
+// edge
+/// Spawns `cox dash --feed`. A spawn failure becomes a stub child that writes the reason to
+/// stderr and exits 127, so it reaches the app as a feed error instead of ending the feed.
+fn feed_child(interval_secs: u64) -> std::process::Child {
+    let mut command = feed::feed_command(Some(interval_secs));
+    command
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    command.spawn().unwrap_or_else(|err| {
+        let mut stub = std::process::Command::new("sh");
+        stub.arg("-c")
+            .arg("echo \"$0\" >&2; exit 127")
+            .arg(format!("could not start cox dash --feed: {err}"));
+        feed::spawn_command(stub)
+    })
+}
+
+// edge
+/// Starts the supervised `cox dash --feed`, which restarts with backoff when it exits.
+fn spawn_feed_reader() -> FeedHandle {
+    let pid = Arc::new(AtomicU32::new(0));
+    let stopped = Arc::new(AtomicBool::new(false));
+    let rx = start_feed({
+        let (pid, stopped) = (Arc::clone(&pid), Arc::clone(&stopped));
+        move || {
+            if stopped.load(Ordering::SeqCst) {
+                return None;
+            }
+            let child = feed_child(FEED_INTERVAL_SECS);
+            pid.store(child.id(), Ordering::SeqCst);
+            Some(child)
+        }
+    });
+    FeedHandle { rx, pid, stopped }
+}
+
+/// Replaces the feed with a fresh one, which emits a snapshot at once. The feed's `--interval`
+/// is the refresh; this is the early one.
+fn restart_feed(old: FeedHandle) -> FeedHandle {
+    old.stop();
     spawn_feed_reader()
 }
 
@@ -346,10 +420,9 @@ fn restore_terminal(pop_flags: bool) {
     let _ = execute!(out, LeaveAlternateScreen);
 }
 
-/// Stops the feed child, prints why setup failed, and exits 1 instead of panicking.
-fn abort_setup(child: &mut std::process::Child, what: &str, err: &io::Error) -> ! {
-    let _ = child.kill();
-    let _ = child.wait();
+/// Stops the feed, prints why setup failed, and exits 1 instead of panicking.
+fn abort_setup(feed_src: &FeedHandle, what: &str, err: &io::Error) -> ! {
+    feed_src.stop();
     eprintln!("{what}: {err}");
     std::process::exit(1)
 }
@@ -366,18 +439,18 @@ fn run() {
     // Seed only: every feed snapshot replaces this offset.
     let mut app = App::new(page, theme_id).with_utc_offset(*chrono::Local::now().offset());
 
-    let (mut child, mut rx) = spawn_feed_reader();
+    let mut feed_src = spawn_feed_reader();
 
     let runner: Arc<dyn CmdRunner> = Arc::new(exec::RealRunner::cox());
     let (exec_tx, exec_rx) = mpsc::channel::<(Origin, ExecResult)>();
 
     if let Err(err) = enable_raw_mode() {
-        abort_setup(&mut child, "failed to enable raw mode", &err);
+        abort_setup(&feed_src, "failed to enable raw mode", &err);
     }
     let mut out = io::stdout();
     if let Err(err) = execute!(out, EnterAlternateScreen, EnableMouseCapture) {
         restore_terminal(false);
-        abort_setup(&mut child, "failed to enter the alternate screen", &err);
+        abort_setup(&feed_src, "failed to enter the alternate screen", &err);
     }
     let pushed = enhancement_flags(supports_keyboard_enhancement().map_err(|_| ()));
     let push_result = pushed.map_or(Ok(()), |flags| {
@@ -386,7 +459,7 @@ fn run() {
     if let Err(err) = push_result {
         restore_terminal(false);
         abort_setup(
-            &mut child,
+            &feed_src,
             "failed to push the keyboard enhancement flags",
             &err,
         );
@@ -402,7 +475,7 @@ fn run() {
         Ok(terminal) => terminal,
         Err(err) => {
             restore_terminal(pop_flags);
-            abort_setup(&mut child, "failed to build the terminal", &err);
+            abort_setup(&feed_src, "failed to build the terminal", &err);
         }
     };
     let size = terminal.size().expect("failed to read the terminal size");
@@ -413,17 +486,16 @@ fn run() {
     let mut detail_key: Option<(DetailKind, String)> = None;
 
     let mut changed = true;
+    let mut last_draw = Instant::now();
     let mut bells_rung = 0;
     let mut editor_runs: usize = 0;
     // Set when `q` met the close prompt; cleared when the answer keeps the session open.
     let mut quit_pending = false;
     loop {
-        while let Ok(line) = rx.try_recv() {
-            if let Ok(snapshot) = feed::parse_snapshot(&line) {
-                // Re-read the offset per snapshot so a DST change reaches every clock.
-                app.apply_snapshot_at(snapshot, *chrono::Local::now().offset());
-                changed = true;
-            }
+        while let Ok(message) = feed_src.rx.try_recv() {
+            // Re-read the offset per message so a DST change reaches every clock.
+            apply_feed_message(&mut app, message, *chrono::Local::now().offset());
+            changed = true;
         }
 
         let wanted = app.detail().map(|(kind, id, _)| (*kind, id.clone()));
@@ -534,7 +606,7 @@ fn run() {
             changed = true;
         }
         if refresh {
-            (child, rx) = restart_feed(child);
+            feed_src = restart_feed(feed_src);
         }
 
         if app.chair_panel().is_open() {
@@ -550,12 +622,18 @@ fn run() {
             let _ = bell.write_all(b"\x07").and_then(|()| bell.flush());
         }
 
-        if changed {
+        if changed || last_draw.elapsed() >= REDRAW_TICK {
             let theme = theme::resolve(app.theme());
+            // The clock and the interval are read here and passed in; `App` holds neither.
+            let health = (
+                chrono::Local::now().fixed_offset(),
+                chrono::Duration::seconds(FEED_INTERVAL_SECS as i64),
+            );
             terminal
-                .draw(|f| ui::render(f, &app, &theme))
+                .draw(|f| ui::render_at(f, &app, &theme, Some(health)))
                 .expect("failed to draw the frame");
             changed = false;
+            last_draw = Instant::now();
         }
     }
 
@@ -575,8 +653,7 @@ fn run() {
     )
     .expect("failed to leave the alternate screen");
     terminal.show_cursor().expect("failed to show the cursor");
-    let _ = child.kill();
-    let _ = child.wait();
+    feed_src.stop();
     if let Some(mut child) = detail_child {
         let _ = child.kill();
         let _ = child.wait();
@@ -588,6 +665,41 @@ mod tests {
     use super::*;
 
     const NEEDS_TERMINAL: &str = "towpath needs a terminal";
+
+    /// Runs `script` as the feed through the real message path and returns the app once it
+    /// holds a feed error, or when one feed interval has passed without one.
+    fn app_after_feed(script: &str) -> App {
+        let mut stub = std::process::Command::new("sh");
+        stub.arg("-c").arg(script);
+        let mut child = Some(feed::spawn_command(stub));
+        let rx = start_feed(move || child.take());
+        let mut app = App::new(AppPage::Regatta, ThemeId::Regatta);
+        let deadline = Instant::now() + Duration::from_secs(FEED_INTERVAL_SECS);
+        while app.feed_error().is_none() {
+            let Some(left) = deadline.checked_duration_since(Instant::now()) else {
+                break;
+            };
+            let Ok(message) = rx.recv_timeout(left) else {
+                break;
+            };
+            apply_feed_message(&mut app, message, chrono::FixedOffset::east_opt(0).unwrap());
+        }
+        app
+    }
+
+    #[test]
+    fn a_feed_printing_bad_json_shows_an_error_and_counts_the_parse_failure() {
+        let app = app_after_feed("echo not-json");
+        assert!(app.feed_error().is_some());
+        assert_eq!(app.parse_error_count(), 1);
+    }
+
+    #[test]
+    fn a_feed_that_writes_stderr_and_exits_1_shows_the_stderr_text() {
+        let app = app_after_feed("echo boom-from-stderr >&2; exit 1");
+        let error = app.feed_error().expect("the exit should surface an error");
+        assert!(error.contains("boom-from-stderr"), "got: {error}");
+    }
 
     #[test]
     fn preflight_passes_when_both_are_terminals() {
