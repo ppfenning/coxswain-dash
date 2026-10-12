@@ -242,7 +242,7 @@ mod tests {
             value: value.into(),
             source: "f".into(),
             tracked: true,
-            pat_only: false,
+            operator_only: false,
         }
     }
 

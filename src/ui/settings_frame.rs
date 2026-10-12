@@ -129,9 +129,9 @@ fn field_cells(row: &SettingsRow, w: &Widths, width: usize) -> Vec<(Col, String)
             + usize::from(mark) * (GAP + PAT_ONLY.len())
     };
     let (show_source, show_prov, show_mark) = [
-        (true, true, row.pat_only),
-        (false, true, row.pat_only),
-        (false, false, row.pat_only),
+        (true, true, row.operator_only),
+        (false, true, row.operator_only),
+        (false, false, row.operator_only),
         (false, false, false),
     ]
     .into_iter()
@@ -497,7 +497,7 @@ mod tests {
         value: &str,
         source: &str,
         tracked: bool,
-        pat_only: bool,
+        operator_only: bool,
     ) -> SettingsRow {
         SettingsRow {
             section: section.into(),
@@ -506,7 +506,7 @@ mod tests {
             value: value.into(),
             source: source.into(),
             tracked,
-            pat_only,
+            operator_only,
         }
     }
 
