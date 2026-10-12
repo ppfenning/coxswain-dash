@@ -405,6 +405,8 @@ fn run() {
             abort_setup(&mut child, "failed to build the terminal", &err);
         }
     };
+    let size = terminal.size().expect("failed to read the terminal size");
+    app.set_terminal_size(Rect::new(0, 0, size.width, size.height));
 
     let mut detail_child: Option<std::process::Child> = None;
     let mut detail_rx: Option<mpsc::Receiver<String>> = None;
@@ -479,7 +481,8 @@ fn run() {
                     changed = true;
                 }
                 Ok(Event::Resize(cols, rows)) => {
-                    app.chair_panel_mut().resize(rows, cols);
+                    app.set_terminal_size(Rect::new(0, 0, cols, rows));
+                    app.sync_chair_pty_size();
                     changed = true;
                 }
                 Ok(Event::Mouse(mouse)) if app.page() == AppPage::Regatta => {
@@ -538,6 +541,8 @@ fn run() {
             app.poll_chair_panel();
             changed = true;
         }
+        // Idempotent: covers a resize, the card showing or hiding, and a panel just opened.
+        app.sync_chair_pty_size();
 
         if app.bells() != bells_rung {
             bells_rung = app.bells();
