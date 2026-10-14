@@ -52,11 +52,11 @@ pub enum Action {
     },
     PriorityUp {
         initiative: String,
-        priority: u32,
+        priority: i64,
     },
     PriorityDown {
         initiative: String,
-        priority: u32,
+        priority: i64,
     },
     InboxAccept {
         id: String,
@@ -126,7 +126,7 @@ fn capacity_of(snapshot: &FeedSnapshot, machine: &str) -> Option<u32> {
         .map(|m| m.capacity)
 }
 
-fn priority_of(snapshot: &FeedSnapshot, initiative: &str) -> Option<u32> {
+fn priority_of(snapshot: &FeedSnapshot, initiative: &str) -> Option<i64> {
     snapshot
         .queue
         .iter()
@@ -159,7 +159,7 @@ pub fn action_for(key: char, target: &Target, snapshot: &FeedSnapshot) -> Option
         }),
         Verb::PriorityDown => priority_of(snapshot, &id).map(|n| Action::PriorityDown {
             initiative: id,
-            priority: n.saturating_sub(1),
+            priority: if n > 0 { n - 1 } else { n },
         }),
         Verb::Accept => Some(Action::InboxAccept { id }),
         Verb::Deny => Some(Action::InboxDeny { id }),
@@ -383,6 +383,20 @@ mod tests {
             Some(Action::PriorityDown {
                 initiative: INITIATIVE.into(),
                 priority: 0
+            })
+        );
+    }
+
+    #[test]
+    fn priority_up_steps_a_negative_row() {
+        let mut snap = snapshot();
+        snap.queue[0].priority = -2;
+        let got = action_for(']', &Target::Initiative(INITIATIVE.into()), &snap);
+        assert_eq!(
+            got,
+            Some(Action::PriorityUp {
+                initiative: INITIATIVE.into(),
+                priority: -1
             })
         );
     }

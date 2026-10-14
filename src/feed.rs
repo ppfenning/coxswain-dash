@@ -277,7 +277,7 @@ impl From<(String, f64)> for SpendPoint {
 #[derive(Debug, Deserialize)]
 pub struct QueueEntry {
     pub initiative: String,
-    pub priority: u32,
+    pub priority: i64,
     pub phases_landed: u32,
     pub phases_total: u32,
     pub current_phase: String,
@@ -601,6 +601,13 @@ mod tests {
     fn queue_repos_skips_entries_without_a_repo() {
         let queue = r#"[{"initiative":"i1","priority":1,"phases_landed":0,"phases_total":1,"current_phase":"p1"}]"#;
         assert!(queue_repos(&with_queue(queue)).is_empty());
+    }
+
+    #[test]
+    fn a_queue_row_at_a_negative_priority_parses() {
+        let queue = r#"[{"initiative":"i1","priority":-2,"phases_landed":0,"phases_total":1,"current_phase":"p1"}]"#;
+        let snapshot = with_queue(queue);
+        assert_eq!(snapshot.queue[0].priority, -2);
     }
 
     fn with_chair(chair: &str) -> String {
