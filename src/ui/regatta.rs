@@ -3010,6 +3010,17 @@ mod tests {
     }
 
     #[test]
+    fn a_queue_row_at_a_negative_priority_still_draws_the_board() {
+        let row = r#"{"initiative":"init-neg","priority":-2,"phases_landed":1,"phases_total":3,"current_phase":"p"}"#;
+        let app = feed_app("", row, "");
+        let terminal = draw_page(&app, ThemeId::Regatta, 120, 40);
+        let rect = frame_rects(Rect::new(0, 0, 120, 40), &app)[5].expect("queue rect");
+        let text = row_text(&terminal, rect.y + 1);
+        assert!(text.contains("init-neg"), "{text}");
+        assert!(text.contains(" 1/3 phases"), "{text}");
+    }
+
+    #[test]
     fn overflow_split_folds_into_one_more_line_that_costs_an_item() {
         assert_eq!(overflow_split(3, 3, 10), (3, 0));
         assert_eq!(overflow_split(5, 3, 10), (3, 2));
