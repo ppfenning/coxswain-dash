@@ -32,9 +32,9 @@ PRIVATE_NETWORKS = tuple(
 )
 
 HOME_PATH = re.compile(r"/(home|Users)/([A-Za-z0-9._-]+)")
-LAN_HOST = re.compile(r"\b[a-z0-9-]+\.lan\b", re.I)  # clean: allow
+LAN_HOST = re.compile(r"\b[a-z0-9-]+\.lan\b", re.IGNORECASE)  # clean: allow
 ADDRESS = re.compile(r"(?<![\w.])(\d{1,3}(?:\.\d{1,3}){3})(?!\w|\.\d)")
-VENDOR = re.compile(r"\b(asana|jira|confluence|cloudwatch|outline|snowflake|databricks)\b", re.I)  # clean: allow
+VENDOR = re.compile(r"\b(asana|jira|confluence|cloudwatch|outline|snowflake|databricks)\b", re.IGNORECASE)  # clean: allow
 
 
 def home_path(line):
