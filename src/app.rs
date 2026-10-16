@@ -66,6 +66,9 @@ pub enum Focus {
     Machines,
     History,
     Inbox,
+    /// The optional chair agents and spend split frames hold no rows, so no selection lands on them.
+    ChairAgents,
+    SpendSplit,
 }
 
 /// Which kind of entity an open detail request names, matching the id field the detail
@@ -179,6 +182,10 @@ pub struct App {
     run_cost_visible: bool,
     /// The inbox frame's visibility; its number key is 9. A hidden inbox is not a focus stop.
     inbox_visible: bool,
+    /// The chair agents frame's visibility, hidden by default; its key is `0`.
+    chair_agents_visible: bool,
+    /// The spend split frame's visibility, hidden by default; its key is `.`.
+    spend_split_visible: bool,
     /// Whether the queue is shown grouped by project. Session-only: never written to config.
     queue_grouped: bool,
     regatta_layout_preset: usize,
@@ -188,7 +195,7 @@ pub struct App {
     /// Selection index per page (`AppPage::Regatta` then `AppPage::Slipstream`) and per focus
     /// (`Focus::Runs`, `Focus::Queue`, `Focus::Machines`, `Focus::History`, `Focus::Inbox` in
     /// that order).
-    selected: [[usize; 5]; 2],
+    selected: [[usize; 7]; 2],
     detail: Option<(DetailKind, String, Option<DetailSnapshot>)>,
     chair_panel: ChairPanel<Box<dyn PtySession>>,
     /// Set by the backtick toggle. A shown panel with no open session is where Enter starts one.
@@ -267,12 +274,14 @@ impl Default for App {
             history_visible: true,
             run_cost_visible: true,
             inbox_visible: true,
+            chair_agents_visible: false,
+            spend_split_visible: false,
             queue_grouped: false,
             regatta_layout_preset: 0,
             lanes_history: Vec::new(),
             utc_offset: FixedOffset::east_opt(0).expect("zero is a valid UTC offset"),
             focus: Focus::Runs,
-            selected: [[0; 5]; 2],
+            selected: [[0; 7]; 2],
             detail: None,
             chair_panel: ChairPanel::new(Box::new(RealPty::new())),
             chair_panel_shown: false,
@@ -560,6 +569,14 @@ impl App {
         self.inbox_visible
     }
 
+    pub fn regatta_chair_agents_visible(&self) -> bool {
+        self.chair_agents_visible
+    }
+
+    pub fn regatta_spend_split_visible(&self) -> bool {
+        self.spend_split_visible
+    }
+
     pub fn regatta_layout_preset(&self) -> usize {
         self.regatta_layout_preset
     }
@@ -688,6 +705,24 @@ impl App {
         }
     }
 
+    /// Flips the chair agents frame's visibility; its key is `0`. Hiding it while it holds focus
+    /// moves focus to the runs list.
+    pub fn toggle_chair_agents_frame(&mut self) {
+        self.chair_agents_visible = !self.chair_agents_visible;
+        if !self.chair_agents_visible && self.focus == Focus::ChairAgents {
+            self.focus = Focus::Runs;
+        }
+    }
+
+    /// Flips the spend split frame's visibility; its key is `.`. Hiding it while it holds focus
+    /// moves focus to the runs list.
+    pub fn toggle_spend_split_frame(&mut self) {
+        self.spend_split_visible = !self.spend_split_visible;
+        if !self.spend_split_visible && self.focus == Focus::SpendSplit {
+            self.focus = Focus::Runs;
+        }
+    }
+
     /// Flips whether the queue is shown grouped by project; the key is `g`.
     pub fn toggle_queue_grouped(&mut self) {
         self.queue_grouped = !self.queue_grouped;
@@ -756,23 +791,61 @@ impl App {
                 Focus::Runs => Focus::Queue,
                 Focus::Queue => Focus::Machines,
                 Focus::Machines => Focus::History,
-                Focus::History if self.inbox_visible => Focus::Inbox,
-                Focus::History => Focus::Runs,
-                Focus::Inbox => Focus::Runs,
+                Focus::History => self.stop_after(Focus::History),
+                Focus::Inbox => self.stop_after(Focus::Inbox),
+                Focus::ChairAgents => self.stop_after(Focus::ChairAgents),
+                Focus::SpendSplit => Focus::Runs,
             };
         }
+    }
+
+    /// The first shown stop in the order inbox, chair agents, spend split that follows `from`,
+    /// or the runs list when none does. A hidden frame is never a stop.
+    fn stop_after(&self, from: Focus) -> Focus {
+        let tail = [
+            (Focus::Inbox, self.inbox_visible),
+            (Focus::ChairAgents, self.chair_agents_visible),
+            (Focus::SpendSplit, self.spend_split_visible),
+        ];
+        let skip = tail
+            .iter()
+            .position(|(f, _)| *f == from)
+            .map_or(0, |i| i + 1);
+        tail.into_iter()
+            .skip(skip)
+            .find_map(|(f, shown)| shown.then_some(f))
+            .unwrap_or(Focus::Runs)
+    }
+
+    /// The last shown stop in the order inbox, chair agents, spend split that precedes `from`,
+    /// or History when none does.
+    fn stop_before(&self, from: Focus) -> Focus {
+        let tail = [
+            (Focus::Inbox, self.inbox_visible),
+            (Focus::ChairAgents, self.chair_agents_visible),
+            (Focus::SpendSplit, self.spend_split_visible),
+        ];
+        let end = tail
+            .iter()
+            .position(|(f, _)| *f == from)
+            .unwrap_or(tail.len());
+        tail.into_iter()
+            .take(end)
+            .rev()
+            .find_map(|(f, shown)| shown.then_some(f))
+            .unwrap_or(Focus::History)
     }
 
     /// Left cycles focus the other way around the same five stops; a no-op on Slipstream.
     pub fn cycle_focus_prev(&mut self) {
         if self.page == AppPage::Regatta {
             self.focus = match self.focus {
-                Focus::Runs if self.inbox_visible => Focus::Inbox,
-                Focus::Runs => Focus::History,
                 Focus::Queue => Focus::Runs,
                 Focus::Machines => Focus::Queue,
                 Focus::History => Focus::Machines,
-                Focus::Inbox => Focus::History,
+                Focus::Runs | Focus::Inbox | Focus::ChairAgents | Focus::SpendSplit => {
+                    self.stop_before(self.focus)
+                }
             };
         }
     }
@@ -788,6 +861,7 @@ impl App {
             Focus::Machines => snap.machines.len(),
             Focus::History => snap.history.len(),
             Focus::Inbox => snap.inbox.len(),
+            Focus::ChairAgents | Focus::SpendSplit => 0,
         }
     }
 
@@ -874,7 +948,7 @@ impl App {
                 .get(idx)
                 .map(|h| (DetailKind::Run, h.run.clone())),
             // Inbox rows have no drill-down.
-            Focus::Inbox => None,
+            Focus::Inbox | Focus::ChairAgents | Focus::SpendSplit => None,
         }
     }
 
@@ -1305,6 +1379,8 @@ fn focus_slot(focus: Focus) -> usize {
         Focus::Machines => 2,
         Focus::History => 3,
         Focus::Inbox => 4,
+        Focus::ChairAgents => 5,
+        Focus::SpendSplit => 6,
     }
 }
 

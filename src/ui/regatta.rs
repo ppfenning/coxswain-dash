@@ -5,7 +5,7 @@
 //! [`frame_rects`] is the pure layout core; [`render`] calls it so the rects it draws into and
 //! the rects a mouse click is tested against never disagree.
 
-use chrono::{DateTime, FixedOffset, Timelike};
+use chrono::{DateTime, FixedOffset, Timelike, Utc};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
@@ -24,9 +24,10 @@ use crate::feed::{
 use crate::form::{KEY_ADD_MACHINE, KEY_EDIT, KEY_NEW, KEY_REMOVE};
 use crate::theme::Theme;
 
+use super::chair_agents;
 use super::chair_card::{Freshness, TICK_INTERVAL_S, beat_freshness, short_age};
 use super::rows::{Body, queue_rows, runs_rows};
-use super::run_cost::{chart_bounds, dollar_labels, drawable};
+use super::run_cost::{chart_bounds, dollar_labels, draw_spend_split, drawable, spend_split_lines};
 use super::{CollapsedRun, collapse_runs, count_suffix, end_chip, local_time};
 
 /// Cells in a spend meter, and the least one shrinks to in a narrow frame.
@@ -77,6 +78,17 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     }
     if let Some(rect) = run_cost_rect(area, app) {
         render_run_cost(f, rect, snapshot, app.utc_offset(), theme);
+    }
+    let (_, agents, spend) = split_activity(split_key_bar(area).0, app);
+    let now = feed_now(snapshot);
+    if let Some(rect) = agents {
+        chair_agents::render(f, rect, &snapshot.chair_agents, now, theme);
+    }
+    if let Some(rect) = spend {
+        let block = framed("spend split", theme, app.focus() == Focus::SpendSplit);
+        let inner = block.inner(rect);
+        f.render_widget(block, rect);
+        draw_spend_split(f.buffer_mut(), inner, snapshot.spend_split.as_ref(), now);
     }
     render_key_bar(f, split_key_bar(area).1, app.focus(), theme);
 }
@@ -299,9 +311,61 @@ fn split_history(body: Rect, app: &App) -> (Rect, Option<Rect>) {
     (rest, Some(band))
 }
 
+/// The fewest rows an activity band is drawn in: two borders and one line.
+const ACTIVITY_MIN_ROWS: u16 = 3;
+
+/// The feed's own `at` as UTC, the "now" the activity panels age against, so the draw path
+/// reads no clock. An unparseable `at` reads as the epoch.
+fn feed_now(snapshot: &FeedSnapshot) -> DateTime<Utc> {
+    DateTime::parse_from_rfc3339(&snapshot.at)
+        .map(|at| at.with_timezone(&Utc))
+        .unwrap_or_default()
+}
+
+/// `body` split into the area everything else shares and, under it, a full-width band holding
+/// the chair agents frame and the spend split frame side by side, each only when shown. The
+/// band is as tall as the taller frame wants, at most a third of `body`, and absent when that
+/// third is under `ACTIVITY_MIN_ROWS`. With both frames hidden the body is returned whole.
+fn split_activity(body: Rect, app: &App) -> (Rect, Option<Rect>, Option<Rect>) {
+    let Some(snapshot) = app.snapshot() else {
+        return (body, None, None);
+    };
+    let agents = app.regatta_chair_agents_visible();
+    let spend = app.regatta_spend_split_visible();
+    let want_agents = snapshot.chair_agents.len().max(1) + 2;
+    let want_spend = spend_split_lines(snapshot.spend_split.as_ref(), feed_now(snapshot)).len() + 2;
+    let want = [(agents, want_agents), (spend, want_spend)]
+        .into_iter()
+        .filter_map(|(shown, rows)| shown.then_some(rows))
+        .max()
+        .unwrap_or(0);
+    let height = u16::try_from(want).unwrap_or(u16::MAX).min(body.height / 3);
+    if want == 0 || height < ACTIVITY_MIN_ROWS {
+        return (body, None, None);
+    }
+    let rest = Rect {
+        height: body.height - height,
+        ..body
+    };
+    let band = Rect {
+        y: body.y + rest.height,
+        height,
+        ..body
+    };
+    let halves = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(band);
+    match (agents, spend) {
+        (true, true) => (rest, Some(halves[0]), Some(halves[1])),
+        (true, false) => (rest, Some(band), None),
+        _ => (rest, None, Some(band)),
+    }
+}
+
 /// The history frame's rect for a terminal of `full`, as `render` draws it.
 fn history_rect(full: Rect, app: &App) -> Option<Rect> {
-    split_history(split_key_bar(full).0, app).1
+    split_history(split_activity(split_key_bar(full).0, app).0, app).1
 }
 
 /// The fewest rows the run cost frame is drawn in: two borders, two axis rows and four plot rows.
@@ -372,11 +436,18 @@ fn split_run_cost(body: Rect, app: &App) -> (Rect, Option<Rect>) {
 /// The run cost frame's rect for a terminal of `full`, as `render` draws it: under the numbered
 /// frames and above the history band.
 fn run_cost_rect(full: Rect, app: &App) -> Option<Rect> {
-    split_run_cost(split_history(split_key_bar(full).0, app).0, app).1
+    split_run_cost(
+        split_history(split_activity(split_key_bar(full).0, app).0, app).0,
+        app,
+    )
+    .1
 }
 
 fn layout_rects(full: Rect, app: &App) -> ([Option<Rect>; 6], Rect) {
-    let (area, _) = split_run_cost(split_history(split_key_bar(full).0, app).0, app);
+    let (area, _) = split_run_cost(
+        split_history(split_activity(split_key_bar(full).0, app).0, app).0,
+        app,
+    );
     if app.regatta_layout_preset() == 0 {
         let runs_len = app.snapshot().map_or(0, |s| s.runs.len());
         return canvas_layout(
@@ -1806,7 +1877,7 @@ pub(super) fn action_hints(focus: Focus) -> Vec<(char, &'static str)> {
         Focus::Machines => Target::Machine(String::new()),
         Focus::Queue => Target::Initiative(String::new()),
         Focus::Inbox => Target::InboxItem(String::new()),
-        Focus::History => return Vec::new(),
+        Focus::History | Focus::ChairAgents | Focus::SpendSplit => return Vec::new(),
     };
     bindings(&target)
         .into_iter()
@@ -4515,5 +4586,53 @@ mod tests {
         crate::input::handle_key(&mut app, KeyCode::Char('8'));
         assert!(title(&app));
         assert_eq!(frame_rects(area, &app)[..5], before[..5]);
+    }
+
+    #[derive(serde::Deserialize)]
+    struct Activity {
+        chair_agents: Vec<crate::feed::ChairAgent>,
+        spend_split: Option<crate::feed::SpendSplit>,
+    }
+
+    /// The fixture feed with the activity fixture's agents and split, or neither when `bare`.
+    fn activity_app(bare: bool) -> App {
+        let mut snapshot = crate::feed::parse_snapshot(FIXTURE.trim()).expect("fixture parses");
+        if !bare {
+            let activity: Activity =
+                serde_json::from_str(include_str!("../../tests/fixtures/dash_activity_v1.json"))
+                    .expect("activity fixture parses");
+            snapshot.chair_agents = activity.chair_agents;
+            snapshot.spend_split = activity.spend_split;
+        }
+        let mut app = App::new(AppPage::Regatta, ThemeId::Regatta);
+        app.apply_snapshot(snapshot);
+        app
+    }
+
+    #[test]
+    fn the_chair_agents_frame_says_so_when_the_feed_has_no_agents() {
+        let mut app = activity_app(true);
+        assert!(!all_text(&draw_page(&app, ThemeId::Regatta, 120, 40)).contains("no chair agents"));
+        crate::input::handle_key(&mut app, crossterm::event::KeyCode::Char('0'));
+        let text = all_text(&draw_page(&app, ThemeId::Regatta, 120, 40));
+        assert!(text.contains("no chair agents"), "{text}");
+    }
+
+    #[test]
+    fn the_spend_split_frame_shows_both_windows_dollar_figures() {
+        let mut app = activity_app(false);
+        assert!(!all_text(&draw_page(&app, ThemeId::Regatta, 120, 40)).contains("$41.20"));
+        crate::input::handle_key(&mut app, crossterm::event::KeyCode::Char('.'));
+        let text = all_text(&draw_page(&app, ThemeId::Regatta, 120, 40));
+        for figure in ["$3.10", "$1.20", "$2.00", "$41.20", "$18.40", "$96.90"] {
+            assert!(text.contains(figure), "{figure} missing from {text}");
+        }
+    }
+
+    #[test]
+    fn hidden_activity_frames_leave_the_layout_alone() {
+        let app = activity_app(false);
+        let full = Rect::new(0, 0, 120, 40);
+        assert_eq!(split_activity(full, &app), (full, None, None));
     }
 }

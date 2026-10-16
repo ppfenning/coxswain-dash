@@ -145,6 +145,9 @@ pub fn handle_key(app: &mut App, key: KeyCode) {
         KeyCode::Char('7') => app.toggle_history_frame(),
         KeyCode::Char('8') => app.toggle_run_cost_frame(),
         KeyCode::Char('9') => app.toggle_inbox_frame(),
+        // Digits 1-9 are taken, so the chair agents frame takes `0` and the spend split frame `.`.
+        KeyCode::Char('0') => app.toggle_chair_agents_frame(),
+        KeyCode::Char('.') => app.toggle_spend_split_frame(),
         KeyCode::Char(c) if c.is_ascii_digit() && c != '0' => {
             app.toggle_regatta_frame(c.to_digit(10).unwrap() as usize)
         }
@@ -1136,6 +1139,30 @@ mod tests {
         handle_key(&mut app, KeyCode::Left);
         assert_eq!(app.focus(), Focus::History);
         app
+    }
+
+    #[test]
+    fn char_zero_toggles_the_chair_agents_frame_and_nothing_else() {
+        let mut app = App::default();
+        assert!(!app.regatta_chair_agents_visible());
+        handle_key(&mut app, KeyCode::Char('0'));
+        assert!(app.regatta_chair_agents_visible());
+        assert!(!app.regatta_spend_split_visible());
+        assert_eq!(app.regatta_frames_visible(), [true; 6]);
+        handle_key(&mut app, KeyCode::Char('0'));
+        assert!(!app.regatta_chair_agents_visible());
+    }
+
+    #[test]
+    fn period_toggles_the_spend_split_frame_and_nothing_else() {
+        let mut app = App::default();
+        assert!(!app.regatta_spend_split_visible());
+        handle_key(&mut app, KeyCode::Char('.'));
+        assert!(app.regatta_spend_split_visible());
+        assert!(!app.regatta_chair_agents_visible());
+        assert_eq!(app.regatta_frames_visible(), [true; 6]);
+        handle_key(&mut app, KeyCode::Char('.'));
+        assert!(!app.regatta_spend_split_visible());
     }
 
     #[test]
