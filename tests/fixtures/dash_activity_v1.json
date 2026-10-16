@@ -1,0 +1,6 @@
+{"chair_agents": [
+ {"label": "Land the chair attach phase", "agent_id": "a33d15b19c2151ccf", "model": "claude-sonnet-5-5", "state": "done", "started_at": "2026-10-16T17:26:41Z", "finished_at": "2026-10-16T17:32:26Z", "tokens": 195479, "cost_usd": 0.41},
+ {"label": "Rebuild the intake tickets", "agent_id": "b7e1c0d94f2a6c315", "model": "claude-sonnet-5-5", "state": "running", "started_at": "2026-10-16T18:40:02Z", "finished_at": null, "tokens": 120004, "cost_usd": 0.22}],
+ "spend_split": {
+  "five_hour": {"chair_session_usd": 3.1, "chair_agents_usd": 1.2, "cox_seats_usd": 2.0, "total_usd": 6.3, "chair_session_share": 0.4921, "chair_agents_share": 0.1905, "cox_seats_share": 0.3175, "meter_fraction": 0.12, "resets_at": "2026-10-16T22:00:00Z"},
+  "weekly": {"chair_session_usd": 41.2, "chair_agents_usd": 18.4, "cox_seats_usd": 96.9, "total_usd": 156.5, "chair_session_share": 0.2633, "chair_agents_share": 0.1176, "cox_seats_share": 0.6192, "meter_fraction": 0.57, "resets_at": "2026-10-18T08:00:00Z"}}}
