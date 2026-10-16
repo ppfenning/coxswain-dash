@@ -1,6 +1,18 @@
 //! Pure chart helpers for the run cost frame. Plain data in, numbers and indexes out: time is
-//! epoch seconds as `f64`, cost is dollars as `f64`. No feed types, no theme, no widget, no clock.
+//! epoch seconds as `f64`, cost is dollars as `f64`. The chart helpers take no feed types, no
+//! theme, no widget and no clock. The spend split panel at the end of the module is the exception:
+//! a pure formatter over the feed's `SpendSplit` and a passed-in `now`, and a thin draw function.
 #![allow(dead_code)]
+
+use chrono::{DateTime, Utc};
+use ratatui::{
+    buffer::Buffer,
+    layout::Rect,
+    text::Line,
+    widgets::{Paragraph, Widget},
+};
+
+use crate::feed::{SpendSplit, SpendWindow};
 
 /// Axis extent for the cost chart. The y axis always starts at 0.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -67,9 +79,193 @@ pub fn drawable(series: &[Vec<(f64, f64)>]) -> Vec<usize> {
         .collect()
 }
 
+/// Time from `now` to an RFC 3339 `resets_at`, as "resets in 2h 15m" or "resets in 1d 12h" from
+/// a day up. At or past the reset it reads "resets now"; an unparseable string reads "reset unknown".
+fn time_remaining(resets_at: &str, now: DateTime<Utc>) -> String {
+    match DateTime::parse_from_rfc3339(resets_at) {
+        Err(_) => "reset unknown".to_string(),
+        Ok(at) => {
+            let secs = (at.with_timezone(&Utc) - now).num_seconds();
+            let (days, hours, mins) = (secs / 86_400, secs % 86_400 / 3_600, secs % 3_600 / 60);
+            match (secs, days, hours) {
+                (s, _, _) if s <= 0 => "resets now".to_string(),
+                (_, 0, 0) => format!("resets in {mins}m"),
+                (_, 0, h) => format!("resets in {h}h {mins}m"),
+                (_, d, h) => format!("resets in {d}d {h}h"),
+            }
+        }
+    }
+}
+
+/// A fraction of one as a whole percent, rounded.
+fn percent(fraction: f64) -> String {
+    format!("{}%", (fraction * 100.0).round() as i64)
+}
+
+fn window_lines(name: &str, w: &SpendWindow, now: DateTime<Utc>) -> Vec<String> {
+    let row = |label: &str, usd: f64, share: f64| {
+        format!(
+            "  {label:<14}{:>9}{:>6}",
+            format!("${usd:.2}"),
+            percent(share)
+        )
+    };
+    vec![
+        format!(
+            "{name}  meter {}  {}",
+            percent(w.meter_fraction),
+            time_remaining(&w.resets_at, now)
+        ),
+        row("chair session", w.chair_session_usd, w.chair_session_share),
+        row("chair agents", w.chair_agents_usd, w.chair_agents_share),
+        row("cox seats", w.cox_seats_usd, w.cox_seats_share),
+    ]
+}
+
+/// The spend split panel's text, one string per line: both windows, or a placeholder when absent.
+pub fn spend_split_lines(split: Option<&SpendSplit>, now: DateTime<Utc>) -> Vec<String> {
+    match split {
+        None => vec!["no spend split".to_string()],
+        Some(s) => [
+            window_lines("five-hour", &s.five_hour, now),
+            window_lines("weekly", &s.weekly, now),
+        ]
+        .concat(),
+    }
+}
+
+/// Draws the spend split panel unstyled into `area`.
+pub fn draw_spend_split(
+    buf: &mut Buffer,
+    area: Rect,
+    split: Option<&SpendSplit>,
+    now: DateTime<Utc>,
+) {
+    let lines: Vec<Line> = spend_split_lines(split, now)
+        .into_iter()
+        .map(Line::from)
+        .collect();
+    Paragraph::new(lines).render(area, buf);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn window(usd: [f64; 3], share: [f64; 3], meter: f64, resets_at: &str) -> SpendWindow {
+        SpendWindow {
+            chair_session_usd: usd[0],
+            chair_agents_usd: usd[1],
+            cox_seats_usd: usd[2],
+            total_usd: usd.iter().sum(),
+            chair_session_share: share[0],
+            chair_agents_share: share[1],
+            cox_seats_share: share[2],
+            meter_fraction: meter,
+            resets_at: resets_at.to_string(),
+        }
+    }
+
+    fn fixture() -> SpendSplit {
+        SpendSplit {
+            five_hour: window(
+                [12.34, 8.0, 4.66],
+                [0.49, 0.32, 0.19],
+                0.37,
+                "2026-10-16T22:15:00Z",
+            ),
+            weekly: window(
+                [51.0, 30.0, 19.0],
+                [0.51, 0.30, 0.19],
+                0.62,
+                "2026-10-18T08:00:00Z",
+            ),
+        }
+    }
+
+    fn now() -> DateTime<Utc> {
+        "2026-10-16T20:00:00Z".parse().unwrap()
+    }
+
+    fn rendered(split: Option<&SpendSplit>) -> String {
+        let area = Rect::new(0, 0, 60, 10);
+        let mut buf = Buffer::empty(area);
+        draw_spend_split(&mut buf, area, split, now());
+        (0..area.height)
+            .map(|y| {
+                (0..area.width)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn the_five_hour_window_renders_dollars_shares_meter_and_reset() {
+        let text = rendered(Some(&fixture()));
+        let five: Vec<&str> = text.lines().take(4).collect();
+        assert!(five[0].contains("five-hour"), "{}", five[0]);
+        assert!(five[0].contains("meter 37%"), "{}", five[0]);
+        assert!(five[0].contains("resets in 2h 15m"), "{}", five[0]);
+        assert!(
+            five[1].contains("chair session")
+                && five[1].contains("$12.34")
+                && five[1].contains("49%")
+        );
+        assert!(
+            five[2].contains("chair agents")
+                && five[2].contains("$8.00")
+                && five[2].contains("32%")
+        );
+        assert!(
+            five[3].contains("cox seats") && five[3].contains("$4.66") && five[3].contains("19%")
+        );
+    }
+
+    #[test]
+    fn the_weekly_window_renders_dollars_shares_meter_and_reset() {
+        let text = rendered(Some(&fixture()));
+        let weekly: Vec<&str> = text.lines().skip(4).take(4).collect();
+        assert!(weekly[0].contains("weekly"), "{}", weekly[0]);
+        assert!(weekly[0].contains("meter 62%"), "{}", weekly[0]);
+        assert!(weekly[0].contains("resets in 1d 12h"), "{}", weekly[0]);
+        assert!(
+            weekly[1].contains("chair session")
+                && weekly[1].contains("$51.00")
+                && weekly[1].contains("51%")
+        );
+        assert!(
+            weekly[2].contains("chair agents")
+                && weekly[2].contains("$30.00")
+                && weekly[2].contains("30%")
+        );
+        assert!(
+            weekly[3].contains("cox seats")
+                && weekly[3].contains("$19.00")
+                && weekly[3].contains("19%")
+        );
+    }
+
+    #[test]
+    fn an_absent_split_renders_the_placeholder() {
+        let text = rendered(None);
+        assert!(text.contains("no spend split"), "{text}");
+        assert!(!text.contains("five-hour"), "{text}");
+    }
+
+    #[test]
+    fn time_remaining_covers_minutes_hours_days_past_and_garbage() {
+        let n = now();
+        assert_eq!(time_remaining("2026-10-16T20:12:00Z", n), "resets in 12m");
+        assert_eq!(
+            time_remaining("2026-10-16T22:15:00Z", n),
+            "resets in 2h 15m"
+        );
+        assert_eq!(time_remaining("2026-10-17T21:00:00Z", n), "resets in 1d 1h");
+        assert_eq!(time_remaining("2026-10-16T19:00:00Z", n), "resets now");
+        assert_eq!(time_remaining("soon", n), "reset unknown");
+    }
 
     #[test]
     fn bounds_cover_two_series_and_spend() {
