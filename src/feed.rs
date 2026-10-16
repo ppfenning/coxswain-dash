@@ -30,6 +30,56 @@ pub struct FeedSnapshot {
     pub history: Vec<HistoryRow>,
     #[serde(default)]
     pub history_today: HistoryToday,
+    #[serde(default)]
+    pub chair_agents: Vec<ChairAgent>,
+    #[serde(default)]
+    pub spend_split: Option<SpendSplit>,
+}
+
+/// Where a chair background agent stands. A value this build does not know parses as `Unknown`.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum AgentState {
+    Running,
+    Done,
+    Failed,
+    #[serde(other)]
+    Unknown,
+}
+
+/// One background agent the chair launched. Times are RFC 3339 UTC, kept as sent.
+#[derive(Debug, Deserialize)]
+pub struct ChairAgent {
+    pub label: String,
+    pub agent_id: String,
+    pub model: String,
+    pub state: AgentState,
+    pub started_at: String,
+    /// Null while the agent is still running.
+    #[serde(default)]
+    pub finished_at: Option<String>,
+    pub tokens: u64,
+    pub cost_usd: f64,
+}
+
+/// Spend in one meter window, split by who spent it. Shares are fractions of `total_usd`.
+#[derive(Debug, Deserialize)]
+pub struct SpendWindow {
+    pub chair_session_usd: f64,
+    pub chair_agents_usd: f64,
+    pub cox_seats_usd: f64,
+    pub total_usd: f64,
+    pub chair_session_share: f64,
+    pub chair_agents_share: f64,
+    pub cox_seats_share: f64,
+    pub meter_fraction: f64,
+    pub resets_at: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SpendSplit {
+    pub five_hour: SpendWindow,
+    pub weekly: SpendWindow,
 }
 
 /// How an ended run finished. A value this build does not know parses as `Unknown`.
@@ -547,6 +597,59 @@ mod tests {
         assert_eq!(snapshot.chair.host, "host-b");
         assert_eq!(snapshot.runs[0].node, "build");
         assert_eq!(snapshot.inbox[0].kind, "needs_chair");
+    }
+
+    const ACTIVITY_FIXTURE: &str = include_str!("../tests/fixtures/dash_activity_v1.json");
+
+    /// The activity fixture carries only the two new keys, so it parses through this subset.
+    #[derive(Deserialize)]
+    struct Activity {
+        #[serde(default)]
+        chair_agents: Vec<ChairAgent>,
+        #[serde(default)]
+        spend_split: Option<SpendSplit>,
+    }
+
+    #[test]
+    fn the_activity_fixture_parses_agents_and_both_spend_windows() {
+        let activity: Activity = serde_json::from_str(ACTIVITY_FIXTURE).expect("fixture parses");
+        let agents = &activity.chair_agents;
+        assert_eq!(agents.len(), 2);
+        assert_eq!(agents[0].label, "Land the chair attach phase");
+        assert_eq!(agents[0].state, AgentState::Done);
+        assert_eq!(
+            agents[0].finished_at.as_deref(),
+            Some("2026-10-16T17:32:26Z")
+        );
+        assert_eq!(agents[0].tokens, 195479);
+        assert_eq!(agents[0].cost_usd, 0.41);
+        assert_eq!(agents[1].label, "Rebuild the intake tickets");
+        assert_eq!(agents[1].state, AgentState::Running);
+        assert_eq!(agents[1].finished_at, None);
+        assert_eq!(agents[1].tokens, 120004);
+        assert_eq!(agents[1].cost_usd, 0.22);
+        let split = activity.spend_split.expect("split present");
+        assert_eq!(split.five_hour.total_usd, 6.3);
+        assert_eq!(split.five_hour.chair_session_share, 0.4921);
+        assert_eq!(split.five_hour.meter_fraction, 0.12);
+        assert_eq!(split.five_hour.resets_at, "2026-10-16T22:00:00Z");
+        assert_eq!(split.weekly.total_usd, 156.5);
+        assert_eq!(split.weekly.cox_seats_share, 0.6192);
+        assert_eq!(split.weekly.meter_fraction, 0.57);
+        assert_eq!(split.weekly.resets_at, "2026-10-18T08:00:00Z");
+    }
+
+    #[test]
+    fn an_unknown_agent_state_parses_as_unknown() {
+        let state: AgentState = serde_json::from_str(r#""paused""#).expect("unknown state parses");
+        assert_eq!(state, AgentState::Unknown);
+    }
+
+    #[test]
+    fn a_feed_without_the_activity_keys_has_no_agents_and_no_split() {
+        let snapshot = parse_snapshot(FIXTURE).expect("fixture should parse");
+        assert!(snapshot.chair_agents.is_empty());
+        assert!(snapshot.spend_split.is_none());
     }
 
     const WATCH_FIXTURE: &str = include_str!("../tests/fixtures/dash_feed_watch_v1.json");
