@@ -303,7 +303,7 @@ fn render_page_in(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
             }
             // Slipstream draws its own error line, in its own palette.
             AppPage::Slipstream => slipstream::render(f, area, app),
-            AppPage::Spend => spend::render(f, area, theme),
+            AppPage::Spend => spend::render(f, area, app, theme),
         },
     }
 }
