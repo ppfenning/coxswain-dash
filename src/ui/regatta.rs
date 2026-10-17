@@ -316,7 +316,7 @@ const ACTIVITY_MIN_ROWS: u16 = 3;
 
 /// The feed's own `at` as UTC, the "now" the activity panels age against, so the draw path
 /// reads no clock. An unparseable `at` reads as the epoch.
-fn feed_now(snapshot: &FeedSnapshot) -> DateTime<Utc> {
+pub(crate) fn feed_now(snapshot: &FeedSnapshot) -> DateTime<Utc> {
     DateTime::parse_from_rfc3339(&snapshot.at)
         .map(|at| at.with_timezone(&Utc))
         .unwrap_or_default()
@@ -553,7 +553,7 @@ fn base_style(theme: &Theme) -> Style {
 /// A rounded, titled block: the border is `theme.border`, or `theme.border_focus` when
 /// `focused`, and the title is always `theme.border_focus`, bold, padded with one space each
 /// side. `title` is unpadded.
-fn framed(title: &str, theme: &Theme, focused: bool) -> Block<'static> {
+pub(crate) fn framed(title: &str, theme: &Theme, focused: bool) -> Block<'static> {
     let border_color = if focused {
         theme.border_focus
     } else {
@@ -2048,6 +2048,124 @@ mod tests {
             .draw(|f| render_spend(f, f.area(), app.snapshot().expect("snapshot"), &app, &theme))
             .expect("draw should not fail");
         terminal
+    }
+
+    /// A whole feed with a literal `spend_split`: each argument is one window's `by_node` JSON
+    /// array and `cost_per_landed_task` JSON value.
+    fn spend_feed(five: (&str, &str), weekly: (&str, &str)) -> String {
+        let head = |resets: &str| {
+            format!(
+                r#""chair_session_usd":1.0,"chair_agents_usd":2.0,"cox_seats_usd":3.0,"total_usd":6.0,"chair_session_share":0.1,"chair_agents_share":0.3,"cox_seats_share":0.6,"meter_fraction":0.2,"resets_at":"{resets}""#
+            )
+        };
+        let chair = chair_feed(IDLE);
+        let body = chair.trim_end().trim_end_matches('}');
+        format!(
+            r#"{body}, "spend_split": {{"five_hour": {{{}, "by_node": {}, "cost_per_landed_task": {}}}, "weekly": {{{}, "by_node": {}, "cost_per_landed_task": {}}}}}}}"#,
+            head("2026-09-29T02:00:00Z"),
+            five.0,
+            five.1,
+            head("2026-10-04T04:00:00Z"),
+            weekly.0,
+            weekly.1,
+        )
+    }
+
+    const FIVE_NODES: &str = r#"[
+        {"role":"planner","tier":"opus","model":"claude-opus","calls":3,"turns":9,"tokens":12000,"cost_usd":4.5},
+        {"role":"builder","tier":"sonnet","model":"claude-sonnet","calls":7,"turns":21,"tokens":84000,"cost_usd":1.25},
+        {"role":"reviewer","tier":"haiku","model":"claude-haiku","calls":2,"turns":4,"tokens":3000,"cost_usd":0.1}]"#;
+
+    const WEEK_NODES: &str = r#"[
+        {"role":"auditor","tier":"opus","model":"claude-opus","calls":1,"turns":2,"tokens":500,"cost_usd":9.0}]"#;
+
+    fn draw_spend_page(feed: &str, weekly: bool) -> Terminal<TestBackend> {
+        let snapshot = crate::feed::parse_snapshot(feed).expect("literal feed should parse");
+        let mut app = App::new(AppPage::Spend, ThemeId::Regatta);
+        app.apply_snapshot(snapshot);
+        if weekly {
+            app.toggle_spend_window();
+        }
+        let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
+        let mut terminal = Terminal::new(TestBackend::new(100, 14)).expect("terminal");
+        terminal
+            .draw(|f| crate::ui::spend::render(f, f.area(), &app, &theme))
+            .expect("draw should not fail");
+        terminal
+    }
+
+    fn page_text(terminal: &Terminal<TestBackend>) -> Vec<String> {
+        (0..terminal.backend().buffer().area.height)
+            .map(|y| row_text(terminal, y))
+            .collect()
+    }
+
+    fn row_of(rows: &[String], needle: &str) -> usize {
+        rows.iter()
+            .position(|r| r.contains(needle))
+            .unwrap_or_else(|| panic!("{needle:?} is on no row: {rows:#?}"))
+    }
+
+    #[test]
+    fn the_spend_page_draws_the_header_and_three_rows_in_feed_order() {
+        let feed = spend_feed((FIVE_NODES, "2.5"), (WEEK_NODES, "null"));
+        let rows = page_text(&draw_spend_page(&feed, false));
+        let header = row_of(&rows, "Role");
+        for h in ["Tier", "Model", "Calls", "Turns", "Tokens", "Cost"] {
+            assert!(
+                rows[header].contains(h),
+                "{h:?} missing: {:?}",
+                rows[header]
+            );
+        }
+        assert_eq!(row_of(&rows, "planner"), header + 1);
+        assert_eq!(row_of(&rows, "builder"), header + 2);
+        assert_eq!(row_of(&rows, "reviewer"), header + 3);
+        assert!(rows[header + 2].contains("84000") && rows[header + 2].contains("$1.25"));
+        assert!(rows[row_of(&rows, "cost per landed task")].contains("$2.50"));
+    }
+
+    #[test]
+    fn a_window_without_by_node_draws_the_split_and_the_fallback_line() {
+        let feed = spend_feed(("[]", "null"), (WEEK_NODES, "null"));
+        let rows = page_text(&draw_spend_page(&feed, false));
+        for label in ["chair session", "chair agents", "cox seats"] {
+            row_of(&rows, label);
+        }
+        row_of(&rows, "no per-role breakdown from this cox");
+        assert!(rows.iter().all(|r| !r.contains("Role")));
+        assert!(rows[row_of(&rows, "cost per landed task")].contains("--"));
+    }
+
+    #[test]
+    fn toggling_the_window_changes_which_rows_appear() {
+        let feed = spend_feed((FIVE_NODES, "2.5"), (WEEK_NODES, "null"));
+        let five = page_text(&draw_spend_page(&feed, false));
+        let week = page_text(&draw_spend_page(&feed, true));
+        row_of(&five, "planner");
+        assert!(five.iter().all(|r| !r.contains("auditor")));
+        row_of(&week, "auditor");
+        assert!(week.iter().all(|r| !r.contains("planner")));
+    }
+
+    #[test]
+    fn the_spend_page_is_reached_from_the_navigation_and_draws_its_split() {
+        let snapshot =
+            crate::feed::parse_snapshot(&spend_feed((FIVE_NODES, "2.5"), ("[]", "null")))
+                .expect("literal feed should parse");
+        let mut app = App::new(AppPage::Slipstream, ThemeId::Regatta);
+        app.apply_snapshot(snapshot);
+        app.next_page();
+        assert_eq!(app.page(), AppPage::Spend);
+        let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
+        let mut terminal = Terminal::new(TestBackend::new(100, 14)).expect("terminal");
+        terminal
+            .draw(|f| crate::ui::render(f, &app, &theme))
+            .expect("draw should not fail");
+        let rows = page_text(&terminal);
+        for label in ["chair session", "chair agents", "cox seats"] {
+            row_of(&rows, label);
+        }
     }
 
     const MID_LAND: &str = r#"{"holder": "chair@host-b:12345", "host": "host-b", "epoch": 7, "liveness": "live", "beat_age_s": 4, "last_tick_at": "2026-09-28T23:59:00Z", "last_status": "chair 09-28 19:59 EDT | landed 2, launched 1, waiting on api-runners review before the next land", "current_action": {"kind": "land_phase", "target": "api-runners/runner-parity", "since": "2026-09-28T23:58:30Z"}, "today": {"lands": 2, "launches": 1, "refused_or_failed": 0, "needs_chair_open": 0}}"#;

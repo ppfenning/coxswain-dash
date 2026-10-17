@@ -102,7 +102,7 @@ fn percent(fraction: f64) -> String {
     format!("{}%", (fraction * 100.0).round() as i64)
 }
 
-fn window_lines(name: &str, w: &SpendWindow, now: DateTime<Utc>) -> Vec<String> {
+pub(crate) fn window_lines(name: &str, w: &SpendWindow, now: DateTime<Utc>) -> Vec<String> {
     let row = |label: &str, usd: f64, share: f64| {
         format!(
             "  {label:<14}{:>9}{:>6}",
