@@ -136,6 +136,9 @@ pub fn handle_key(app: &mut App, key: KeyCode) {
         // `s` was unbound in the landed keymap, so it opens the settings screen.
         KeyCode::Char('s') => app.open_settings(),
         KeyCode::Char('v') => app.cycle_regatta_layout_preset(),
+        // `f` flips the Spend page between five-hour and weekly. No action binding uses it, and
+        // the guard keeps it from acting on any other page.
+        KeyCode::Char('f') if app.page() == AppPage::Spend => app.toggle_spend_window(),
         // `g` is bound in no action table; it groups the queue, which only the Regatta page has.
         KeyCode::Char('g') if app.page() == AppPage::Regatta => app.toggle_queue_grouped(),
         // No action binding uses `w`, `$` or `h`; a test over `actions::bindings` holds that.
@@ -866,7 +869,36 @@ mod tests {
     fn back_tab_goes_to_the_previous_page() {
         let mut app = App::new(AppPage::Regatta, ThemeId::Regatta);
         handle_key(&mut app, KeyCode::BackTab);
-        assert_eq!(app.page(), AppPage::Slipstream);
+        assert_eq!(app.page(), AppPage::Spend);
+    }
+
+    #[test]
+    fn tab_twice_from_regatta_reaches_spend_and_a_third_wraps() {
+        let mut app = App::new(AppPage::Regatta, ThemeId::Regatta);
+        handle_key(&mut app, KeyCode::Tab);
+        handle_key(&mut app, KeyCode::Tab);
+        assert_eq!(app.page(), AppPage::Spend);
+        handle_key(&mut app, KeyCode::Tab);
+        assert_eq!(app.page(), AppPage::Regatta);
+    }
+
+    #[test]
+    fn f_flips_the_spend_window_on_the_spend_page_and_back() {
+        use crate::app::SpendWindow;
+        let mut app = App::new(AppPage::Spend, ThemeId::Regatta);
+        assert_eq!(app.spend_window(), SpendWindow::FiveHour);
+        handle_key(&mut app, KeyCode::Char('f'));
+        assert_eq!(app.spend_window(), SpendWindow::Weekly);
+        handle_key(&mut app, KeyCode::Char('f'));
+        assert_eq!(app.spend_window(), SpendWindow::FiveHour);
+    }
+
+    #[test]
+    fn f_does_nothing_off_the_spend_page() {
+        use crate::app::SpendWindow;
+        let mut app = App::new(AppPage::Regatta, ThemeId::Regatta);
+        handle_key(&mut app, KeyCode::Char('f'));
+        assert_eq!(app.spend_window(), SpendWindow::FiveHour);
     }
 
     #[test]

@@ -47,6 +47,15 @@ const LANES_HISTORY_MAX_AGE_HOURS: i64 = 24;
 pub enum AppPage {
     Regatta,
     Slipstream,
+    Spend,
+}
+
+/// The window the Spend page reads its figures over.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SpendWindow {
+    #[default]
+    FiveHour,
+    Weekly,
 }
 
 /// The two themes `t` toggles between. `themes/slipstream.toml` is a separate asset the
@@ -192,10 +201,11 @@ pub struct App {
     lanes_history: Vec<(String, u32)>,
     utc_offset: FixedOffset,
     focus: Focus,
-    /// Selection index per page (`AppPage::Regatta` then `AppPage::Slipstream`) and per focus
+    spend_window: SpendWindow,
+    /// Selection index per page (`Regatta`, `Slipstream`, then `Spend`) and per focus
     /// (`Focus::Runs`, `Focus::Queue`, `Focus::Machines`, `Focus::History`, `Focus::Inbox` in
     /// that order).
-    selected: [[usize; 7]; 2],
+    selected: [[usize; 7]; 3],
     detail: Option<(DetailKind, String, Option<DetailSnapshot>)>,
     chair_panel: ChairPanel<Box<dyn PtySession>>,
     /// Set by the backtick toggle. A shown panel with no open session is where Enter starts one.
@@ -281,7 +291,8 @@ impl Default for App {
             lanes_history: Vec::new(),
             utc_offset: FixedOffset::east_opt(0).expect("zero is a valid UTC offset"),
             focus: Focus::Runs,
-            selected: [[0; 7]; 2],
+            spend_window: SpendWindow::FiveHour,
+            selected: [[0; 7]; 3],
             detail: None,
             chair_panel: ChairPanel::new(Box::new(RealPty::new())),
             chair_panel_shown: false,
@@ -662,13 +673,28 @@ impl App {
     pub fn next_page(&mut self) {
         self.page = match self.page {
             AppPage::Regatta => AppPage::Slipstream,
-            AppPage::Slipstream => AppPage::Regatta,
+            AppPage::Slipstream => AppPage::Spend,
+            AppPage::Spend => AppPage::Regatta,
         };
     }
 
     pub fn prev_page(&mut self) {
-        // Only two variants exist, so "previous" and "next" wrap the same way.
-        self.next_page();
+        self.page = match self.page {
+            AppPage::Regatta => AppPage::Spend,
+            AppPage::Slipstream => AppPage::Regatta,
+            AppPage::Spend => AppPage::Slipstream,
+        };
+    }
+
+    pub fn spend_window(&self) -> SpendWindow {
+        self.spend_window
+    }
+
+    pub fn toggle_spend_window(&mut self) {
+        self.spend_window = match self.spend_window {
+            SpendWindow::FiveHour => SpendWindow::Weekly,
+            SpendWindow::Weekly => SpendWindow::FiveHour,
+        };
     }
 
     pub fn toggle_theme(&mut self) {
@@ -742,7 +768,7 @@ impl App {
     pub fn focus(&self) -> Focus {
         match self.page {
             AppPage::Regatta => self.focus,
-            AppPage::Slipstream => Focus::Runs,
+            AppPage::Slipstream | AppPage::Spend => Focus::Runs,
         }
     }
 
@@ -750,6 +776,7 @@ impl App {
         match self.page {
             AppPage::Regatta => 0,
             AppPage::Slipstream => 1,
+            AppPage::Spend => 2,
         }
     }
 
@@ -1708,24 +1735,48 @@ mod tests {
     }
 
     #[test]
-    fn next_page_wraps_from_slipstream_to_regatta() {
+    fn next_page_goes_from_slipstream_to_spend() {
         let mut app = App::new(AppPage::Slipstream, ThemeId::Regatta);
+        app.next_page();
+        assert_eq!(app.page(), AppPage::Spend);
+    }
+
+    #[test]
+    fn next_page_wraps_from_spend_to_regatta() {
+        let mut app = App::new(AppPage::Spend, ThemeId::Regatta);
         app.next_page();
         assert_eq!(app.page(), AppPage::Regatta);
     }
 
     #[test]
-    fn prev_page_wraps_from_regatta_to_slipstream() {
-        let mut app = App::new(AppPage::Regatta, ThemeId::Regatta);
-        app.prev_page();
-        assert_eq!(app.page(), AppPage::Slipstream);
+    fn the_spend_window_defaults_to_five_hour_and_toggles_back() {
+        let mut app = App::default();
+        assert_eq!(app.spend_window(), SpendWindow::FiveHour);
+        app.toggle_spend_window();
+        assert_eq!(app.spend_window(), SpendWindow::Weekly);
+        app.toggle_spend_window();
+        assert_eq!(app.spend_window(), SpendWindow::FiveHour);
     }
 
     #[test]
-    fn prev_page_wraps_from_slipstream_to_regatta() {
+    fn prev_page_wraps_from_regatta_to_spend() {
+        let mut app = App::new(AppPage::Regatta, ThemeId::Regatta);
+        app.prev_page();
+        assert_eq!(app.page(), AppPage::Spend);
+    }
+
+    #[test]
+    fn prev_page_goes_from_slipstream_to_regatta() {
         let mut app = App::new(AppPage::Slipstream, ThemeId::Regatta);
         app.prev_page();
         assert_eq!(app.page(), AppPage::Regatta);
+    }
+
+    #[test]
+    fn prev_page_goes_from_spend_to_slipstream() {
+        let mut app = App::new(AppPage::Spend, ThemeId::Regatta);
+        app.prev_page();
+        assert_eq!(app.page(), AppPage::Slipstream);
     }
 
     #[test]
@@ -2455,6 +2506,8 @@ mod tests {
         app.cycle_focus_next();
         app.next_page();
         app.next_page();
+        app.next_page();
+        assert_eq!(app.page(), AppPage::Regatta);
         assert_eq!(app.focus(), Focus::Queue);
     }
 

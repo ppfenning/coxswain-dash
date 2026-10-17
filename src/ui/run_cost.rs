@@ -163,6 +163,8 @@ mod tests {
             cox_seats_share: share[2],
             meter_fraction: meter,
             resets_at: resets_at.to_string(),
+            by_node: Vec::new(),
+            cost_per_landed_task: None,
         }
     }
 
