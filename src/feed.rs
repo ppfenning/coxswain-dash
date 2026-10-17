@@ -74,6 +74,23 @@ pub struct SpendWindow {
     pub cox_seats_share: f64,
     pub meter_fraction: f64,
     pub resets_at: String,
+    /// Spend per role, tier and model, in the order the feed sends it. Absent from an older cox.
+    #[serde(default)]
+    pub by_node: Vec<NodeSpend>,
+    #[serde(default)]
+    pub cost_per_landed_task: Option<f64>,
+}
+
+/// One row of a window's spend by node.
+#[derive(Debug, Deserialize)]
+pub struct NodeSpend {
+    pub role: String,
+    pub tier: String,
+    pub model: String,
+    pub calls: u64,
+    pub turns: u64,
+    pub tokens: u64,
+    pub cost_usd: f64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -637,6 +654,53 @@ mod tests {
         assert_eq!(split.weekly.cox_seats_share, 0.6192);
         assert_eq!(split.weekly.meter_fraction, 0.57);
         assert_eq!(split.weekly.resets_at, "2026-10-18T08:00:00Z");
+    }
+
+    const WINDOW_HEAD: &str = r#""chair_session_usd":1.0,"chair_agents_usd":2.0,"cox_seats_usd":3.0,"total_usd":6.0,"chair_session_share":0.1,"chair_agents_share":0.3,"cox_seats_share":0.6,"meter_fraction":0.2,"resets_at":"2026-10-16T22:00:00Z""#;
+
+    #[test]
+    fn a_window_with_three_by_node_rows_keeps_feed_order() {
+        let json = format!(
+            r#"{{{WINDOW_HEAD},"by_node":[
+            {{"role":"verify","tier":"small","model":"haiku","calls":7,"turns":12,"tokens":9000,"cost_usd":0.5}},
+            {{"role":"build","tier":"large","model":"opus","calls":3,"turns":40,"tokens":250000,"cost_usd":4.25}},
+            {{"role":"plan","tier":"mid","model":"sonnet","calls":5,"turns":8,"tokens":41000,"cost_usd":1.25}}
+            ],"cost_per_landed_task":2.5}}"#
+        );
+        let window: SpendWindow = serde_json::from_str(&json).expect("window parses");
+        let rows = &window.by_node;
+        assert_eq!(rows.len(), 3);
+        assert_eq!(
+            rows.iter().map(|r| r.role.as_str()).collect::<Vec<_>>(),
+            ["verify", "build", "plan"]
+        );
+        assert_eq!(rows[0].tier, "small");
+        assert_eq!(rows[0].model, "haiku");
+        assert_eq!(rows[0].calls, 7);
+        assert_eq!(rows[0].turns, 12);
+        assert_eq!(rows[0].tokens, 9000);
+        assert_eq!(rows[0].cost_usd, 0.5);
+        assert_eq!(rows[1].tier, "large");
+        assert_eq!(rows[1].model, "opus");
+        assert_eq!(rows[1].calls, 3);
+        assert_eq!(rows[1].turns, 40);
+        assert_eq!(rows[1].tokens, 250000);
+        assert_eq!(rows[1].cost_usd, 4.25);
+        assert_eq!(rows[2].tier, "mid");
+        assert_eq!(rows[2].model, "sonnet");
+        assert_eq!(rows[2].calls, 5);
+        assert_eq!(rows[2].turns, 8);
+        assert_eq!(rows[2].tokens, 41000);
+        assert_eq!(rows[2].cost_usd, 1.25);
+        assert_eq!(window.cost_per_landed_task, Some(2.5));
+    }
+
+    #[test]
+    fn a_window_without_by_node_or_cost_per_landed_task_parses_with_both_absent() {
+        let json = format!("{{{WINDOW_HEAD}}}");
+        let window: SpendWindow = serde_json::from_str(&json).expect("window parses");
+        assert!(window.by_node.is_empty());
+        assert!(window.cost_per_landed_task.is_none());
     }
 
     #[test]

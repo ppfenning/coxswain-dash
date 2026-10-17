@@ -21,6 +21,7 @@ fn page_str(page: AppPage) -> &'static str {
     match page {
         AppPage::Regatta => "regatta",
         AppPage::Slipstream => "slipstream",
+        AppPage::Spend => "spend",
     }
 }
 
@@ -46,6 +47,7 @@ pub fn parse_state(toml_str: &str) -> Option<(AppPage, ThemeId)> {
     let page = match parsed.page.as_deref() {
         Some("regatta") => AppPage::Regatta,
         Some("slipstream") => AppPage::Slipstream,
+        Some("spend") => AppPage::Spend,
         _ => return None,
     };
     let theme = match parsed.theme.as_deref() {
@@ -115,6 +117,16 @@ mod tests {
         assert_eq!(
             parse_state(&toml_str),
             Some((AppPage::Slipstream, ThemeId::Regatta))
+        );
+    }
+
+    #[test]
+    fn round_trips_spend_and_regatta() {
+        let toml_str = serialize_state(AppPage::Spend, ThemeId::Regatta);
+        assert_eq!(toml_str, "page = \"spend\"\ntheme = \"regatta\"\n");
+        assert_eq!(
+            parse_state(&toml_str),
+            Some((AppPage::Spend, ThemeId::Regatta))
         );
     }
 

@@ -15,6 +15,7 @@ mod run_cost;
 pub mod run_drill;
 pub mod settings_frame;
 mod slipstream;
+mod spend;
 pub mod spend_drill;
 pub mod status_line;
 pub mod watch_drill;
@@ -302,6 +303,7 @@ fn render_page_in(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
             }
             // Slipstream draws its own error line, in its own palette.
             AppPage::Slipstream => slipstream::render(f, area, app),
+            AppPage::Spend => spend::render(f, area, theme),
         },
     }
 }
