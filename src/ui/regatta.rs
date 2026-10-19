@@ -859,19 +859,38 @@ fn spend_row(
     Line::from(spans)
 }
 
+/// A fraction as a percent. Over 1.0 reads `>100%`; source `est` adds a `~` prefix (not to
+/// `>100%`) and an ` est` suffix.
+fn fraction_text(fraction: f64, source: &str) -> String {
+    let over = fraction > 1.0;
+    let base = if over {
+        ">100%".to_string()
+    } else {
+        format!("{:.0}%", fraction * 100.0)
+    };
+    if source == "est" {
+        let tilde = if over { "" } else { "~" };
+        format!("{tilde}{base} est")
+    } else {
+        base
+    }
+}
+
 fn render_spend(f: &mut Frame, rect: Rect, snapshot: &FeedSnapshot, app: &App, theme: &Theme) {
     let spend = &snapshot.spend;
     let block = numbered_block(2, FRAME_NAMES[1], theme, false);
     let room = usize::from(block.inner(rect).width);
     let offset = app.utc_offset();
-    let five_hour_text = format!(
-        "{:.0}% \u{b7} resets {}",
-        spend.five_hour_fraction * 100.0,
-        reset_text(&spend.five_hour_resets_at, offset, false)
-    );
+    let resets = reset_text(&spend.five_hour_resets_at, offset, false);
+    let five_hour_fraction = fraction_text(spend.five_hour_fraction, &spend.five_hour_source);
+    let five_hour_text = if resets.is_empty() {
+        five_hour_fraction
+    } else {
+        format!("{five_hour_fraction} \u{b7} resets {resets}")
+    };
     let week_text = format!(
-        "{:.0}% of {:.0}% stop \u{b7} {}",
-        spend.weekly_fraction * 100.0,
+        "{} of {:.0}% stop \u{b7} {}",
+        fraction_text(spend.weekly_fraction, &spend.weekly_source),
         spend.hard_stop_fraction * 100.0,
         reset_text(&spend.weekly_resets_at, offset, true)
     );
@@ -2405,6 +2424,47 @@ mod tests {
         assert_eq!(reset_text("2026-10-04T04:00:00Z", utc, true), "Sun 4 AM");
         assert_eq!(reset_text("2026-10-04T08:00:00Z", et, true), "Sun 4 AM");
         assert_eq!(reset_text("soon", utc, true), "soon");
+    }
+
+    #[test]
+    fn fraction_text_of_a_metered_fraction_is_a_bare_percent() {
+        assert_eq!(fraction_text(0.42, "meter"), "42%");
+    }
+
+    #[test]
+    fn fraction_text_of_an_estimate_has_a_tilde_and_an_est_suffix() {
+        assert_eq!(fraction_text(0.42, "est"), "~42% est");
+    }
+
+    #[test]
+    fn fraction_text_of_an_estimate_over_the_limit_has_no_tilde() {
+        assert_eq!(fraction_text(2.18, "est"), ">100% est");
+    }
+
+    #[test]
+    fn fraction_text_over_the_limit_from_another_source_is_bare() {
+        assert_eq!(fraction_text(1.2, "meter, store"), ">100%");
+    }
+
+    #[test]
+    fn a_five_hour_row_with_an_empty_reset_shows_no_resets() {
+        let feed = chair_feed(IDLE).replace(
+            "\"five_hour_resets_at\": \"2026-09-29T02:00:00Z\"",
+            "\"five_hour_resets_at\": \"\"",
+        );
+        let snapshot = crate::feed::parse_snapshot(&feed).expect("literal feed should parse");
+        let mut app = App::new(AppPage::Regatta, ThemeId::Regatta);
+        app.apply_snapshot(snapshot);
+        let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
+        let mut terminal = Terminal::new(TestBackend::new(60, 4)).expect("terminal");
+        terminal
+            .draw(|f| render_spend(f, f.area(), app.snapshot().expect("snapshot"), &app, &theme))
+            .expect("draw should not fail");
+        let five = row_text(&terminal, 1);
+        assert!(five.contains("5 hour"), "{five:?}");
+        assert!(five.contains("10%"), "{five:?}");
+        assert!(!five.contains("resets"), "{five:?}");
+        assert!(!five.contains('\u{b7}'), "{five:?}");
     }
 
     #[test]
