@@ -6,7 +6,7 @@ confirm that shows the command. Part of [Coxswain](https://github.com/ppfenning/
 
 ## Install
 
-From 0.31.0 bare `cox` opens `towpath` as its entry point, so the `towpath` binary must be on your PATH.
+`cox home` opens `towpath` (bare `cox` starts a Claude session), so the `towpath` binary must be on your PATH.
 
 ### Homebrew
 
