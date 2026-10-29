@@ -9,10 +9,13 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Clear, Paragraph},
+    widgets::{Block, Borders, Clear, Paragraph},
 };
 
 use super::chair_card::{Freshness, TICK_INTERVAL_S, beat_freshness, short_age};
+use super::chrome::{
+    bar_parts, base_style, below_first_row, card_block, clip, dim_style, render_label,
+};
 use super::regatta::action_hints;
 use super::{CollapsedRun, collapse_runs, count_suffix, end_chip};
 use crate::app::{App, Focus};
@@ -85,7 +88,10 @@ enum ChipState {
 }
 
 /// The palette for a `COLORTERM` value: truecolor as defined, else the nearest xterm-256 indexes.
-fn for_colorterm(theme: crate::app::ThemeId, colorterm: Option<&str>) -> SlipstreamPalette {
+pub(super) fn for_colorterm(
+    theme: crate::app::ThemeId,
+    colorterm: Option<&str>,
+) -> SlipstreamPalette {
     match colorterm {
         Some("truecolor") | Some("24bit") => slipstream_palette_for(theme),
         _ => slipstream_palette_for(theme).to_256(),
@@ -134,19 +140,6 @@ fn chip_style(state: ChipState, p: &SlipstreamPalette) -> Style {
     Style::default().fg(fg).bg(bg)
 }
 
-/// `text` cut to at most `room` chars, with an ellipsis when it was cut.
-fn clip(text: &str, room: usize) -> String {
-    if text.chars().count() > room {
-        text.chars()
-            .take(room.saturating_sub(1))
-            .chain(std::iter::once('\u{2026}'))
-            .take(room)
-            .collect()
-    } else {
-        text.to_string()
-    }
-}
-
 /// The card's first line: the name, then `mid` (the end chip and count), then the cost flush
 /// right. The name is cut first when the line is short.
 fn title_spans(name: &str, mid: Vec<Span<'static>>, cost: f64, width: usize) -> Vec<Span<'static>> {
@@ -186,21 +179,6 @@ fn header_right(at: &str, offset: FixedOffset, version: &str) -> String {
         ),
         Err(_) => format!("{time} v{version}"),
     }
-}
-
-/// `RUNS` as `R U N S`.
-fn spaced(label: &str) -> String {
-    label
-        .chars()
-        .map(String::from)
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-/// Filled and empty cell counts of a bar `width` cells wide. The fraction is clamped to 0..=1.
-fn bar_parts(fraction: f64, width: usize) -> (usize, usize) {
-    let filled = ((fraction.clamp(0.0, 1.0) * width as f64).round() as usize).min(width);
-    (filled, width - filled)
 }
 
 /// One `(width, in_use)` segment per lane, one-cell gaps between them, the last segment taking the
@@ -266,44 +244,6 @@ fn chair_rect(rail: Rect) -> Rect {
         height,
         ..rail
     }
-}
-
-fn first_row(rect: Rect) -> Rect {
-    Rect {
-        height: rect.height.min(1),
-        ..rect
-    }
-}
-
-fn below_first_row(rect: Rect) -> Rect {
-    Rect {
-        y: rect.y + rect.height.min(1),
-        height: rect.height.saturating_sub(1),
-        ..rect
-    }
-}
-
-fn base_style(p: &SlipstreamPalette) -> Style {
-    Style::default().fg(p.text).bg(p.ground)
-}
-
-fn dim_style(p: &SlipstreamPalette) -> Style {
-    Style::default().fg(p.dim)
-}
-
-fn card_block(border: Color, bg: Color, p: &SlipstreamPalette) -> Block<'static> {
-    Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(border))
-        .style(Style::default().fg(p.text).bg(bg))
-}
-
-fn render_label(f: &mut Frame, rect: Rect, label: &str, p: &SlipstreamPalette) {
-    f.render_widget(
-        Paragraph::new(Span::styled(spaced(label), dim_style(p))),
-        first_row(rect),
-    );
 }
 
 pub fn render(f: &mut Frame, area: Rect, app: &App) {
