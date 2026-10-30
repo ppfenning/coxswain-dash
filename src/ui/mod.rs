@@ -3,6 +3,7 @@
 
 mod chair_agents;
 mod chair_card;
+mod chrome;
 pub mod confirm_dialog;
 pub mod form_frame;
 pub mod health_drill;
@@ -187,7 +188,13 @@ fn render_detail(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
             watch_drill::render(f, area, items, theme, app.utc_offset())
         }
         (Some((_, _, Some(DetailSnapshot::Spend(detail)))), None) => {
-            spend_drill::render(f, area, detail, theme, app.utc_offset())
+            let split = app.snapshot().and_then(|s| s.spend_split.as_ref());
+            let window = split.map(|s| match app.spend_window() {
+                crate::app::SpendWindow::FiveHour => ("5-hour", &s.five_hour),
+                crate::app::SpendWindow::Weekly => ("weekly", &s.weekly),
+            });
+            let palette = slipstream::resolved_palette(app.theme());
+            spend_drill::render(f, area, detail, window, theme, &palette, app.utc_offset())
         }
         (Some((_, _, Some(DetailSnapshot::Health(detail)))), None) => {
             health_drill::render(f, area, detail, theme, app.utc_offset())
@@ -923,7 +930,7 @@ mod tests {
         app.open_spend();
         app.apply_detail_snapshot(detail::parse_detail(SPEND_FIXTURE.trim()).expect("spend"));
         let text = screen(&draw(&app, &crate::theme::resolve(ThemeId::Regatta)));
-        assert!(text.contains("2026-10-03"), "{text}");
+        assert!(text.contains("Sat 03"), "{text}");
         assert!(!text.contains("loading"), "{text}");
     }
 
