@@ -190,7 +190,7 @@ fn col_style(theme: &Theme, col: Col) -> Style {
         Col::Key => theme.fg,
         Col::Value => theme.accent,
         Col::Source | Col::Provenance => theme.dim,
-        Col::Mark => theme.status_waiting,
+        Col::Mark => super::status::color(theme, super::status::Status::Ready),
     };
     Style::default().fg(fg)
 }
@@ -272,7 +272,7 @@ fn field_lines(
 /// The diff line's color: added lines done, removed lines warning, the rest dim.
 fn diff_style(theme: &Theme, text: &str) -> Style {
     let fg = if text.starts_with('+') {
-        theme.status_done
+        super::status::color(theme, super::status::Status::Landed)
     } else if text.starts_with('-') {
         theme.quarantined
     } else {

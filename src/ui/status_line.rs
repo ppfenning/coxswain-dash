@@ -6,6 +6,8 @@ use ratatui::{Frame, layout::Rect, style::Style, widgets::Paragraph};
 use crate::exec::StatusLevel;
 use crate::theme::Theme;
 
+use super::status::{self, Status};
+
 /// `text` cut to `width` chars, the last of them `…` when anything was cut.
 fn clip(text: &str, width: usize) -> String {
     if text.chars().count() <= width {
@@ -18,8 +20,8 @@ fn clip(text: &str, width: usize) -> String {
     }
 }
 
-/// Draws the status on one line of `area`: `status_done` for Ok, `status_failed` for Failed,
-/// blank for `None`.
+/// Draws the status on one line of `area`: the `Up` colour for Ok, the `Failed` colour for
+/// Failed, blank for `None`.
 pub fn render(
     frame: &mut Frame,
     area: Rect,
@@ -29,10 +31,13 @@ pub fn render(
     let base = Style::default().fg(theme.fg).bg(theme.bg);
     let paragraph = match status {
         Some((level, text)) => {
-            let color = match level {
-                StatusLevel::Ok => theme.status_done,
-                StatusLevel::Failed => theme.status_failed,
-            };
+            let color = status::color(
+                theme,
+                match level {
+                    StatusLevel::Ok => Status::Up,
+                    StatusLevel::Failed => Status::Failed,
+                },
+            );
             Paragraph::new(clip(text, usize::from(area.width))).style(base.fg(color))
         }
         None => Paragraph::new("").style(base),

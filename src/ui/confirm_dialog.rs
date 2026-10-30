@@ -85,7 +85,9 @@ pub fn render(f: &mut Frame, area: Rect, theme: &Theme, state: &ConfirmState) {
     lines.push(Line::from(vec![
         Span::styled(
             "y",
-            Style::default().fg(theme.status_waiting).bg(theme.panel),
+            Style::default()
+                .fg(super::status::color(theme, super::status::Status::Ready))
+                .bg(theme.panel),
         ),
         Span::styled(" run    n cancel", dim),
     ]));

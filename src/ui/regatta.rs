@@ -28,6 +28,7 @@ use super::chair_agents;
 use super::chair_card::{Freshness, TICK_INTERVAL_S, beat_freshness, short_age};
 use super::rows::{Body, queue_rows, runs_rows};
 use super::run_cost::{chart_bounds, dollar_labels, draw_spend_split, drawable, spend_split_lines};
+use super::status::{self, Status};
 use super::{CollapsedRun, collapse_runs, count_suffix, end_chip, local_time};
 
 /// Cells in a spend meter, and the least one shrinks to in a narrow frame.
@@ -635,13 +636,10 @@ fn render_frame(
     }
 }
 
-/// The liveness word's colour: `live` is done-green, anything else is failed-red.
+/// The liveness word's colour, from the one status map: live is green, stale yellow, anything
+/// else red.
 fn liveness_color(liveness: &str, theme: &Theme) -> Color {
-    if liveness == "live" {
-        theme.status_done
-    } else {
-        theme.status_failed
-    }
+    status::color(theme, status::liveness(liveness))
 }
 
 /// `n`, or `-` when the feed does not carry the field.
@@ -738,7 +736,7 @@ fn chair_lines(chair: &Chair, action_age_s: Option<u64>, theme: &Theme) -> Vec<L
         Style::default()
     };
     let failed_style = if chair.today.refused_or_failed > 0 {
-        Style::default().fg(theme.status_failed)
+        Style::default().fg(status::color(theme, Status::Failed))
     } else {
         Style::default()
     };
@@ -1224,7 +1222,7 @@ fn cost_text(dollars: f64) -> String {
 /// matched on the words `paused`, `needs_person` and `needs_chair`.
 fn stage_color(theme: &Theme, status: &str) -> Option<Color> {
     match status {
-        "running" => Some(theme.status_running),
+        "running" => Some(status::color(theme, Status::Running)),
         "paused" => Some(theme.meter_mid),
         "needs_person" | "needs_chair" => Some(theme.approved),
         _ => None,
@@ -1415,19 +1413,11 @@ fn paint_selected_row(f: &mut Frame, inner: Rect, row: Option<usize>, theme: &Th
     }
 }
 
-/// The outcome word's colour. Approved is cyan and stopped yellow, borrowed from the roles that
-/// already carry those hues. A crash reads as a failure, an outcome this build does not know as
-/// waiting, and a run that ended having built nothing (idle) as dim.
+/// The outcome word's colour, from the one status map. History is the reference for landed,
+/// approved and quarantined. Stopped is dropped (dim), a crash is red, an outcome this build does
+/// not know is waiting, and a run that ended having built nothing (idle) is dim.
 fn outcome_color(theme: &Theme, outcome: Outcome) -> Color {
-    match outcome {
-        Outcome::Landed => theme.landed,
-        Outcome::Approved => theme.status_running,
-        Outcome::Quarantined => theme.quarantined,
-        Outcome::Stopped => theme.meter_mid,
-        Outcome::Idle => theme.dim,
-        Outcome::Crashed => theme.status_failed,
-        Outcome::Unknown => theme.status_waiting,
-    }
+    status::color(theme, status::outcome(outcome))
 }
 
 fn outcome_word(outcome: Outcome) -> &'static str {
@@ -1652,7 +1642,7 @@ fn queue_bar_color(theme: &Theme, landed: u32, total: u32) -> Color {
     if u64::from(landed) * 4 >= u64::from(total) * 3 {
         theme.landed
     } else {
-        theme.status_running
+        status::color(theme, Status::Running)
     }
 }
 
@@ -4323,9 +4313,9 @@ mod tests {
                 ThemeId::Regatta,
                 [
                     rgb(0x56, 0xd3, 0x64),
-                    rgb(0x56, 0xd4, 0xdd),
+                    rgb(0xd2, 0xa8, 0xff),
                     rgb(0xff, 0x7b, 0x72),
-                    rgb(0xe3, 0xb3, 0x41),
+                    rgb(0x8b, 0x94, 0x9e),
                     rgb(0xff, 0x7b, 0x72),
                     rgb(0x8b, 0x94, 0x9e),
                 ],
@@ -4334,9 +4324,9 @@ mod tests {
                 ThemeId::HarborLight,
                 [
                     rgb(0x1a, 0x7f, 0x37),
-                    rgb(0x0a, 0x6c, 0x74),
+                    rgb(0x74, 0x38, 0xc9),
                     rgb(0xc2, 0x1d, 0x2a),
-                    rgb(0x8a, 0x5a, 0x00),
+                    rgb(0x57, 0x60, 0x6a),
                     rgb(0xc2, 0x1d, 0x2a),
                     rgb(0x57, 0x60, 0x6a),
                 ],
@@ -4545,15 +4535,12 @@ mod tests {
     fn outcome_color_maps_every_outcome_to_an_existing_role() {
         let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
         assert_eq!(outcome_color(&theme, Outcome::Landed), theme.landed);
-        assert_eq!(
-            outcome_color(&theme, Outcome::Approved),
-            theme.status_running
-        );
+        assert_eq!(outcome_color(&theme, Outcome::Approved), theme.approved);
         assert_eq!(
             outcome_color(&theme, Outcome::Quarantined),
             theme.quarantined
         );
-        assert_eq!(outcome_color(&theme, Outcome::Stopped), theme.meter_mid);
+        assert_eq!(outcome_color(&theme, Outcome::Stopped), theme.dim);
         assert_eq!(outcome_color(&theme, Outcome::Idle), theme.dim);
         assert_eq!(outcome_color(&theme, Outcome::Crashed), theme.status_failed);
         assert_eq!(

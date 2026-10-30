@@ -17,6 +17,8 @@ use crate::actions::Target;
 use crate::detail::{RunDetail, StepDetail};
 use crate::theme::Theme;
 
+use super::status::{self, Status};
+
 /// Width, in characters, of a fully-filled step bar.
 const BAR_WIDTH: usize = 20;
 
@@ -102,15 +104,10 @@ fn render_title(
     f.render_widget(paragraph, rect);
 }
 
-/// The color a step's row is drawn in: `status_done`/`status_running`/`status_failed` for
-/// those statuses, `dim` for `pending` and anything else the feed might send.
-fn step_color(theme: &Theme, status: &str) -> Color {
-    match status {
-        "done" => theme.status_done,
-        "running" => theme.status_running,
-        "failed" => theme.status_failed,
-        _ => theme.dim,
-    }
+/// The color a step's row is drawn in, from the one status map. `pending` and any word the feed
+/// might send that the map does not know draw as `Ready`.
+fn step_color(theme: &Theme, step_status: &str) -> Color {
+    status::color(theme, status::from_word(step_status))
 }
 
 /// A bar of `#` scaled to `step.turns` against `max_turns`, padded to `BAR_WIDTH`. Empty when
@@ -154,8 +151,11 @@ fn render_steps(f: &mut Frame, rect: Rect, detail: &RunDetail, theme: &Theme) {
 }
 
 fn render_stopped_reason(f: &mut Frame, rect: Rect, reason: &str, theme: &Theme) {
-    let paragraph = Paragraph::new(format!("stopped: {reason}"))
-        .style(Style::default().fg(theme.status_failed).bg(theme.bg));
+    let paragraph = Paragraph::new(format!("stopped: {reason}")).style(
+        Style::default()
+            .fg(status::color(theme, Status::Failed))
+            .bg(theme.bg),
+    );
     f.render_widget(paragraph, rect);
 }
 
