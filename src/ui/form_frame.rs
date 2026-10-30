@@ -75,7 +75,9 @@ pub fn render(f: &mut Frame, area: Rect, theme: &Theme, form: &Form) {
     if let Some(error) = &form.error {
         lines.push(Line::styled(
             error.clone(),
-            Style::default().fg(theme.status_failed).bg(theme.panel),
+            Style::default()
+                .fg(super::status::color(theme, super::status::Status::Failed))
+                .bg(theme.panel),
         ));
     }
     lines.push(Line::raw(""));

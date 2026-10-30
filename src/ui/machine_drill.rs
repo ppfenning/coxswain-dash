@@ -32,10 +32,10 @@ fn meter_color(theme: &Theme, fraction: f64) -> Color {
     }
 }
 
-/// `status_done` at zero commits behind, `meter_mid` from one to five, `meter_high` above.
+/// The `Up` colour at zero commits behind, `meter_mid` from one to five, `meter_high` above.
 fn checkout_color(theme: &Theme, behind_main: u32) -> Color {
     if behind_main == 0 {
-        theme.status_done
+        super::status::color(theme, super::status::Status::Up)
     } else if behind_main <= 5 {
         theme.meter_mid
     } else {

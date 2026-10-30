@@ -9,7 +9,7 @@ use chrono::{DateTime, Utc};
 use ratatui::{
     Frame,
     layout::Rect,
-    style::{Color, Style},
+    style::Style,
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
 };
@@ -95,17 +95,6 @@ fn cells(agent: &ChairAgent, now: DateTime<Utc>) -> Cells {
     }
 }
 
-/// `status_running` while running, `status_done` when done, `status_failed` when failed,
-/// `status_waiting` for a state this build does not know.
-fn state_color(theme: &Theme, state: AgentState) -> Color {
-    match state {
-        AgentState::Running => theme.status_running,
-        AgentState::Done => theme.status_done,
-        AgentState::Failed => theme.status_failed,
-        AgentState::Unknown => theme.status_waiting,
-    }
-}
-
 /// Cuts `text` to `width` chars, ending in `…` when anything was dropped, and pads with
 /// spaces up to `width`.
 fn fit(text: &str, width: usize) -> String {
@@ -130,7 +119,10 @@ fn row_line(cells: &Cells, theme: &Theme, width: usize, model_w: usize) -> Line<
         Span::raw(" "),
         Span::styled(
             format!("{:<STATE_W$}", cells.state_word),
-            Style::default().fg(state_color(theme, cells.state)),
+            Style::default().fg(super::status::color(
+                theme,
+                super::status::agent(cells.state),
+            )),
         ),
         Span::raw(" "),
         Span::styled(

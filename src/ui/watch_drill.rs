@@ -5,7 +5,7 @@
 use ratatui::{
     Frame,
     layout::Rect,
-    style::{Color, Style},
+    style::Style,
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
 };
@@ -19,17 +19,6 @@ const CHIP_W: usize = 3;
 const STATE_W: usize = 8;
 /// Cells every row spends on the separators between its five columns.
 const GAPS: usize = 4;
-
-/// `status_running` for running or open, `status_done` for merged or done, `status_failed`
-/// for failed or closed, `status_waiting` for any other word.
-fn state_color(theme: &Theme, state: &str) -> Color {
-    match state {
-        "running" | "open" => theme.status_running,
-        "merged" | "done" => theme.status_done,
-        "failed" | "closed" => theme.status_failed,
-        _ => theme.status_waiting,
-    }
-}
 
 /// Cuts `text` to `width` chars, ending in `…` when anything was dropped, and pads with
 /// spaces up to `width`.
@@ -69,7 +58,10 @@ fn row_line(
         Span::raw(" "),
         Span::styled(
             format!("{:<STATE_W$}", item.state),
-            Style::default().fg(state_color(theme, &item.state)),
+            Style::default().fg(super::status::color(
+                theme,
+                super::status::from_word(&item.state),
+            )),
         ),
         Span::raw(" "),
         Span::styled(time, Style::default().fg(theme.dim)),
@@ -121,7 +113,7 @@ pub fn render(
 mod tests {
     use super::*;
     use crate::app::ThemeId;
-    use ratatui::{Terminal, backend::TestBackend};
+    use ratatui::{Terminal, backend::TestBackend, style::Color};
 
     fn item(kind: &str, id: &str, title: &str, state: &str, at: &str) -> WatchItem {
         WatchItem {

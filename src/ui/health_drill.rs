@@ -14,6 +14,8 @@ use ratatui::{
 use crate::detail::{ChairLease, HealthDetail, HostHealth, Housekeeping, LoginHealth, StoreHealth};
 use crate::theme::Theme;
 
+use super::status::{self, Status};
+
 fn fg(color: Color) -> Style {
     Style::default().fg(color)
 }
@@ -30,11 +32,7 @@ fn host_lines(hosts: &[HostHealth], theme: &Theme) -> Vec<Line<'static>> {
     hosts
         .iter()
         .map(|host| {
-            let state_color = if host.state == "up" {
-                theme.status_running
-            } else {
-                theme.status_failed
-            };
+            let state_color = status::color(theme, status::host(&host.state));
             Line::from(vec![
                 Span::raw(format!("  {:<12} ", host.name)),
                 Span::styled(format!("{:<6}", host.state), fg(state_color)),
@@ -49,11 +47,7 @@ fn login_lines(logins: &[LoginHealth], theme: &Theme) -> Vec<Line<'static>> {
     logins
         .iter()
         .map(|login| {
-            let color = if login.ok {
-                theme.status_done
-            } else {
-                theme.status_failed
-            };
+            let color = status::color(theme, status::health(login.ok));
             Line::from(vec![
                 Span::raw(format!("  {:<10} {:<12} ", login.provider, login.host)),
                 Span::styled(login.detail.clone(), fg(color)),
@@ -63,11 +57,8 @@ fn login_lines(logins: &[LoginHealth], theme: &Theme) -> Vec<Line<'static>> {
 }
 
 fn store_lines(store: &StoreHealth, theme: &Theme) -> Vec<Line<'static>> {
-    let (word, color) = if store.ok {
-        ("ok", theme.status_done)
-    } else {
-        ("not ok", theme.status_failed)
-    };
+    let word = if store.ok { "ok" } else { "not ok" };
+    let color = status::color(theme, status::health(store.ok));
     let mut spans = vec![
         label(theme, "  status"),
         Span::styled(word, fg(color)),
@@ -83,7 +74,7 @@ fn store_lines(store: &StoreHealth, theme: &Theme) -> Vec<Line<'static>> {
 fn lease_lines(lease: &ChairLease, theme: &Theme, offset: FixedOffset) -> Vec<Line<'static>> {
     let holder = match &lease.holder {
         Some(name) => Span::raw(name.clone()),
-        None => Span::styled("no holder", fg(theme.status_waiting)),
+        None => Span::styled("no holder", fg(status::color(theme, Status::Idle))),
     };
     let mut spans = vec![label(theme, "  holder"), holder];
     if let Some(expires_at) = &lease.expires_at {

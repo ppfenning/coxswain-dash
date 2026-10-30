@@ -138,7 +138,7 @@ fn chip_state(i: usize, current: Option<usize>, run: &Run) -> ChipState {
 fn chip_style(state: ChipState, p: &SlipstreamPalette) -> Style {
     let (fg, bg) = match state {
         ChipState::Done => (p.done_chip_text, p.done_chip),
-        ChipState::Current => (p.ground, p.accent),
+        ChipState::Current => (p.ground, p.running_chip),
         ChipState::Failed => (p.ground, p.failed_chip),
         ChipState::Pending => (p.pending_chip_text, p.pending_chip),
     };
@@ -1075,10 +1075,10 @@ mod tests {
     }
 
     #[test]
-    fn the_current_chip_is_drawn_in_the_accent() {
+    fn the_current_chip_is_drawn_in_the_running_chip_color() {
         let terminal = draw(&app_from(&two_initiatives(), ThemeId::Regatta), 120, 40);
         let cell = cell_of(terminal.backend().buffer(), CHIP_ROW, "build");
-        assert_eq!(cell.bg, slipstream_palette().accent);
+        assert_eq!(cell.bg, slipstream_palette().running_chip);
     }
 
     #[test]

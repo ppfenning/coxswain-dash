@@ -55,6 +55,7 @@ pub struct SlipstreamPalette {
     pub accent: Color,
     pub done_chip: Color,
     pub done_chip_text: Color,
+    pub running_chip: Color,
     pub pending_chip: Color,
     pub pending_chip_text: Color,
     pub failed_chip: Color,
@@ -129,6 +130,7 @@ const SLIPSTREAM_LIGHT: SlipstreamPalette = SlipstreamPalette {
     accent: rgb(0x0a6c74),
     done_chip: rgb(0x1a7f37),
     done_chip_text: rgb(0xfbfaf6),
+    running_chip: rgb(0x0a6c74),
     pending_chip: rgb(0xe8e3d6),
     pending_chip_text: rgb(0x57606a),
     failed_chip: rgb(0xc21d2a),
@@ -145,6 +147,7 @@ const SLIPSTREAM: SlipstreamPalette = SlipstreamPalette {
     accent: rgb(0x2dd4bf),
     done_chip: rgb(0x7ee787),
     done_chip_text: rgb(0x0b1020),
+    running_chip: rgb(0x56d4dd),
     pending_chip: rgb(0x17213a),
     pending_chip_text: rgb(0x7f8ba6),
     failed_chip: rgb(0xff8a80),
@@ -242,6 +245,7 @@ impl SlipstreamPalette {
             accent: to_indexed(self.accent),
             done_chip: to_indexed(self.done_chip),
             done_chip_text: to_indexed(self.done_chip_text),
+            running_chip: to_indexed(self.running_chip),
             pending_chip: to_indexed(self.pending_chip),
             pending_chip_text: to_indexed(self.pending_chip_text),
             failed_chip: to_indexed(self.failed_chip),
@@ -253,14 +257,23 @@ impl SlipstreamPalette {
 /// The Slipstream page palette in truecolor. Pure.
 #[allow(dead_code)]
 pub fn slipstream_palette() -> SlipstreamPalette {
-    SLIPSTREAM
+    slipstream_palette_for(crate::app::ThemeId::Regatta)
 }
 
-/// The Slipstream palette for a theme: the dark canvas palette, or the light one built from Harbor Light.
+/// The Slipstream palette for a theme: the dark canvas palette, or the light one built from Harbor
+/// Light. Its done, running and failed chip colours come from the one status map, so Slipstream
+/// and the Regatta theme draw a landed, running or failed state the same.
 pub fn slipstream_palette_for(id: crate::app::ThemeId) -> SlipstreamPalette {
-    match id {
-        crate::app::ThemeId::Regatta => SLIPSTREAM,
-        crate::app::ThemeId::HarborLight => SLIPSTREAM_LIGHT,
+    use crate::ui::status::{Status, color};
+    let (base, theme) = match id {
+        crate::app::ThemeId::Regatta => (SLIPSTREAM, REGATTA),
+        crate::app::ThemeId::HarborLight => (SLIPSTREAM_LIGHT, HARBOR_LIGHT),
+    };
+    SlipstreamPalette {
+        done_chip: color(&theme, Status::Landed),
+        running_chip: color(&theme, Status::Running),
+        failed_chip: color(&theme, Status::Failed),
+        ..base
     }
 }
 

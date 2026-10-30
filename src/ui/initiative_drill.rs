@@ -6,7 +6,7 @@
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Style},
+    style::Style,
     text::Line,
     widgets::{Block, Borders, Paragraph},
 };
@@ -16,17 +16,10 @@ use crate::detail::{HistoryEntry, InitiativeDetail, PhaseDetail};
 use crate::form::{KEY_EDIT, KEY_REMOVE};
 use crate::theme::Theme;
 
+use super::status::{self, Status};
+
 fn base_style(theme: &Theme) -> Style {
     Style::default().fg(theme.fg).bg(theme.bg)
-}
-
-/// `done`/`landed` map to `status_done`, `running` to `status_running`, else `status_waiting`.
-fn task_state_color(theme: &Theme, state: &str) -> Color {
-    match state {
-        "done" | "landed" => theme.status_done,
-        "running" => theme.status_running,
-        _ => theme.status_waiting,
-    }
 }
 
 /// `<id> landed <local time>` once `landed_at` is set, else `<id> not landed`.
@@ -47,7 +40,7 @@ fn phase_lines(phase: &PhaseDetail, theme: &Theme) -> Vec<Line<'static>> {
         .flat_map(|task| {
             let state_line = Line::styled(
                 format!("{} {}", task.id, task.state),
-                Style::default().fg(task_state_color(theme, &task.state)),
+                Style::default().fg(status::color(theme, status::from_word(&task.state))),
             );
             let need_lines = task
                 .needs
@@ -56,7 +49,7 @@ fn phase_lines(phase: &PhaseDetail, theme: &Theme) -> Vec<Line<'static>> {
             let error_line = task.error.as_ref().map(|error| {
                 Line::styled(
                     format!("ERROR: {error}"),
-                    Style::default().fg(theme.status_failed),
+                    Style::default().fg(status::color(theme, Status::Failed)),
                 )
             });
             std::iter::once(state_line)
@@ -185,11 +178,14 @@ mod tests {
     }
 
     #[test]
-    fn task_state_color_maps_landed_running_and_ready() {
-        let theme = crate::theme::resolve(ThemeId::Regatta);
-        assert_eq!(task_state_color(&theme, "landed"), theme.status_done);
-        assert_eq!(task_state_color(&theme, "running"), theme.status_running);
-        assert_eq!(task_state_color(&theme, "ready"), theme.status_waiting);
+    fn task_states_use_the_one_status_map_and_approved_is_not_folded_into_waiting() {
+        let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
+        let of = |w: &str| status::color(&theme, status::from_word(w));
+        assert_eq!(of("landed"), theme.landed);
+        assert_eq!(of("running"), theme.status_running);
+        assert_eq!(of("ready"), theme.status_waiting);
+        assert_eq!(of("approved"), theme.approved);
+        assert_eq!(of("quarantined"), theme.quarantined);
     }
 
     #[test]

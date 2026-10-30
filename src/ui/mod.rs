@@ -17,6 +17,7 @@ pub mod run_drill;
 pub mod settings_frame;
 mod slipstream;
 pub mod spend_drill;
+pub mod status;
 pub mod status_line;
 pub mod watch_drill;
 
@@ -36,6 +37,7 @@ use crate::detail::DetailSnapshot;
 use crate::exec::StatusLevel;
 use crate::feed::{FeedSnapshot, Run, RunEnd};
 use crate::theme::Theme;
+use status::Status;
 
 pub use regatta::frame_rects as regatta_frame_rects;
 
@@ -100,11 +102,14 @@ fn draw_status(f: &mut Frame, row: Rect, theme: &Theme, status: &(StatusLevel, S
 /// `text` on `row`, clearing what was there: the error role when `failed`, else the waiting role.
 fn render_health_line(f: &mut Frame, row: Rect, text: &str, failed: bool, theme: &Theme) {
     if row.width > 0 {
-        let color = if failed {
-            theme.status_failed
-        } else {
-            theme.status_waiting
-        };
+        let color = status::color(
+            theme,
+            if failed {
+                Status::Failed
+            } else {
+                Status::Ready
+            },
+        );
         f.render_widget(Clear, row);
         f.render_widget(
             Paragraph::new(fit_line(text, row.width))
@@ -359,7 +364,11 @@ fn render_error_line(f: &mut Frame, row: Rect, err: &str, theme: &Theme) {
     let text = fit_line(&feed_error_text(err), row.width);
     f.render_widget(Clear, row);
     f.render_widget(
-        Paragraph::new(text).style(Style::default().fg(theme.status_failed).bg(theme.bg)),
+        Paragraph::new(text).style(
+            Style::default()
+                .fg(status::color(theme, Status::Failed))
+                .bg(theme.bg),
+        ),
         row,
     );
 }
@@ -470,7 +479,7 @@ pub fn local_time(utc: &str, offset: FixedOffset) -> String {
     }
 }
 
-/// Which rule coloured an end chip. `Died` is the only role that may carry `status_failed`
+/// Which rule coloured an end chip. `Died` is the only role that may carry the failed colour
 /// when the run has an end; `Fallback` is today's status-word chip for a run with none.
 #[allow(dead_code)] // consumed by the regatta and slipstream run lists in later tasks
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -495,16 +504,14 @@ pub struct EndChip {
     pub spans: Vec<Span<'static>>,
 }
 
-/// The colour today's runs list gives a status word. Mirrors `regatta::status_color`.
+/// The colour a status word gets, from the one status map.
 fn status_word_color(theme: &Theme, status: &str) -> Color {
-    match status {
-        "running" => theme.status_running,
-        "approved" => theme.approved,
-        "landed" => theme.landed,
-        "quarantined" => theme.quarantined,
-        "failed" => theme.status_failed,
-        _ => theme.status_waiting,
-    }
+    status::color(theme, status::from_word(status))
+}
+
+/// The chip colour for a run end, from the one status map.
+fn end_color(theme: &Theme, end: &RunEnd) -> Color {
+    status::color(theme, status::run_end(end))
 }
 
 fn chip(
@@ -536,36 +543,50 @@ fn chip(
 }
 
 /// The chip for how a run ended. A run with no end gets today's chip: its status word in the
-/// status colour. Only `Died` uses `theme.status_failed`; quarantined has its own role and
+/// status colour. Only `Died` uses the failed colour; quarantined has its own role and
 /// shows its cause dim.
 #[allow(dead_code)] // consumed by the regatta and slipstream run lists in later tasks
 pub fn end_chip(end: Option<&RunEnd>, status: &str, theme: &Theme) -> EndChip {
     match end {
-        Some(RunEnd::Running) => chip(
+        Some(e @ RunEnd::Running) => chip(
             "running",
             EndRole::Running,
-            theme.status_running,
+            end_color(theme, e),
             None,
             theme,
         ),
-        Some(RunEnd::Landed) => chip("landed", EndRole::Landed, theme.landed, None, theme),
-        Some(RunEnd::Approved) => chip("approved", EndRole::Approved, theme.approved, None, theme),
-        Some(RunEnd::Quarantined { cause }) => chip(
+        Some(e @ RunEnd::Landed) => {
+            chip("landed", EndRole::Landed, end_color(theme, e), None, theme)
+        }
+        Some(e @ RunEnd::Approved) => chip(
+            "approved",
+            EndRole::Approved,
+            end_color(theme, e),
+            None,
+            theme,
+        ),
+        Some(e @ RunEnd::Quarantined { cause }) => chip(
             "quarantined",
             EndRole::Quarantined,
-            theme.quarantined,
+            end_color(theme, e),
             cause.as_deref().map(|c| (c, theme.dim)),
             theme,
         ),
-        Some(RunEnd::Idle) => chip("idle", EndRole::Idle, theme.dim, None, theme),
-        Some(RunEnd::Died { cause }) => chip(
+        Some(e @ RunEnd::Idle) => chip("idle", EndRole::Idle, end_color(theme, e), None, theme),
+        Some(e @ RunEnd::Died { cause }) => chip(
             "died",
             EndRole::Died,
-            theme.status_failed,
-            cause.as_deref().map(|c| (c, theme.status_failed)),
+            end_color(theme, e),
+            cause.as_deref().map(|c| (c, end_color(theme, e))),
             theme,
         ),
-        Some(RunEnd::Stopped) => chip("stopped", EndRole::Stopped, theme.dim, None, theme),
+        Some(e @ RunEnd::Stopped) => chip(
+            "stopped",
+            EndRole::Stopped,
+            end_color(theme, e),
+            None,
+            theme,
+        ),
         None => chip(
             status,
             EndRole::Fallback,
