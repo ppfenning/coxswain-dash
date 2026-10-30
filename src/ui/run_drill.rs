@@ -15,6 +15,7 @@ use ratatui::{
 
 use crate::actions::Target;
 use crate::detail::{RunDetail, StepDetail};
+use crate::feed::HistoryTask;
 use crate::theme::Theme;
 
 use super::status::{self, Status};
@@ -27,6 +28,7 @@ pub fn render(
     area: Rect,
     detail: &RunDetail,
     project: Option<&str>,
+    tasks: &[HistoryTask],
     theme: &Theme,
     offset: chrono::FixedOffset,
 ) {
@@ -50,6 +52,7 @@ pub fn render(
         .constraints([
             Constraint::Length(1),
             Constraint::Length(detail.steps.len() as u16),
+            Constraint::Length(tasks.len() as u16),
             Constraint::Length(stopped_len),
             Constraint::Length(detail.files.len() as u16),
             Constraint::Length(tool_calls_len),
@@ -59,12 +62,33 @@ pub fn render(
 
     render_title(f, rows[0], detail, project, theme);
     render_steps(f, rows[1], detail, theme);
+    render_tasks(f, rows[2], tasks, theme);
     if let Some(reason) = &detail.stopped_reason {
-        render_stopped_reason(f, rows[2], reason, theme);
+        render_stopped_reason(f, rows[3], reason, theme);
     }
-    render_files(f, rows[3], detail, theme);
-    render_tool_calls(f, rows[4], detail, theme, offset);
-    render_log_tail(f, rows[5], detail, theme);
+    render_files(f, rows[4], detail, theme);
+    render_tool_calls(f, rows[5], detail, theme, offset);
+    render_log_tail(f, rows[6], detail, theme);
+}
+
+/// One row per task the run carried: its id, its state now in that state's colour, and its PR.
+/// Empty when the feed sent no tasks.
+fn render_tasks(f: &mut Frame, rect: Rect, tasks: &[HistoryTask], theme: &Theme) {
+    let lines: Vec<Line> = tasks
+        .iter()
+        .map(|task| {
+            let pr = task.pr.map(|n| format!(" #{n}")).unwrap_or_default();
+            Line::from(vec![
+                Span::raw(format!("task {:<14} ", task.id)),
+                Span::styled(
+                    format!("{:<10}", task.state),
+                    Style::default().fg(step_color(theme, &task.state)),
+                ),
+                Span::styled(pr, Style::default().fg(theme.dim)),
+            ])
+        })
+        .collect();
+    f.render_widget(Paragraph::new(lines).style(base_style(theme)), rect);
 }
 
 fn base_style(theme: &Theme) -> Style {
@@ -233,14 +257,72 @@ mod tests {
     }
 
     fn draw_with(theme: &Theme, project: Option<&str>) -> Terminal<TestBackend> {
+        draw_with_tasks(theme, project, &[])
+    }
+
+    fn draw_with_tasks(
+        theme: &Theme,
+        project: Option<&str>,
+        tasks: &[HistoryTask],
+    ) -> Terminal<TestBackend> {
         let detail = run_detail_from_fixture();
         let offset = chrono::FixedOffset::east_opt(0).unwrap();
         let backend = TestBackend::new(120, 40);
         let mut terminal = Terminal::new(backend).expect("terminal");
         terminal
-            .draw(|f| render(f, f.area(), &detail, project, theme, offset))
+            .draw(|f| render(f, f.area(), &detail, project, tasks, theme, offset))
             .expect("draw should not fail");
         terminal
+    }
+
+    fn sample_tasks() -> Vec<HistoryTask> {
+        let task = |id: &str, state: &str, pr: Option<u64>| HistoryTask {
+            id: id.to_string(),
+            state: state.to_string(),
+            pr,
+        };
+        vec![
+            task("t1", "landed", Some(474)),
+            task("t2", "approved", None),
+            task("t3", "ready", None),
+        ]
+    }
+
+    #[test]
+    fn lists_each_task_with_its_state_and_pr_in_both_themes() {
+        for id in [ThemeId::Regatta, ThemeId::HarborLight] {
+            let theme = crate::theme::resolve_for(id, Some("truecolor"));
+            let terminal = draw_with_tasks(&theme, None, &sample_tasks());
+            let buffer = terminal.backend().buffer();
+            let text = |y: u16| -> String {
+                let line: String = (1..119)
+                    .map(|x| buffer[(x, y)].symbol().to_string())
+                    .collect();
+                line.trim_end().to_string()
+            };
+            assert_eq!(text(8), format!("task {:<14} {:<10} #474", "t1", "landed"));
+            assert_eq!(
+                text(9),
+                format!("task {:<14} {:<10}", "t2", "approved").trim_end()
+            );
+            assert_eq!(
+                text(10),
+                format!("task {:<14} {:<10}", "t3", "ready").trim_end()
+            );
+        }
+    }
+
+    #[test]
+    fn a_task_state_is_drawn_in_its_status_colour() {
+        let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
+        let terminal = draw_with_tasks(&theme, None, &sample_tasks());
+        // Inner row 0 is the title, rows 1..=steps are the steps; the tasks follow them.
+        let steps = run_detail_from_fixture().steps.len() as u16;
+        let y = 1 + 1 + steps;
+        let x = 1 + "task ".len() as u16 + 14 + 1;
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(x, y)].fg, theme.landed);
+        assert_eq!(buffer[(x, y + 1)].fg, theme.approved);
     }
 
     #[test]

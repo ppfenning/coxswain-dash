@@ -1,0 +1,13 @@
+---
+source: src/ui/regatta.rs
+expression: "draw_history_frame(& app, ThemeId :: HarborLight).backend().to_string()"
+---
+"╭ 7 history ───────────────────────────────────────────────────────────────────╮"
+"│today  3 lands  1 quarantines  $4.20  5 runs                                  │"
+"│  TIME  MACHINE    INITIATIVE             STATUS                          COST│"
+"│  12:40 host-b     dash-feed              approved · 1 landed, 1 rebuilt $0.50│"
+"│                                                                              │"
+"│                                                                              │"
+"│                                                                              │"
+"│                                                                              │"
+"╰──────────────────────────────────────────────────────────────────────────────╯"
