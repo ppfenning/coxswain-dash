@@ -1,0 +1,12 @@
+---
+source: src/ui/regatta.rs
+expression: "queue_terminal(queue, theme_id).backend().to_string()"
+---
+"╭ 6 queue ─────────────────────────────────────────────────╮"
+"│  proportional                     ███▓▓▓░ ░░░░ 0/2 phases│"
+"│  per-phase                        ✕ ░ ✕        0/3 phases│"
+"│  plus-cell                       ██████████+4 0/14 phases│"
+"│                                                          │"
+"│                                                          │"
+"│                                                          │"
+"╰──────────────────────────────────────────────────────────╯"

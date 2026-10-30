@@ -374,6 +374,22 @@ pub struct QueueEntry {
     /// A missing key and an explicit null both give `None`.
     #[serde(default)]
     pub project: Option<String>,
+    /// Each phase's tasks. `None` on a feed that predates the field, and the bar then draws from
+    /// the phase counts alone.
+    #[serde(default)]
+    pub phases: Option<Vec<QueuePhase>>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct QueuePhase {
+    #[serde(default)]
+    pub tasks: Vec<QueueTask>,
+}
+
+/// `state` is a word such as `landed`; `ui/status.rs` maps it to a look.
+#[derive(Debug, Deserialize)]
+pub struct QueueTask {
+    pub state: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -824,6 +840,16 @@ mod tests {
         let queue = r#"[{"initiative":"i1","priority":-2,"phases_landed":0,"phases_total":1,"current_phase":"p1"}]"#;
         let snapshot = with_queue(queue);
         assert_eq!(snapshot.queue[0].priority, -2);
+    }
+
+    #[test]
+    fn a_queue_row_parses_its_phases_and_an_old_row_has_none() {
+        let queue = r#"[{"initiative":"i1","priority":1,"phases_landed":0,"phases_total":2,"current_phase":"p1","phases":[{"tasks":[{"state":"landed"},{"state":"from-the-future"}]},{"tasks":[]}]},{"initiative":"i2","priority":1,"phases_landed":0,"phases_total":1,"current_phase":"p1"}]"#;
+        let snapshot = with_queue(queue);
+        let phases = snapshot.queue[0].phases.as_ref().expect("phases parse");
+        assert_eq!(phases.len(), 2);
+        assert_eq!(phases[0].tasks[1].state, "from-the-future");
+        assert!(snapshot.queue[1].phases.is_none());
     }
 
     fn with_chair(chair: &str) -> String {

@@ -183,6 +183,7 @@ mod tests {
                 current_phase: "p".to_string(),
                 repo: String::new(),
                 project: project.map(str::to_string),
+                phases: None,
             })
             .collect()
     }
