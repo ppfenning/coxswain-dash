@@ -1661,25 +1661,229 @@ fn more_line(more: usize, theme: &Theme) -> Line<'static> {
     Line::styled(format!("+ {more} more"), Style::default().fg(theme.dim))
 }
 
-fn queue_line(q: &QueueEntry, selected: bool, width: usize, theme: &Theme) -> Line<'static> {
-    let prefix = if selected { "\u{25b6} " } else { "  " };
-    let tail = format!(" {}/{} phases", q.phases_landed, q.phases_total);
-    let initiative_w = width.saturating_sub(2 + 1 + QUEUE_BAR_CELLS + tail.chars().count());
+/// One cell of a task-state queue bar. `More` is the `+N` cell for phases with no room of their
+/// own, coloured by the least advanced state among them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BarCell {
+    Task(Status),
+    Gap,
+    More(usize, Status),
+}
+
+/// How far a task is from done: 0 needs a person most, 5 is landed. Any status a task word can
+/// map to beyond the seven feed states counts as needing a person.
+fn urgency(status: Status) -> u8 {
+    match status {
+        Status::Landed => 5,
+        Status::Approved => 4,
+        Status::Running | Status::Working => 3,
+        Status::Ready => 2,
+        Status::Blocked => 1,
+        _ => 0,
+    }
+}
+
+/// The status a task state word draws as, or `None` for a dropped task, which the bar leaves out.
+fn task_status(word: &str) -> Option<Status> {
+    Some(status::from_word(word)).filter(|s| *s != Status::Dropped)
+}
+
+/// Each phase's drawn task statuses in feed order. A phase left with no tasks is left out.
+fn phase_statuses(phases: &[crate::feed::QueuePhase]) -> Vec<Vec<Status>> {
+    phases
+        .iter()
+        .map(|p| {
+            p.tasks
+                .iter()
+                .filter_map(|t| task_status(&t.state))
+                .collect()
+        })
+        .filter(|p: &Vec<Status>| !p.is_empty())
+        .collect()
+}
+
+/// The least advanced status of a non-empty run of statuses.
+fn least_advanced(statuses: &[Status]) -> Option<Status> {
+    statuses.iter().copied().min_by_key(|s| urgency(*s))
+}
+
+/// Split `total` over `weights` by largest remainder. The shares sum to `total`, and when `total`
+/// is at most the sum of the weights no share is more than its weight.
+fn apportion(total: usize, weights: &[usize]) -> Vec<usize> {
+    let sum: usize = weights.iter().sum();
+    if sum == 0 {
+        return vec![0; weights.len()];
+    }
+    let floors: Vec<usize> = weights.iter().map(|w| total * w / sum).collect();
+    let left = total - floors.iter().sum::<usize>();
+    let mut by_remainder: Vec<usize> = (0..weights.len()).collect();
+    by_remainder.sort_by_key(|&i| std::cmp::Reverse(total * weights[i] % sum));
+    floors
+        .iter()
+        .enumerate()
+        .map(|(i, floor)| floor + usize::from(by_remainder[..left].contains(&i)))
+        .collect()
+}
+
+/// Phases' cells with a gap between each pair, or run together when `gaps` is false.
+fn join_phases(phases: Vec<Vec<BarCell>>, gaps: bool) -> Vec<BarCell> {
+    phases
+        .into_iter()
+        .enumerate()
+        .flat_map(|(i, cells)| {
+            (i > 0 && gaps)
+                .then_some(BarCell::Gap)
+                .into_iter()
+                .chain(cells)
+        })
+        .collect()
+}
+
+/// The cells of a task-state bar for `phases`, each a non-empty list of task statuses, in at most
+/// `width` columns. A state present is never cut. In order, it draws:
+/// 1. one cell per task, a gap between phases;
+/// 2. cells shared out in proportion to each phase's size, at least one per state present;
+/// 3. one cell per phase in its least advanced state, with gaps only if they fit;
+/// 4. the first phases that fit, then a `+N` cell for the rest.
+///
+/// Within a phase the cells run from landed to quarantined.
+fn queue_bar_cells(phases: &[Vec<Status>], width: usize) -> Vec<BarCell> {
+    let phases: Vec<Vec<Status>> = phases
+        .iter()
+        .filter(|p| !p.is_empty())
+        .map(|p| {
+            let mut sorted = p.clone();
+            sorted.sort_by_key(|s| std::cmp::Reverse(urgency(*s)));
+            sorted
+        })
+        .collect();
+    let count = phases.len();
+    let gaps = count.saturating_sub(1);
+    let tasks: usize = phases.iter().map(Vec::len).sum();
+    if tasks + gaps <= width {
+        return join_phases(
+            phases
+                .iter()
+                .map(|p| p.iter().map(|s| BarCell::Task(*s)).collect())
+                .collect(),
+            true,
+        );
+    }
+    let groups: Vec<Vec<(Status, usize)>> = phases
+        .iter()
+        .map(|p| {
+            p.chunk_by(|a, b| a == b)
+                .map(|run| (run[0], run.len()))
+                .collect()
+        })
+        .collect();
+    let minimums: usize = groups.iter().map(Vec::len).sum();
+    if minimums + gaps <= width {
+        let extras: Vec<usize> = phases
+            .iter()
+            .zip(&groups)
+            .map(|(p, g)| p.len() - g.len())
+            .collect();
+        let spares = apportion(width - gaps - minimums, &extras);
+        return join_phases(
+            groups
+                .iter()
+                .zip(spares)
+                .map(|(g, spare)| {
+                    let inner: Vec<usize> = g.iter().map(|(_, n)| n - 1).collect();
+                    g.iter()
+                        .zip(apportion(spare, &inner))
+                        .flat_map(|((s, _), share)| {
+                            std::iter::repeat_n(BarCell::Task(*s), 1 + share)
+                        })
+                        .collect()
+                })
+                .collect(),
+            true,
+        );
+    }
+    let lows: Vec<Status> = phases.iter().filter_map(|p| least_advanced(p)).collect();
+    if count <= width {
+        return join_phases(
+            lows.iter().map(|s| vec![BarCell::Task(*s)]).collect(),
+            count + gaps <= width,
+        );
+    }
+    let more_width = |hidden: usize| 1 + hidden.to_string().len();
+    let shown = (0..=width)
+        .rev()
+        .find(|k| k + more_width(count - k) <= width)
+        .unwrap_or(0);
+    let hidden_low = least_advanced(&lows[shown..]).unwrap_or(Status::Ready);
+    join_phases(
+        vec![
+            lows[..shown].iter().map(|s| BarCell::Task(*s)).collect(),
+            vec![BarCell::More(count - shown, hidden_low)],
+        ],
+        false,
+    )
+}
+
+/// Columns a bar cell takes.
+fn bar_cell_width(cell: BarCell) -> usize {
+    match cell {
+        BarCell::More(n, _) => 1 + n.to_string().len(),
+        BarCell::Task(_) | BarCell::Gap => 1,
+    }
+}
+
+/// The bar of an entry whose feed carries its tasks: one cell per task from `ui/status.rs`, padded
+/// with blanks to the bar width. `None` when there are no tasks to draw.
+fn task_bar_spans(q: &QueueEntry, theme: &Theme) -> Option<Vec<Span<'static>>> {
+    let cells = queue_bar_cells(&phase_statuses(q.phases.as_deref()?), QUEUE_BAR_CELLS);
+    let drawn: usize = cells.iter().copied().map(bar_cell_width).sum();
+    (!cells.is_empty()).then(|| {
+        cells
+            .into_iter()
+            .map(|cell| match cell {
+                BarCell::Task(s) => {
+                    let (glyph, color) = status::style(theme, s);
+                    Span::styled(glyph.to_string(), Style::default().fg(color))
+                }
+                BarCell::Gap => Span::raw(" "),
+                BarCell::More(n, s) => Span::styled(
+                    format!("+{n}"),
+                    Style::default().fg(status::color(theme, s)),
+                ),
+            })
+            .chain([Span::raw(" ".repeat(QUEUE_BAR_CELLS.saturating_sub(drawn)))])
+            .collect()
+    })
+}
+
+/// The phase-count bar a feed without tasks gets.
+fn phase_bar_spans(q: &QueueEntry, theme: &Theme) -> Vec<Span<'static>> {
     let filled = queue_bar_filled(q.phases_landed, q.phases_total);
     let bar_color = queue_bar_color(theme, q.phases_landed, q.phases_total);
     let bar = |cells: usize, color: Color| {
         Span::styled("\u{2588}".repeat(cells), Style::default().fg(color))
     };
+    vec![
+        bar(filled, bar_color),
+        bar(QUEUE_BAR_CELLS - filled, theme.track),
+    ]
+}
+
+fn queue_line(q: &QueueEntry, selected: bool, width: usize, theme: &Theme) -> Line<'static> {
+    let prefix = if selected { "\u{25b6} " } else { "  " };
+    let tail = format!(" {}/{} phases", q.phases_landed, q.phases_total);
+    let initiative_w = width.saturating_sub(2 + 1 + QUEUE_BAR_CELLS + tail.chars().count());
+    let bar = task_bar_spans(q, theme).unwrap_or_else(|| phase_bar_spans(q, theme));
     let line = Line::from(
-        std::iter::once(Span::raw(prefix))
-            .chain([
-                Span::raw(fit_cell(&q.initiative, initiative_w)),
-                Span::raw(" "),
-                bar(filled, bar_color),
-                bar(QUEUE_BAR_CELLS - filled, theme.track),
-                Span::raw(tail),
-            ])
-            .collect::<Vec<_>>(),
+        [
+            Span::raw(prefix),
+            Span::raw(fit_cell(&q.initiative, initiative_w)),
+            Span::raw(" "),
+        ]
+        .into_iter()
+        .chain(bar)
+        .chain([Span::raw(tail)])
+        .collect::<Vec<_>>(),
     );
     if selected {
         line.style(Style::default().fg(theme.accent).bg(theme.selected_row))
@@ -1898,8 +2102,65 @@ pub(super) fn action_hints(focus: Focus) -> Vec<(char, &'static str)> {
 /// `:` for the palette, then the view keys. The part after the `│` shows before the fixed keys do.
 /// When the row is too narrow, fixed keys are dropped whole from the end, except `q quit`, which goes
 /// last. Only if the tail alone is still too wide are action hints dropped whole from the end. A hint
-/// is never cut mid-word.
+/// is never cut mid-word. The queue bar's legend closes the row and is never dropped: it takes the
+/// words when they fit and shrinks to its glyphs when they do not, and the keys fit the rest.
 fn key_bar_line(focus: Focus, width: u16, theme: &Theme) -> Line<'static> {
+    let label = Style::default().fg(theme.dim);
+    let separator = Span::styled(" \u{b7} ", label);
+    let spans_width = |spans: &[Span<'static>]| Line::from(spans.to_vec()).width();
+    let short = legend_spans(theme, true);
+    let long = legend_spans(theme, false);
+    let reserved = spans_width(std::slice::from_ref(&separator)) + spans_width(&short);
+    let keys = key_bar_keys(
+        focus,
+        u16::try_from(usize::from(width).saturating_sub(reserved)).unwrap_or(0),
+        theme,
+    );
+    let legend =
+        if keys.width() + spans_width(std::slice::from_ref(&separator)) + spans_width(&long)
+            <= usize::from(width)
+        {
+            long
+        } else {
+            short
+        };
+    Line::from(
+        keys.spans
+            .into_iter()
+            .chain([separator])
+            .chain(legend)
+            .collect::<Vec<_>>(),
+    )
+}
+
+/// The queue bar's states, most advanced first, with the words the full legend names them by.
+const LEGEND: [(Status, &str); 5] = [
+    (Status::Landed, "landed"),
+    (Status::Approved, "approved"),
+    (Status::Running, "running"),
+    (Status::Ready, "ready"),
+    (Status::Quarantined, "quarantined"),
+];
+
+/// The legend, glyph and colour from `ui/status.rs`. `short` is the glyphs alone.
+fn legend_spans(theme: &Theme, short: bool) -> Vec<Span<'static>> {
+    let label = Style::default().fg(theme.dim);
+    LEGEND
+        .iter()
+        .enumerate()
+        .flat_map(|(i, (state, word))| {
+            let (glyph, color) = status::style(theme, *state);
+            (i > 0 && !short)
+                .then(|| Span::styled("  ", label))
+                .into_iter()
+                .chain([Span::styled(glyph.to_string(), Style::default().fg(color))])
+                .chain((!short).then(|| Span::styled(format!(" {word}"), label)))
+        })
+        .collect()
+}
+
+/// The keys of the key bar, fitted to `width`, with no legend.
+fn key_bar_keys(focus: Focus, width: u16, theme: &Theme) -> Line<'static> {
     let key = Style::default().fg(theme.border_focus);
     let label = Style::default().fg(theme.dim);
     let pair = |k: String, l: &str| [Span::styled(k, key), Span::styled(format!(" {l}"), label)];
@@ -3229,6 +3490,307 @@ mod tests {
         assert_eq!(queue_bar_color(&theme, 3, 4), Color::Rgb(0x56, 0xd3, 0x64));
     }
 
+    /// Phases from letters: L landed, A approved, R running, Y ready, B blocked, Q quarantined.
+    fn phases_of(spec: &[&str]) -> Vec<Vec<Status>> {
+        spec.iter()
+            .map(|p| {
+                p.chars()
+                    .map(|c| match c {
+                        'L' => Status::Landed,
+                        'A' => Status::Approved,
+                        'R' => Status::Running,
+                        'Y' => Status::Ready,
+                        'B' => Status::Blocked,
+                        'Q' => Status::Quarantined,
+                        other => panic!("no status for {other}"),
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    fn glyphs(cells: &[BarCell]) -> String {
+        let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
+        cells
+            .iter()
+            .map(|cell| match cell {
+                BarCell::Task(s) => status::style(&theme, *s).0.to_string(),
+                BarCell::Gap => " ".to_string(),
+                BarCell::More(n, _) => format!("+{n}"),
+            })
+            .collect()
+    }
+
+    fn bar_of(spec: &[&str], width: usize) -> Vec<BarCell> {
+        queue_bar_cells(&phases_of(spec), width)
+    }
+
+    fn bar_width(cells: &[BarCell]) -> usize {
+        cells.iter().copied().map(bar_cell_width).sum()
+    }
+
+    #[test]
+    fn level_1_draws_one_cell_per_task_with_a_gap_between_phases() {
+        let cells = bar_of(&["LAAY", "YYY"], QUEUE_BAR_CELLS);
+        assert_eq!(
+            glyphs(&cells),
+            "\u{2588}\u{2593}\u{2593}\u{2591} \u{2591}\u{2591}\u{2591}"
+        );
+        assert_eq!(glyphs(&bar_of(&["LAAY", "YYY"], 8)), glyphs(&cells));
+    }
+
+    #[test]
+    fn level_2_shares_cells_in_proportion_and_keeps_every_state() {
+        let spec = ["LLLLAAAY", "YYYYYY"];
+        let cells = bar_of(&spec, QUEUE_BAR_CELLS);
+        assert_eq!(
+            glyphs(&cells),
+            "\u{2588}\u{2588}\u{2588}\u{2593}\u{2593}\u{2593}\u{2591} \u{2591}\u{2591}\u{2591}\u{2591}"
+        );
+        let drawn: Vec<Vec<Status>> = cells
+            .split(|c| *c == BarCell::Gap)
+            .map(|seg| {
+                seg.iter()
+                    .filter_map(|c| match c {
+                        BarCell::Task(s) => Some(*s),
+                        _ => None,
+                    })
+                    .collect()
+            })
+            .collect();
+        let states = |p: &Vec<Status>| {
+            [Status::Landed, Status::Approved, Status::Ready].map(|s| p.contains(&s))
+        };
+        assert_eq!(
+            drawn.iter().map(states).collect::<Vec<_>>(),
+            phases_of(&spec).iter().map(states).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn level_3_draws_one_cell_per_phase_when_the_minimums_do_not_fit() {
+        let spec = ["LAYQ", "LAYB", "LAYQ"];
+        assert_eq!(
+            bar_of(&spec, 8),
+            [
+                BarCell::Task(Status::Quarantined),
+                BarCell::Gap,
+                BarCell::Task(Status::Blocked),
+                BarCell::Gap,
+                BarCell::Task(Status::Quarantined),
+            ]
+        );
+        assert_eq!(
+            bar_of(&spec, 4),
+            [
+                BarCell::Task(Status::Quarantined),
+                BarCell::Task(Status::Blocked),
+                BarCell::Task(Status::Quarantined),
+            ]
+        );
+    }
+
+    #[test]
+    fn level_4_draws_the_first_phases_then_a_plus_cell_in_the_least_advanced_colour() {
+        let spec: Vec<&str> = [&["L"; 10][..], &["A", "A", "Y", "A", "R"][..]].concat();
+        let cells = bar_of(&spec, QUEUE_BAR_CELLS);
+        assert_eq!(glyphs(&cells), "\u{2588}".repeat(10) + "+5");
+        assert_eq!(cells.last(), Some(&BarCell::More(5, Status::Ready)));
+        let many = bar_of(&["L"; 30], QUEUE_BAR_CELLS);
+        assert_eq!(glyphs(&many), "\u{2588}".repeat(9) + "+21");
+        assert!(bar_width(&many) <= QUEUE_BAR_CELLS);
+    }
+
+    #[test]
+    fn the_least_advanced_state_follows_the_priority_order() {
+        let order = [
+            Status::Quarantined,
+            Status::Blocked,
+            Status::Ready,
+            Status::Running,
+            Status::Approved,
+            Status::Landed,
+        ];
+        (0..order.len()).for_each(|i| {
+            (i + 1..order.len()).for_each(|j| {
+                assert_eq!(least_advanced(&[order[j], order[i]]), Some(order[i]));
+            })
+        });
+    }
+
+    #[test]
+    fn no_width_draws_past_the_bar_or_loses_a_phase() {
+        let specs: [&[&str]; 4] = [
+            &["LAAY", "YYY"],
+            &["LLLLAAAY", "YYYYYY", "QBRY"],
+            &["LAYQ", "LAYB", "LAYQ", "RR", "A"],
+            &["L"; 40],
+        ];
+        for spec in specs {
+            for width in 4..=QUEUE_BAR_CELLS {
+                let cells = bar_of(spec, width);
+                let shown = cells
+                    .iter()
+                    .filter(|c| matches!(c, BarCell::Task(_)))
+                    .count();
+                assert!(
+                    bar_width(&cells) <= width || shown == 0,
+                    "{spec:?} at {width}"
+                );
+                assert!(!cells.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn every_feed_task_state_maps_to_its_status() {
+        [
+            ("ready", Status::Ready),
+            ("blocked", Status::Blocked),
+            ("running", Status::Running),
+            ("approved", Status::Approved),
+            ("landed", Status::Landed),
+            ("quarantined", Status::Quarantined),
+        ]
+        .into_iter()
+        .for_each(|(word, expected)| assert_eq!(task_status(word), Some(expected), "{word}"));
+        assert_eq!(task_status("dropped"), None);
+    }
+
+    fn state_word(c: char) -> &'static str {
+        match c {
+            'L' => "landed",
+            'A' => "approved",
+            'R' => "running",
+            'Y' => "ready",
+            'B' => "blocked",
+            'Q' => "quarantined",
+            'D' => "dropped",
+            other => panic!("no state for {other}"),
+        }
+    }
+
+    /// A queue row whose phases are given as letters, `D` for a dropped task.
+    fn phased_row(name: &str, landed: u32, phases: &[&str]) -> String {
+        let phase_json: Vec<String> = phases
+            .iter()
+            .map(|p| {
+                let tasks: Vec<String> = p
+                    .chars()
+                    .map(|c| format!(r#"{{"state":"{}"}}"#, state_word(c)))
+                    .collect();
+                format!(r#"{{"tasks":[{}]}}"#, tasks.join(","))
+            })
+            .collect();
+        format!(
+            r#"{{"initiative":"{name}","priority":1,"phases_landed":{landed},"phases_total":{},"current_phase":"p","phases":[{}]}}"#,
+            phases.len(),
+            phase_json.join(",")
+        )
+    }
+
+    fn queue_terminal(queue: &str, theme_id: ThemeId) -> Terminal<TestBackend> {
+        let app = feed_app("", queue, "");
+        let theme = crate::theme::resolve_for(theme_id, Some("truecolor"));
+        let mut terminal = Terminal::new(TestBackend::new(60, 8)).expect("terminal");
+        terminal
+            .draw(|f| {
+                render_queue(
+                    f,
+                    f.area(),
+                    app.snapshot().expect("snapshot"),
+                    0,
+                    false,
+                    false,
+                    &theme,
+                );
+            })
+            .expect("draw should not fail");
+        terminal
+    }
+
+    fn snapshot_queue_in_both_themes(case: &str, queue: &str) {
+        for theme_id in THEMES {
+            let slug = match theme_id {
+                ThemeId::Regatta => "regatta",
+                ThemeId::HarborLight => "harbor_light",
+            };
+            insta::assert_snapshot!(
+                format!("queue_bar_{case}_{slug}"),
+                queue_terminal(queue, theme_id).backend().to_string()
+            );
+        }
+    }
+
+    #[test]
+    fn the_task_bar_snapshot_draws_each_kind_of_row() {
+        let rows = [
+            phased_row("all-approved", 0, &["AAAA", "AAA"]),
+            phased_row("mixed", 1, &["LAAY", "YYY"]),
+            phased_row("blocked", 1, &["LL", "BBY", "BB"]),
+            phased_row("building", 1, &["LLLL", "RRAY", "YYY"]),
+            phased_row("quarantined", 1, &["LLA", "QYY"]),
+        ];
+        snapshot_queue_in_both_themes("states", &rows.join(","));
+    }
+
+    #[test]
+    fn the_task_bar_snapshot_draws_the_overflow_fallbacks() {
+        let rows = [
+            phased_row("proportional", 0, &["LLLLAAAY", "YYYYYY"]),
+            phased_row("per-phase", 0, &["LAYQ", "LAYB", "LAYQ"]),
+            phased_row("plus-cell", 0, &["L"; 14]),
+        ];
+        snapshot_queue_in_both_themes("overflow", &rows.join(","));
+    }
+
+    #[test]
+    fn the_task_bar_snapshot_draws_an_old_feed_row_as_before() {
+        snapshot_queue_in_both_themes("old_feed", &queue_json(1, 2, 4));
+        let terminal = queue_terminal(&queue_json(1, 2, 4), ThemeId::Regatta);
+        assert_eq!(row_text(&terminal, 1).matches('\u{2588}').count(), 12);
+    }
+
+    #[test]
+    fn a_row_with_no_drawable_task_draws_the_phase_count_bar() {
+        let terminal = queue_terminal(&phased_row("none", 1, &["D", "D"]), ThemeId::Regatta);
+        assert_eq!(row_text(&terminal, 1).matches('\u{2588}').count(), 12);
+    }
+
+    #[test]
+    fn the_task_bar_cells_wear_their_status_colours_and_dropped_tasks_are_left_out() {
+        for theme_id in THEMES {
+            let theme = crate::theme::resolve_for(theme_id, Some("truecolor"));
+            let terminal = queue_terminal(&phased_row("mixed", 1, &["LADAAY", "YYY"]), theme_id);
+            let row = row_text(&terminal, 1);
+            assert!(row.contains(" 1/2 phases"), "{row}");
+            let x = col_of(&terminal, 1, "\u{2588}");
+            [
+                Some(Status::Landed),
+                Some(Status::Approved),
+                Some(Status::Approved),
+                Some(Status::Approved),
+                Some(Status::Ready),
+                None,
+                Some(Status::Ready),
+                Some(Status::Ready),
+                Some(Status::Ready),
+            ]
+            .into_iter()
+            .enumerate()
+            .for_each(|(i, expected)| {
+                let at = cell(&terminal, x + i as u16, 1);
+                match expected {
+                    Some(s) => {
+                        assert_eq!(at.fg, status::color(&theme, s), "cell {i}");
+                        assert_eq!(at.symbol(), status::style(&theme, s).0.to_string());
+                    }
+                    None => assert_eq!(at.symbol(), " ", "cell {i}"),
+                }
+            });
+        }
+    }
+
     #[test]
     fn a_queue_row_draws_twelve_bar_cells_and_landed_over_total() {
         let app = feed_app("", &queue_json(1, 2, 4), "");
@@ -3332,11 +3894,13 @@ mod tests {
     #[test]
     fn the_key_bar_is_the_last_row_with_keys_in_the_title_color_and_labels_dim() {
         let app = app_with_fixture();
-        let terminal = draw_page(&app, ThemeId::Regatta, 200, 40);
+        let terminal = draw_page(&app, ThemeId::Regatta, 240, 40);
         let row = row_text(&terminal, 39);
         assert_eq!(
             row.trim_end(),
-            "1-9 frames \u{b7} \u{2190}\u{2192} focus \u{b7} \u{2191}\u{2193} select \u{b7} \u{23ce} drill down \u{b7} t theme \u{b7} v layout \u{b7} g group queue \u{b7} ` chair \u{b7} q quit \u{2502} p pause  k kill  m move \u{b7} : palette  w watch  $ spend  h health"
+            format!(
+                "{FIXED_KEYS} \u{2502} p pause  k kill  m move \u{b7} : palette  {VIEW_KEYS} \u{b7} {LEGEND_FULL}"
+            )
         );
         assert_eq!(
             fg_at(&terminal, 39, "$ spend"),
@@ -3412,13 +3976,17 @@ mod tests {
 
     const VIEW_KEYS: &str = "w watch  $ spend  h health";
 
+    /// The legend on a key bar too narrow for its words, and on one wide enough.
+    const LEGEND_SHORT: &str = "\u{2588}\u{2593}\u{2592}\u{2591}\u{2715}";
+    const LEGEND_FULL: &str = "\u{2588} landed  \u{2593} approved  \u{2592} running  \u{2591} ready  \u{2715} quarantined";
+
     #[test]
     fn at_120_columns_every_focus_shows_its_actions_the_palette_and_the_view_keys() {
         for (focus, actions) in FOCUS_ACTIONS {
             let row = key_bar_row(focus, 120);
             assert!(
                 row.ends_with(&format!(
-                    " \u{2502} {actions} \u{b7} : palette  {VIEW_KEYS}"
+                    " \u{2502} {actions} \u{b7} : palette  {VIEW_KEYS} \u{b7} {LEGEND_SHORT}"
                 )),
                 "{row}"
             );
@@ -3444,11 +4012,15 @@ mod tests {
     fn a_fixed_key_that_does_not_fit_is_dropped_whole_before_q_quit() {
         assert_eq!(
             key_bar_row(Focus::Machines, 120),
-            "q quit \u{2502} + lanes up  - lanes down  d drain  a activate  A add machine \u{b7} : palette  w watch  $ spend  h health"
+            format!(
+                "q quit \u{2502} + lanes up  - lanes down  d drain  a activate  A add machine \u{b7} : palette  {VIEW_KEYS} \u{b7} {LEGEND_SHORT}"
+            )
         );
         assert_eq!(
             key_bar_row(Focus::Queue, 160),
-            "1-9 frames \u{b7} \u{2190}\u{2192} focus \u{b7} \u{2191}\u{2193} select \u{b7} \u{23ce} drill down \u{b7} q quit \u{2502} ] priority up  [ priority down  n new  e edit  x remove \u{b7} : palette  w watch  $ spend  h health"
+            format!(
+                "1-9 frames \u{b7} \u{2190}\u{2192} focus \u{b7} \u{2191}\u{2193} select \u{b7} q quit \u{2502} ] priority up  [ priority down  n new  e edit  x remove \u{b7} : palette  {VIEW_KEYS} \u{b7} {LEGEND_SHORT}"
+            )
         );
     }
 
@@ -3456,7 +4028,10 @@ mod tests {
     fn the_queue_key_bar_at_80_columns_drops_actions_from_the_end_and_keeps_the_view_keys() {
         let row = key_bar_row(Focus::Queue, 80);
         assert!(row.chars().count() <= 80, "{row}");
-        assert!(row.ends_with(&format!(" : palette  {VIEW_KEYS}")), "{row}");
+        assert!(
+            row.ends_with(&format!(" : palette  {VIEW_KEYS} \u{b7} {LEGEND_SHORT}")),
+            "{row}"
+        );
         assert!(row.contains("] priority up"), "{row}");
     }
 
@@ -3498,13 +4073,15 @@ mod tests {
     fn the_key_bar_keeps_its_fixed_keys_and_adds_the_focused_lists_actions() {
         for (focus, actions) in FOCUS_ACTIONS {
             assert_eq!(
-                key_bar_row(focus, 240),
-                format!("{FIXED_KEYS} \u{2502} {actions} \u{b7} : palette  {VIEW_KEYS}")
+                key_bar_row(focus, 300),
+                format!(
+                    "{FIXED_KEYS} \u{2502} {actions} \u{b7} : palette  {VIEW_KEYS} \u{b7} {LEGEND_FULL}"
+                )
             );
         }
         assert_eq!(
-            key_bar_row(Focus::History, 200),
-            format!("{FIXED_KEYS} \u{2502} : palette  {VIEW_KEYS}")
+            key_bar_row(Focus::History, 300),
+            format!("{FIXED_KEYS} \u{2502} : palette  {VIEW_KEYS} \u{b7} {LEGEND_FULL}")
         );
     }
 

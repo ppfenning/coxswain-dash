@@ -1,6 +1,5 @@
 ---
 source: src/ui/regatta.rs
-assertion_line: 3663
 expression: terminal.backend().to_string()
 ---
 "╭ 1 chair ───────────────────────────────────────╮╭ 2 spend ───────────────────────────────────────╮"
@@ -32,4 +31,4 @@ expression: terminal.backend().to_string()
 "│                                                                                                  │"
 "│                                                                                                  │"
 "╰──────────────────────────────────────────────────────────────────────────────────────────────────╯"
-"1-9 frames · ←→ focus · q quit │ p pause  k kill  m move · : palette  w watch  $ spend  h health    "
+"1-9 frames · q quit │ p pause  k kill  m move · : palette  w watch  $ spend  h health · █▓▒░✕       "

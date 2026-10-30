@@ -1,0 +1,12 @@
+---
+source: src/ui/regatta.rs
+expression: "queue_terminal(queue, theme_id).backend().to_string()"
+---
+"╭ 6 queue ─────────────────────────────────────────────────╮"
+"│  all-approved                     ▓▓▓▓ ▓▓▓     0/2 phases│"
+"│  mixed                            █▓▓░ ░░░     1/2 phases│"
+"│  blocked                          ██ ░░░ ░░    1/3 phases│"
+"│  building                         ███ ▓▒▒░ ░░░ 1/3 phases│"
+"│  quarantined                      ██▓ ░░✕      1/2 phases│"
+"│                                                          │"
+"╰──────────────────────────────────────────────────────────╯"
