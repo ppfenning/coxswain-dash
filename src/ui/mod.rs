@@ -16,7 +16,6 @@ mod run_cost;
 pub mod run_drill;
 pub mod settings_frame;
 mod slipstream;
-mod spend;
 pub mod spend_drill;
 pub mod status_line;
 pub mod watch_drill;
@@ -165,7 +164,8 @@ fn render_base(f: &mut Frame, app: &App, theme: &Theme) {
     if let Some(screen) = app.settings() {
         return settings_frame::render(f, f.area(), theme, screen);
     }
-    if app.detail().is_none() {
+    // The spend pane is part of Slipstream, drawn by the page itself.
+    if app.detail().is_none() || app.spend_pane_open() {
         return render_page(f, app, theme);
     }
     // A detail view takes the page's share of the width, so the chair panel stays up beside it.
@@ -310,7 +310,6 @@ fn render_page_in(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
             }
             // Slipstream draws its own error line, in its own palette.
             AppPage::Slipstream => slipstream::render(f, area, app),
-            AppPage::Spend => spend::render(f, area, app, theme),
         },
     }
 }

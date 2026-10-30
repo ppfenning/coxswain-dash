@@ -21,7 +21,6 @@ fn page_str(page: AppPage) -> &'static str {
     match page {
         AppPage::Regatta => "regatta",
         AppPage::Slipstream => "slipstream",
-        AppPage::Spend => "spend",
     }
 }
 
@@ -46,8 +45,8 @@ pub fn parse_state(toml_str: &str) -> Option<(AppPage, ThemeId)> {
     let parsed: StateFile = toml::from_str(toml_str).ok()?;
     let page = match parsed.page.as_deref() {
         Some("regatta") => AppPage::Regatta,
-        Some("slipstream") => AppPage::Slipstream,
-        Some("spend") => AppPage::Spend,
+        // The standalone Spend page is retired; a state file that saved it opens Slipstream.
+        Some("slipstream" | "spend") => AppPage::Slipstream,
         _ => return None,
     };
     let theme = match parsed.theme.as_deref() {
@@ -121,12 +120,10 @@ mod tests {
     }
 
     #[test]
-    fn round_trips_spend_and_regatta() {
-        let toml_str = serialize_state(AppPage::Spend, ThemeId::Regatta);
-        assert_eq!(toml_str, "page = \"spend\"\ntheme = \"regatta\"\n");
+    fn a_saved_spend_page_loads_as_slipstream() {
         assert_eq!(
-            parse_state(&toml_str),
-            Some((AppPage::Spend, ThemeId::Regatta))
+            parse_state("page = \"spend\"\ntheme = \"regatta\"\n"),
+            Some((AppPage::Slipstream, ThemeId::Regatta))
         );
     }
 

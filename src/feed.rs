@@ -263,6 +263,27 @@ pub struct Spend {
     pub hard_stop_fraction: f64,
     pub five_hour_resets_at: String,
     pub weekly_resets_at: String,
+    /// Today's cost and landed count. Absent from an older cox.
+    #[serde(default)]
+    pub today: Option<SpendToday>,
+}
+
+/// Today's spend, a different scope from the 5h and weekly meter windows. A null field is a
+/// figure the producer could not measure.
+#[derive(Debug, Deserialize)]
+pub struct SpendToday {
+    pub date: String,
+    #[serde(default)]
+    pub cost: Option<f64>,
+    #[serde(default)]
+    pub landed: Option<u64>,
+    #[serde(default)]
+    pub per_landed: Option<f64>,
+    /// A fraction in `0.0..=1.0`.
+    #[serde(default)]
+    pub first_try_rate: Option<f64>,
+    #[serde(default)]
+    pub measured: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -768,6 +789,34 @@ mod tests {
     fn queue_repos_skips_entries_without_a_repo() {
         let queue = r#"[{"initiative":"i1","priority":1,"phases_landed":0,"phases_total":1,"current_phase":"p1"}]"#;
         assert!(queue_repos(&with_queue(queue)).is_empty());
+    }
+
+    fn with_today(today: &str) -> FeedSnapshot {
+        parse_snapshot(&format!(
+            r#"{{"schema":1,"at":"2026-09-29T00:00:00Z","chair":{{"holder":"h","host":"x","epoch":1,"liveness":"live","beat_age_s":1}},"spend":{{"five_hour_fraction":0.1,"five_hour_source":"meter","weekly_fraction":0.1,"weekly_source":"meter","hard_stop_fraction":0.9,"five_hour_resets_at":"2026-09-29T02:00:00Z","weekly_resets_at":"2026-10-04T04:00:00Z"{today}}},"machines":[],"runs":[],"queue":[],"inbox":[],"watch":[]}}"#
+        ))
+        .expect("literal snapshot should parse")
+    }
+
+    #[test]
+    fn spend_today_parses_with_values_with_nulls_and_when_absent() {
+        let full = with_today(
+            r#","today":{"date":"2026-09-29","cost":4.5,"landed":3,"per_landed":1.5,"first_try_rate":0.67,"measured":true}"#,
+        );
+        let today = full.spend.today.expect("today parses");
+        assert_eq!(today.cost, Some(4.5));
+        assert_eq!(today.landed, Some(3));
+        assert_eq!(today.per_landed, Some(1.5));
+        assert_eq!(today.first_try_rate, Some(0.67));
+        let nulls = with_today(
+            r#","today":{"date":"2026-09-29","cost":null,"landed":0,"per_landed":null,"first_try_rate":null,"measured":false}"#,
+        );
+        let today = nulls.spend.today.expect("today parses");
+        assert_eq!(
+            (today.cost, today.per_landed, today.first_try_rate),
+            (None, None, None)
+        );
+        assert!(with_today("").spend.today.is_none());
     }
 
     #[test]

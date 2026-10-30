@@ -4,6 +4,13 @@
 built with [ratatui](https://ratatui.rs). It reads `cox dash --feed` and runs every action as a `cox` command after a
 confirm that shows the command. Part of [Coxswain](https://github.com/ppfenning/coxswain).
 
+Spend lives in the Slipstream page. The right rail's SPEND section shows the 5h and weekly bars, and, from a cox that
+sends `spend.today`, today's cost with the landed count and the cost per landed task with the first-try rate (`--` for
+a figure the feed leaves null). `$` swaps the card column for a spend pane: the window's three-way split, the per-role
+table and one bar row per day. `f` flips the window between five-hour and weekly, and `$` or Esc returns to the cards.
+Below 100 columns the pane takes the full width and the rail hides. There is no separate Spend page; `Tab` cycles
+Regatta and Slipstream.
+
 ## Install
 
 `cox home` opens `towpath` (bare `cox` starts a Claude session), so the `towpath` binary must be on your PATH.
