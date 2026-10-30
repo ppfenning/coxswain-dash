@@ -17,9 +17,11 @@ use super::chrome::{
     bar_parts, base_style, below_first_row, card_block, clip, dim_style, render_label,
 };
 use super::regatta::action_hints;
+use super::spend_drill;
 use super::{CollapsedRun, collapse_runs, count_suffix, end_chip};
-use crate::app::{App, Focus};
-use crate::feed::{Chair, FeedSnapshot, InboxEntry, Machine, Run, Spend};
+use crate::app::{App, Focus, SpendWindow};
+use crate::detail::DetailSnapshot;
+use crate::feed::{Chair, FeedSnapshot, InboxEntry, Machine, Run, Spend, SpendToday};
 use crate::theme::{SlipstreamPalette, Theme, resolve, slipstream_palette_for};
 
 /// Width of the right rail, in columns.
@@ -49,6 +51,9 @@ const KEYS: [&str; 6] = [
 
 /// The view keys, after the palette. Fixed by the initiative, not read from the keymap.
 const KEY_VIEWS: &str = "w watch  $ spend  h health";
+
+/// The key row while the spend pane is open.
+const PANE_KEYS: &str = "$ cards   esc cards   f window   : palette   t theme   q quit";
 
 /// The key row for a `width`-column row: `KEYS`, the focused list's action keys, `:` for the
 /// palette, then `KEY_VIEWS`. Over width, `KEYS` hints are dropped whole from the end, then action
@@ -215,7 +220,10 @@ struct Regions {
     keys: Rect,
 }
 
-fn regions(area: Rect) -> Regions {
+/// Below this width an open spend pane takes the full width and the rail hides.
+const PANE_FULL_WIDTH_BELOW: u16 = 100;
+
+fn regions(area: Rect, rail_width: u16) -> Regions {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -226,7 +234,7 @@ fn regions(area: Rect) -> Regions {
         .split(area);
     let cols = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Min(1), Constraint::Length(RAIL_WIDTH)])
+        .constraints([Constraint::Min(1), Constraint::Length(rail_width)])
         .split(rows[1]);
     Regions {
         header: rows[0],
@@ -262,25 +270,43 @@ fn render_with(f: &mut Frame, area: Rect, app: &App, p: SlipstreamPalette, versi
         render_waiting(f, area, &p);
         return;
     };
-    let r = regions(area);
+    let pane = app.spend_pane_open();
+    let rail_hidden = pane && area.width < PANE_FULL_WIDTH_BELOW;
+    let r = regions(area, if rail_hidden { 0 } else { RAIL_WIDTH });
     render_header(f, r.header, snapshot, app.utc_offset(), version, &p);
-    render_cards(
-        f,
-        r.left,
-        snapshot,
-        app.selected(),
-        &p,
-        &resolve(app.theme()),
-    );
-    render_rail(f, r.rail, snapshot, &p);
-    f.render_widget(
-        Paragraph::new(Span::styled(
-            keys_text(app.focus(), usize::from(r.keys.width)),
-            dim_style(&p),
-        )),
-        r.keys,
-    );
-    if let Some(err) = app.feed_error() {
+    if pane {
+        let detail = match app.detail() {
+            Some((_, _, Some(DetailSnapshot::Spend(d)))) => Some(d),
+            _ => None,
+        };
+        let window = snapshot
+            .spend_split
+            .as_ref()
+            .map(|s| match app.spend_window() {
+                SpendWindow::FiveHour => ("5-hour", &s.five_hour),
+                SpendWindow::Weekly => ("weekly", &s.weekly),
+            });
+        spend_drill::render_pane(f, r.left, detail, window, &p);
+    } else {
+        render_cards(
+            f,
+            r.left,
+            snapshot,
+            app.selected(),
+            &p,
+            &resolve(app.theme()),
+        );
+    }
+    if !rail_hidden {
+        render_rail(f, r.rail, snapshot, &p);
+    }
+    let keys = if pane {
+        PANE_KEYS.to_string()
+    } else {
+        keys_text(app.focus(), usize::from(r.keys.width))
+    };
+    f.render_widget(Paragraph::new(Span::styled(keys, dim_style(&p))), r.keys);
+    if let Some(err) = app.feed_error().filter(|_| !rail_hidden) {
         render_error_line(f, chair_rect(r.rail), err, &p);
     }
 }
@@ -410,7 +436,7 @@ fn render_rail(f: &mut Frame, rail: Rect, snapshot: &FeedSnapshot, p: &Slipstrea
     let sections = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(4),
+            Constraint::Length(spend_height(&snapshot.spend)),
             Constraint::Length(machines_height),
             Constraint::Min(0),
         ])
@@ -442,14 +468,50 @@ fn bar_line(
     ])
 }
 
+/// Rows of the rail's SPEND section: the label, two bars, and two today lines when the feed
+/// carries `spend.today`.
+fn spend_height(spend: &Spend) -> u16 {
+    if spend.today.is_some() { 6 } else { 4 }
+}
+
+fn usd_or_dash(value: Option<f64>) -> String {
+    value.map_or_else(|| "--".to_string(), |usd| format!("${usd:.2}"))
+}
+
+/// The rail's two today lines, read from `spend.today` only. A null field prints `--`.
+fn today_lines(today: &SpendToday, p: &SlipstreamPalette) -> Vec<Line<'static>> {
+    let landed = today
+        .landed
+        .map_or_else(|| "--".to_string(), |n| n.to_string());
+    let first_try = today
+        .first_try_rate
+        .map_or_else(|| "--".to_string(), |r| format!("{:.0}%", r * 100.0));
+    vec![
+        Line::from(vec![
+            Span::styled("today ", dim_style(p)),
+            Span::raw(format!("{} for {landed} landed", usd_or_dash(today.cost))),
+        ]),
+        Line::from(vec![
+            Span::styled("per landed ", dim_style(p)),
+            Span::raw(format!(
+                "{}  first-try {first_try}",
+                usd_or_dash(today.per_landed)
+            )),
+        ]),
+    ]
+}
+
 fn render_rail_spend(f: &mut Frame, rect: Rect, spend: &Spend, p: &SlipstreamPalette) {
     render_label(f, rect, "SPEND", p);
     // "5h " before the bar and " 16%" after it.
     let width = usize::from(rect.width).saturating_sub(3 + 5);
-    let lines = vec![
+    let lines: Vec<Line<'static>> = [
         bar_line("5h", spend.five_hour_fraction, width, p.accents[0], p),
         bar_line("wk", spend.weekly_fraction, width, p.accents[1], p),
-    ];
+    ]
+    .into_iter()
+    .chain(spend.today.iter().flat_map(|t| today_lines(t, p)))
+    .collect();
     f.render_widget(Paragraph::new(lines), below_first_row(rect));
 }
 
@@ -733,6 +795,162 @@ mod tests {
             .map(|x| buffer[(x, 45)].symbol())
             .collect();
         insta::assert_snapshot!(row.trim_end());
+    }
+
+    /// The window figures (9.99 per landed, $77.77 total) differ from every `today` figure, so a
+    /// rail that reads the wrong scope fails the assertions below.
+    const SPEND_SPLIT: &str = r#""spend_split": {"five_hour": {"chair_session_usd": 9.0, "chair_agents_usd": 5.0, "cox_seats_usd": 16.7, "total_usd": 77.77, "chair_session_share": 0.293, "chair_agents_share": 0.163, "cox_seats_share": 0.544, "meter_fraction": 0.42, "resets_at": "2026-10-04T04:00:00Z", "by_node": [{"role": "planner", "tier": "opus", "model": "claude-opus", "calls": 3, "turns": 9, "tokens": 12000, "cost_usd": 4.5}, {"role": "builder", "tier": "sonnet", "model": "claude-sonnet", "calls": 7, "turns": 21, "tokens": 84000, "cost_usd": 1.25}], "cost_per_landed_task": 9.99}, "weekly": {"chair_session_usd": 1.0, "chair_agents_usd": 1.0, "cox_seats_usd": 1.0, "total_usd": 3.0, "chair_session_share": 0.33, "chair_agents_share": 0.33, "cox_seats_share": 0.34, "meter_fraction": 0.1, "resets_at": "2026-10-04T04:00:00Z"}}"#;
+
+    const TODAY: &str = r#""today": {"date": "2026-09-29", "cost": 4.5, "landed": 3, "per_landed": 1.23, "first_try_rate": 0.67, "measured": true}"#;
+
+    const TODAY_NULLS: &str = r#""today": {"date": "2026-09-29", "cost": null, "landed": null, "per_landed": null, "first_try_rate": null, "measured": false}"#;
+
+    const SPEND_DETAIL: &str = r#"{"schema": 1, "at": "2026-10-14T12:00:00Z",
+        "five_hour": {"fraction": 0.42, "used_usd": 21.0, "ceiling_usd": 50.0, "resets_at": "2026-10-14T15:00:00Z"},
+        "weekly": {"fraction": 0.61, "used_usd": 183.0, "ceiling_usd": 300.0, "resets_at": "2026-10-18T04:00:00Z"},
+        "history": [],
+        "daily": [{"day": "2026-10-12", "cost": 12.5}, {"day": "2026-10-13", "cost": 30.0}, {"day": "2026-10-14", "cost": 21.0}]}"#;
+
+    /// The fixture with `spend.today` (when given) and a spend split added after its spend object.
+    fn with_spend(today: Option<&str>) -> String {
+        let old = r#""weekly_resets_at": "2026-10-04T04:00:00Z"}"#;
+        let new = match today {
+            Some(t) => {
+                format!(r#""weekly_resets_at": "2026-10-04T04:00:00Z", {t}}}, {SPEND_SPLIT}"#)
+            }
+            None => format!(r#""weekly_resets_at": "2026-10-04T04:00:00Z"}}, {SPEND_SPLIT}"#),
+        };
+        assert!(FIXTURE.contains(old), "fixture spend object changed");
+        FIXTURE.replace(old, &new)
+    }
+
+    fn pane_app(theme: ThemeId) -> App {
+        let mut app = app_from(&with_spend(Some(TODAY)), theme);
+        app.open_spend();
+        app.apply_detail_snapshot(DetailSnapshot::Spend(
+            serde_json::from_str(SPEND_DETAIL).expect("detail parses"),
+        ));
+        app
+    }
+
+    fn screen(terminal: &Terminal<TestBackend>) -> String {
+        terminal.backend().to_string()
+    }
+
+    #[test]
+    fn the_rail_reads_both_lines_from_today_and_never_from_the_window() {
+        let app = app_from(&with_spend(Some(TODAY)), ThemeId::Regatta);
+        let text = screen(&draw(&app, 160, 46));
+        assert!(text.contains("today $4.50 for 3 landed"), "{text}");
+        assert!(text.contains("per landed $1.23  first-try 67%"), "{text}");
+        assert!(!text.contains("9.99") && !text.contains("77.77"), "{text}");
+    }
+
+    #[test]
+    fn a_null_today_field_prints_a_dash() {
+        let app = app_from(&with_spend(Some(TODAY_NULLS)), ThemeId::Regatta);
+        let text = screen(&draw(&app, 160, 46));
+        assert!(text.contains("today -- for -- landed"), "{text}");
+        assert!(text.contains("per landed --  first-try --"), "{text}");
+    }
+
+    #[test]
+    fn without_today_the_rail_has_no_today_lines() {
+        let app = app_from(&with_spend(None), ThemeId::Regatta);
+        let text = screen(&draw(&app, 160, 46));
+        assert!(
+            !text.contains("per landed") && !text.contains("first-try"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn the_rail_with_its_two_today_lines_snapshot() {
+        let app = app_from(&with_spend(Some(TODAY)), ThemeId::Regatta);
+        insta::assert_snapshot!(screen(&draw(&app, 160, 46)));
+    }
+
+    macro_rules! pane_snapshot {
+        ($name:ident, $theme:expr, $w:expr, $h:expr) => {
+            #[test]
+            fn $name() {
+                insta::assert_snapshot!(screen(&draw(&pane_app($theme), $w, $h)));
+            }
+        };
+    }
+
+    pane_snapshot!(
+        the_spend_pane_at_160x46_in_the_regatta_theme,
+        ThemeId::Regatta,
+        160,
+        46
+    );
+    pane_snapshot!(
+        the_spend_pane_at_160x46_in_the_harbor_light_theme,
+        ThemeId::HarborLight,
+        160,
+        46
+    );
+    pane_snapshot!(
+        the_spend_pane_at_90x30_in_the_regatta_theme,
+        ThemeId::Regatta,
+        90,
+        30
+    );
+    pane_snapshot!(
+        the_spend_pane_at_90x30_in_the_harbor_light_theme,
+        ThemeId::HarborLight,
+        90,
+        30
+    );
+
+    #[test]
+    fn the_open_pane_draws_all_three_parts_in_both_themes_at_both_widths() {
+        for theme in [ThemeId::Regatta, ThemeId::HarborLight] {
+            for (w, h) in [(160, 46), (90, 30)] {
+                let text = screen(&draw(&pane_app(theme), w, h));
+                for part in [
+                    "W H E R E   I T   W E N T",
+                    "chair session $9.00 29%",
+                    "Role           Tier     Model",
+                    "builder        sonnet   claude-sonnet",
+                    "Wed 14",
+                    "Total · 3 days",
+                ] {
+                    assert!(
+                        text.contains(part),
+                        "{theme:?} {w}x{h} lacks {part:?}\n{text}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_pane_replaces_the_cards_and_keeps_the_rail_until_the_width_narrows() {
+        let wide = screen(&draw(&pane_app(ThemeId::Regatta), 160, 46));
+        // Labels are letter-spaced by `render_label`.
+        assert!(
+            wide.contains("B Y   R O L E") && wide.contains("M A C H I N E S"),
+            "{wide}"
+        );
+        assert!(!wide.contains("R U N S"), "{wide}");
+        let narrow = screen(&draw(&pane_app(ThemeId::Regatta), 90, 30));
+        assert!(
+            narrow.contains("B Y   R O L E") && !narrow.contains("M A C H I N E S"),
+            "{narrow}"
+        );
+        assert!(narrow.contains("D A I L Y"), "{narrow}");
+    }
+
+    #[test]
+    fn the_open_pane_key_row_replaces_the_card_keys() {
+        let terminal = draw(&pane_app(ThemeId::Regatta), 160, 46);
+        let buffer = terminal.backend().buffer();
+        let row: String = (0..buffer.area.width)
+            .map(|x| buffer[(x, 45)].symbol())
+            .collect();
+        assert_eq!(row.trim_end(), PANE_KEYS);
     }
 
     #[test]

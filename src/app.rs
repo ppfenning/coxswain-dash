@@ -47,10 +47,9 @@ const LANES_HISTORY_MAX_AGE_HOURS: i64 = 24;
 pub enum AppPage {
     Regatta,
     Slipstream,
-    Spend,
 }
 
-/// The window the Spend page reads its figures over.
+/// The window the spend pane reads its figures over.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SpendWindow {
     #[default]
@@ -673,16 +672,14 @@ impl App {
     pub fn next_page(&mut self) {
         self.page = match self.page {
             AppPage::Regatta => AppPage::Slipstream,
-            AppPage::Slipstream => AppPage::Spend,
-            AppPage::Spend => AppPage::Regatta,
+            AppPage::Slipstream => AppPage::Regatta,
         };
     }
 
     pub fn prev_page(&mut self) {
         self.page = match self.page {
-            AppPage::Regatta => AppPage::Spend,
+            AppPage::Regatta => AppPage::Slipstream,
             AppPage::Slipstream => AppPage::Regatta,
-            AppPage::Spend => AppPage::Slipstream,
         };
     }
 
@@ -768,7 +765,7 @@ impl App {
     pub fn focus(&self) -> Focus {
         match self.page {
             AppPage::Regatta => self.focus,
-            AppPage::Slipstream | AppPage::Spend => Focus::Runs,
+            AppPage::Slipstream => Focus::Runs,
         }
     }
 
@@ -776,7 +773,6 @@ impl App {
         match self.page {
             AppPage::Regatta => 0,
             AppPage::Slipstream => 1,
-            AppPage::Spend => 2,
         }
     }
 
@@ -1011,6 +1007,20 @@ impl App {
     /// Opens the spend board; a no-op while a detail is open.
     pub fn open_spend(&mut self) {
         self.open_view(DetailKind::Spend, "spend");
+    }
+
+    /// True while the spend pane replaces Slipstream's card column.
+    pub fn spend_pane_open(&self) -> bool {
+        self.page == AppPage::Slipstream && matches!(self.detail, Some((DetailKind::Spend, _, _)))
+    }
+
+    /// `$` on Slipstream: closes the open spend pane, else opens the spend view.
+    pub fn toggle_spend(&mut self) {
+        if self.spend_pane_open() {
+            self.close_detail();
+        } else {
+            self.open_spend();
+        }
     }
 
     /// Opens the health board; a no-op while a detail is open.
@@ -1735,15 +1745,8 @@ mod tests {
     }
 
     #[test]
-    fn next_page_goes_from_slipstream_to_spend() {
+    fn next_page_wraps_from_slipstream_to_regatta() {
         let mut app = App::new(AppPage::Slipstream, ThemeId::Regatta);
-        app.next_page();
-        assert_eq!(app.page(), AppPage::Spend);
-    }
-
-    #[test]
-    fn next_page_wraps_from_spend_to_regatta() {
-        let mut app = App::new(AppPage::Spend, ThemeId::Regatta);
         app.next_page();
         assert_eq!(app.page(), AppPage::Regatta);
     }
@@ -1759,10 +1762,10 @@ mod tests {
     }
 
     #[test]
-    fn prev_page_wraps_from_regatta_to_spend() {
+    fn prev_page_wraps_from_regatta_to_slipstream() {
         let mut app = App::new(AppPage::Regatta, ThemeId::Regatta);
         app.prev_page();
-        assert_eq!(app.page(), AppPage::Spend);
+        assert_eq!(app.page(), AppPage::Slipstream);
     }
 
     #[test]
@@ -1770,13 +1773,6 @@ mod tests {
         let mut app = App::new(AppPage::Slipstream, ThemeId::Regatta);
         app.prev_page();
         assert_eq!(app.page(), AppPage::Regatta);
-    }
-
-    #[test]
-    fn prev_page_goes_from_spend_to_slipstream() {
-        let mut app = App::new(AppPage::Spend, ThemeId::Regatta);
-        app.prev_page();
-        assert_eq!(app.page(), AppPage::Slipstream);
     }
 
     #[test]
@@ -2504,7 +2500,6 @@ mod tests {
     fn regatta_focus_survives_a_round_trip_through_slipstream() {
         let mut app = App::new(AppPage::Regatta, ThemeId::Regatta);
         app.cycle_focus_next();
-        app.next_page();
         app.next_page();
         app.next_page();
         assert_eq!(app.page(), AppPage::Regatta);

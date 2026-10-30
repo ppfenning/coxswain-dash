@@ -7,9 +7,9 @@ use chrono::{DateTime, NaiveDate};
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Layout, Rect},
-    style::{Color, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Padding, Paragraph},
+    widgets::{Block, Cell, Padding, Paragraph, Row, Table},
 };
 
 use super::chrome::{
@@ -229,7 +229,6 @@ fn daily_lines(
     daily: &[DayCost],
     width: usize,
     rows: usize,
-    theme: &Theme,
     p: &SlipstreamPalette,
 ) -> Vec<Line<'static>> {
     if daily.is_empty() {
@@ -244,7 +243,7 @@ fn daily_lines(
         let (filled, empty) = bar_parts(fraction, bar);
         Line::from(vec![
             Span::styled(format!("{:<DAY_WIDTH$} ", day_label(&d.day)), dim_style(p)),
-            Span::styled("█".repeat(filled), fg(meter_color(theme, fraction))),
+            Span::styled("█".repeat(filled), fg(p.accents[0])),
             Span::styled("░".repeat(empty), fg(p.card_border)),
             Span::styled(
                 format!(" {:>COST_WIDTH$}", format!("${:.2}", d.cost)),
@@ -476,13 +475,121 @@ pub fn render(
                 gauge_line("weekly", &detail.weekly, width, theme, p, offset),
             ],
             Card::Trend => trend_lines(&detail.history, width, theme, p),
-            Card::Daily => daily_lines(&detail.daily, width, rows, theme, p),
+            Card::Daily => daily_lines(&detail.daily, width, rows, p),
             Card::Where => match window {
                 Some((_, w)) => where_lines(w, width, rows, p),
                 None => vec![Line::styled("no spend split yet", dim_style(p))],
             },
         };
         f.render_widget(Paragraph::new(lines), content);
+    }
+}
+
+const NO_BREAKDOWN: &str = "no per-role breakdown from this cox";
+const ROLE_HEADER: [&str; 7] = ["Role", "Tier", "Model", "Calls", "Turns", "Tokens", "Cost"];
+/// Rows of the pane's window split card: border, label, bar, legend, border.
+const SPLIT_HEIGHT: u16 = CHROME + 2;
+
+/// One cell per column of [`ROLE_HEADER`], one row per node, in feed order.
+fn role_rows(w: &SpendWindow) -> Vec<[String; 7]> {
+    w.by_node
+        .iter()
+        .map(|n| {
+            [
+                n.role.clone(),
+                n.tier.clone(),
+                n.model.clone(),
+                n.calls.to_string(),
+                n.turns.to_string(),
+                n.tokens.to_string(),
+                format!("${:.2}", n.cost_usd),
+            ]
+        })
+        .collect()
+}
+
+fn role_table(rows: Vec<[String; 7]>, p: &SlipstreamPalette) -> Table<'static> {
+    let cell = |i: usize, text: String| {
+        if i >= 3 {
+            Cell::from(Line::from(text).right_aligned())
+        } else {
+            Cell::from(text)
+        }
+    };
+    let header = Row::new(
+        ROLE_HEADER
+            .iter()
+            .enumerate()
+            .map(|(i, h)| cell(i, (*h).to_string())),
+    )
+    .style(dim_style(p).add_modifier(Modifier::BOLD));
+    let body = rows
+        .into_iter()
+        .map(|r| Row::new(r.into_iter().enumerate().map(|(i, t)| cell(i, t))).style(fg(p.text)));
+    Table::new(
+        body,
+        [
+            Constraint::Length(14),
+            Constraint::Length(8),
+            Constraint::Min(12),
+            Constraint::Length(7),
+            Constraint::Length(7),
+            Constraint::Length(10),
+            Constraint::Length(10),
+        ],
+    )
+    .header(header)
+}
+
+/// The spend pane that replaces Slipstream's card column: the window's three-way split, the
+/// per-role table and one bar row per day. Every color comes from `p`.
+pub fn render_pane(
+    f: &mut Frame,
+    area: Rect,
+    detail: Option<&SpendDetail>,
+    window: Named,
+    p: &SlipstreamPalette,
+) {
+    let rects = Layout::vertical([
+        Constraint::Length(SPLIT_HEIGHT),
+        Constraint::Fill(1),
+        Constraint::Fill(1),
+    ])
+    .split(area);
+    let name = window.map_or("", |(name, _)| name);
+    for (i, &rect) in rects.iter().enumerate() {
+        if rect.height < CHROME + 1 {
+            continue;
+        }
+        let label = ["WHERE IT WENT", "BY ROLE", "DAILY"][i];
+        let content = draw_card(f, rect, label, if i == 0 { name } else { "" }, p);
+        let width = usize::from(content.width);
+        let rows = usize::from(content.height);
+        match (i, window, detail) {
+            (0, Some((_, w)), _) => {
+                // The split bar and its legend only; the table below carries the nodes.
+                f.render_widget(Paragraph::new(where_lines(w, width, 2, p)), content)
+            }
+            (0, None, _) => f.render_widget(
+                Paragraph::new(Line::styled("no spend split yet", dim_style(p))),
+                content,
+            ),
+            (1, Some((_, w)), _) if !w.by_node.is_empty() => {
+                f.render_widget(role_table(role_rows(w), p), content)
+            }
+            (1, _, _) => f.render_widget(
+                Paragraph::new(Line::styled(NO_BREAKDOWN, dim_style(p))),
+                content,
+            ),
+            (_, _, Some(d)) => f.render_widget(
+                Paragraph::new(daily_lines(&d.daily, width, rows, p)),
+                content,
+            ),
+            (_, _, None) => f.render_widget(
+                Paragraph::new(Line::styled("loading", dim_style(p))),
+                content,
+            ),
+        }
     }
 }
 
@@ -716,10 +823,9 @@ mod tests {
 
     #[test]
     fn the_daily_card_keeps_the_newest_days_when_short_and_totals_all_of_them() {
-        let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
         let p = for_colorterm(ThemeId::Regatta, Some("truecolor"));
         let d = detail();
-        let lines = daily_lines(&d.daily, 60, 4, &theme, &p);
+        let lines = daily_lines(&d.daily, 60, 4, &p);
         assert_eq!(lines.len(), 4);
         assert!(lines[2].to_string().starts_with("Wed 14"), "{}", lines[2]);
         let total: f64 = d.daily.iter().map(|d| d.cost).sum();
@@ -741,6 +847,62 @@ mod tests {
             .find(|c| c.symbol() == "█")
             .expect("a filled gauge cell")
             .fg
+    }
+
+    fn pane_terminal(
+        detail: Option<&SpendDetail>,
+        win: Named,
+        id: ThemeId,
+    ) -> Terminal<TestBackend> {
+        let palette = for_colorterm(id, Some("truecolor"));
+        let mut terminal = Terminal::new(TestBackend::new(100, 40)).expect("terminal");
+        terminal
+            .draw(|f| render_pane(f, f.area(), detail, win, &palette))
+            .expect("draw should not fail");
+        terminal
+    }
+
+    #[test]
+    fn the_pane_daily_bars_and_split_take_their_fill_from_the_slipstream_palette() {
+        for id in THEMES {
+            let p = for_colorterm(id, Some("truecolor"));
+            let w = window(true);
+            let d = detail();
+            let terminal = pane_terminal(Some(&d), Some(("5-hour", &w)), id);
+            let buffer = terminal.backend().buffer();
+            let fills: Vec<Color> = buffer
+                .content()
+                .iter()
+                .filter(|c| c.symbol() == "█")
+                .map(|c| c.fg)
+                .collect();
+            assert!(!fills.is_empty());
+            let allowed = [p.accents[0], p.accents[1], p.accent];
+            assert!(fills.iter().all(|c| allowed.contains(c)), "{fills:?}");
+            assert!(fills.contains(&p.accents[0]));
+        }
+    }
+
+    #[test]
+    fn the_pane_lists_the_role_table_and_says_so_when_there_is_none() {
+        let d = detail();
+        let w = window(true);
+        let text = screen(&pane_terminal(
+            Some(&d),
+            Some(("5-hour", &w)),
+            ThemeId::Regatta,
+        ));
+        assert!(text.contains("Role"), "{text}");
+        assert!(text.contains("Tokens"), "{text}");
+        assert!(text.contains("900000"), "{text}");
+        let bare = window(false);
+        let text = screen(&pane_terminal(
+            None,
+            Some(("5-hour", &bare)),
+            ThemeId::Regatta,
+        ));
+        assert!(text.contains(NO_BREAKDOWN), "{text}");
+        assert!(text.contains("loading"), "{text}");
     }
 
     #[test]

@@ -2100,15 +2100,15 @@ mod tests {
 
     fn draw_spend_page(feed: &str, weekly: bool) -> Terminal<TestBackend> {
         let snapshot = crate::feed::parse_snapshot(feed).expect("literal feed should parse");
-        let mut app = App::new(AppPage::Spend, ThemeId::Regatta);
+        let mut app = App::new(AppPage::Slipstream, ThemeId::Regatta);
         app.apply_snapshot(snapshot);
+        app.open_spend();
         if weekly {
             app.toggle_spend_window();
         }
-        let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
-        let mut terminal = Terminal::new(TestBackend::new(100, 14)).expect("terminal");
+        let mut terminal = Terminal::new(TestBackend::new(140, 40)).expect("terminal");
         terminal
-            .draw(|f| crate::ui::spend::render(f, f.area(), &app, &theme))
+            .draw(|f| crate::ui::slipstream::render(f, f.area(), &app))
             .expect("draw should not fail");
         terminal
     }
@@ -2141,7 +2141,6 @@ mod tests {
         assert_eq!(row_of(&rows, "builder"), header + 2);
         assert_eq!(row_of(&rows, "reviewer"), header + 3);
         assert!(rows[header + 2].contains("84000") && rows[header + 2].contains("$1.25"));
-        assert!(rows[row_of(&rows, "cost per landed task")].contains("$2.50"));
     }
 
     #[test]
@@ -2153,7 +2152,6 @@ mod tests {
         }
         row_of(&rows, "no per-role breakdown from this cox");
         assert!(rows.iter().all(|r| !r.contains("Role")));
-        assert!(rows[row_of(&rows, "cost per landed task")].contains("--"));
     }
 
     #[test]
@@ -2168,16 +2166,16 @@ mod tests {
     }
 
     #[test]
-    fn the_spend_page_is_reached_from_the_navigation_and_draws_its_split() {
+    fn the_spend_pane_is_reached_with_the_dollar_key_and_draws_its_split() {
         let snapshot =
             crate::feed::parse_snapshot(&spend_feed((FIVE_NODES, "2.5"), ("[]", "null")))
                 .expect("literal feed should parse");
         let mut app = App::new(AppPage::Slipstream, ThemeId::Regatta);
         app.apply_snapshot(snapshot);
-        app.next_page();
-        assert_eq!(app.page(), AppPage::Spend);
+        crate::input::handle_key(&mut app, crossterm::event::KeyCode::Char('$'));
+        assert!(app.spend_pane_open());
         let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
-        let mut terminal = Terminal::new(TestBackend::new(100, 14)).expect("terminal");
+        let mut terminal = Terminal::new(TestBackend::new(140, 40)).expect("terminal");
         terminal
             .draw(|f| crate::ui::render(f, &app, &theme))
             .expect("draw should not fail");

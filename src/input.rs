@@ -138,12 +138,12 @@ pub fn handle_key(app: &mut App, key: KeyCode) {
         KeyCode::Char('v') => app.cycle_regatta_layout_preset(),
         // `f` flips the Spend page between five-hour and weekly. No action binding uses it, and
         // the guard keeps it from acting on any other page.
-        KeyCode::Char('f') if app.page() == AppPage::Spend => app.toggle_spend_window(),
+        KeyCode::Char('f') if app.spend_pane_open() => app.toggle_spend_window(),
         // `g` is bound in no action table; it groups the queue, which only the Regatta page has.
         KeyCode::Char('g') if app.page() == AppPage::Regatta => app.toggle_queue_grouped(),
         // No action binding uses `w`, `$` or `h`; a test over `actions::bindings` holds that.
         KeyCode::Char('w') => app.open_watch(),
-        KeyCode::Char('$') => app.open_spend(),
+        KeyCode::Char('$') => app.toggle_spend(),
         KeyCode::Char('h') => app.open_health(),
         KeyCode::Char('7') => app.toggle_history_frame(),
         KeyCode::Char('8') => app.toggle_run_cost_frame(),
@@ -869,23 +869,38 @@ mod tests {
     fn back_tab_goes_to_the_previous_page() {
         let mut app = App::new(AppPage::Regatta, ThemeId::Regatta);
         handle_key(&mut app, KeyCode::BackTab);
-        assert_eq!(app.page(), AppPage::Spend);
+        assert_eq!(app.page(), AppPage::Slipstream);
     }
 
     #[test]
-    fn tab_twice_from_regatta_reaches_spend_and_a_third_wraps() {
+    fn tab_twice_from_regatta_wraps_back_to_regatta() {
         let mut app = App::new(AppPage::Regatta, ThemeId::Regatta);
         handle_key(&mut app, KeyCode::Tab);
-        handle_key(&mut app, KeyCode::Tab);
-        assert_eq!(app.page(), AppPage::Spend);
         handle_key(&mut app, KeyCode::Tab);
         assert_eq!(app.page(), AppPage::Regatta);
     }
 
     #[test]
-    fn f_flips_the_spend_window_on_the_spend_page_and_back() {
+    fn dollar_toggles_the_spend_pane_and_esc_closes_it() {
+        let mut app = App::new(AppPage::Slipstream, ThemeId::Regatta);
+        assert!(!app.spend_pane_open());
+        handle_key(&mut app, KeyCode::Char('$'));
+        assert!(app.spend_pane_open());
+        handle_key(&mut app, KeyCode::Char('$'));
+        assert!(!app.spend_pane_open());
+        handle_key(&mut app, KeyCode::Char('$'));
+        handle_key(&mut app, KeyCode::Esc);
+        assert!(!app.spend_pane_open());
+        assert!(app.detail().is_none());
+    }
+
+    #[test]
+    fn f_flips_the_spend_window_only_while_the_pane_is_open() {
         use crate::app::SpendWindow;
-        let mut app = App::new(AppPage::Spend, ThemeId::Regatta);
+        let mut app = App::new(AppPage::Slipstream, ThemeId::Regatta);
+        handle_key(&mut app, KeyCode::Char('f'));
+        assert_eq!(app.spend_window(), SpendWindow::FiveHour);
+        handle_key(&mut app, KeyCode::Char('$'));
         assert_eq!(app.spend_window(), SpendWindow::FiveHour);
         handle_key(&mut app, KeyCode::Char('f'));
         assert_eq!(app.spend_window(), SpendWindow::Weekly);
