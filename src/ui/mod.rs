@@ -206,7 +206,10 @@ fn render_detail(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
         }
         (Some((_, _, Some(DetailSnapshot::Run(detail)))), None) => {
             let project = app.snapshot().and_then(|s| run_project(s, &detail.run));
-            run_drill::render(f, area, detail, project, theme, app.utc_offset())
+            let tasks = app
+                .snapshot()
+                .map_or(&[][..], |s| run_tasks(s, &detail.run));
+            run_drill::render(f, area, detail, project, tasks, theme, app.utc_offset())
         }
         (Some((_, _, Some(DetailSnapshot::Initiative(detail)))), None) => {
             initiative_drill::render(f, area, detail, theme, app.utc_offset())
@@ -676,9 +679,30 @@ pub fn run_project<'a>(snapshot: &'a FeedSnapshot, run_id: &str) -> Option<&'a s
         .flatten()
 }
 
+/// The tasks of the ended run `run_id`, as the history row carries them; empty for a live run, an
+/// unknown run, or a feed that sends no `tasks`.
+pub fn run_tasks<'a>(snapshot: &'a FeedSnapshot, run_id: &str) -> &'a [crate::feed::HistoryTask] {
+    snapshot
+        .history
+        .iter()
+        .find(|h| h.run == run_id)
+        .and_then(|h| h.tasks.as_deref())
+        .unwrap_or(&[])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn run_tasks_reads_the_history_row_and_is_empty_without_it() {
+        let json = r#"{"schema":1,"at":"2026-10-04T20:00:00Z","chair":{"holder":"h","host":"h","epoch":1,"liveness":"live","beat_age_s":0},"spend":{"five_hour_fraction":0.0,"five_hour_source":"meter","weekly_fraction":0.0,"weekly_source":"meter","hard_stop_fraction":0.0,"five_hour_resets_at":"2026-10-04T22:00:00Z","weekly_resets_at":"2026-10-11T04:00:00Z"},"machines":[],"runs":[],"queue":[],"inbox":[],"watch":[],"history":[{"run":"new","machine":"m0","initiative":"i","ended_at":"2026-10-04T08:00:00Z","outcome":"approved","cost_usd":1.0,"tasks":[{"id":"t1","state":"landed","pr":7}]},{"run":"old","machine":"m0","initiative":"i","ended_at":"2026-10-04T07:00:00Z","outcome":"approved","cost_usd":1.0}]}"#;
+        let snapshot = crate::feed::parse_snapshot(json).expect("literal feed parses");
+        assert_eq!(run_tasks(&snapshot, "new").len(), 1);
+        assert_eq!(run_tasks(&snapshot, "new")[0].pr, Some(7));
+        assert!(run_tasks(&snapshot, "old").is_empty());
+        assert!(run_tasks(&snapshot, "missing").is_empty());
+    }
 
     #[test]
     fn run_project_looks_in_runs_then_history() {

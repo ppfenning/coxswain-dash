@@ -1444,6 +1444,78 @@ fn outcome_detail(row: &HistoryRow) -> String {
     }
 }
 
+/// One piece of a history row's task summary. `None` is plain separator text, drawn dim.
+type SuffixPart = (String, Option<Status>);
+
+/// What happened to an approved run's tasks since it ended. Empty for any other outcome, for a
+/// feed without `tasks`, and for a run with no tasks. A task still `approved` is waiting to land,
+/// a `landed` one has landed, and any other state (sent back to build, dropped) counts as rebuilt.
+fn task_suffix(row: &HistoryRow) -> Vec<SuffixPart> {
+    let tasks = match (row.outcome, row.tasks.as_deref()) {
+        (Outcome::Approved, Some(tasks)) if !tasks.is_empty() => tasks,
+        _ => return Vec::new(),
+    };
+    let states: Vec<Status> = tasks.iter().map(|t| status::from_word(&t.state)).collect();
+    let count = |want: fn(&Status) -> bool| states.iter().filter(|s| want(s)).count();
+    let landed = count(|s| *s == Status::Landed);
+    let waiting = count(|s| *s == Status::Approved);
+    let rebuilt = states.len() - landed - waiting;
+    if waiting == 0 && rebuilt == 0 {
+        let prs: String = tasks
+            .iter()
+            .filter_map(|t| t.pr)
+            .map(|n| format!(" #{n}"))
+            .collect();
+        return vec![
+            (" ".to_string(), None),
+            (format!("\u{2192} landed{prs}"), Some(Status::Landed)),
+        ];
+    }
+    let counts = [
+        (landed, "landed", Status::Landed),
+        (waiting, "waiting", Status::Approved),
+        (rebuilt, "rebuilt", Status::Ready),
+    ];
+    let joined = counts
+        .into_iter()
+        .filter(|(n, _, _)| *n > 0)
+        .map(|(n, word, s)| (format!("{n} {word}"), Some(s)))
+        .collect::<Vec<_>>()
+        .into_iter()
+        .enumerate()
+        .flat_map(|(i, part)| {
+            let comma = (i > 0).then(|| (", ".to_string(), None));
+            comma.into_iter().chain([part])
+        });
+    std::iter::once((" \u{b7} ".to_string(), None))
+        .chain(joined)
+        .collect()
+}
+
+/// `parts` cut to `width` chars, the last kept char becoming `…` when something was cut.
+fn clip_parts(parts: Vec<SuffixPart>, width: usize) -> Vec<SuffixPart> {
+    let total: usize = parts.iter().map(|(t, _)| t.chars().count()).sum();
+    if total <= width {
+        return parts;
+    }
+    let keep = width.saturating_sub(1);
+    let (kept, _) = parts
+        .into_iter()
+        .fold((Vec::new(), 0usize), |(kept, used), (text, s)| {
+            let take = keep.saturating_sub(used).min(text.chars().count());
+            let next = used + take;
+            let mut kept = kept;
+            if take > 0 {
+                kept.push((text.chars().take(take).collect(), s));
+            }
+            (kept, next)
+        });
+    let last = kept.last().and_then(|(_, s)| *s);
+    kept.into_iter()
+        .chain([("\u{2026}".to_string(), last)])
+        .collect()
+}
+
 /// The history frame's top row: today's counts.
 fn history_header(today: &HistoryToday, theme: &Theme) -> Line<'static> {
     Line::styled(
@@ -1511,6 +1583,32 @@ fn history_row(
 ) -> Line<'static> {
     let prefix = if selected { "\u{25b6} " } else { "  " };
     let word = outcome_word(row.outcome);
+    let cost = format!("${:.2}", row.cost_usd);
+    let suffix = task_suffix(row);
+    // A task summary may run into the cost cell's own left padding, so the cost stays in its column.
+    let (detail_spans, cost_cell) = if suffix.is_empty() {
+        (
+            vec![Span::styled(
+                fit_cell(&outcome_detail(row), HISTORY_OUTCOME_WIDTH - word.len()),
+                Style::default().fg(theme.dim),
+            )],
+            format!(" {cost:>COST_WIDTH$}"),
+        )
+    } else {
+        let avail =
+            HISTORY_OUTCOME_WIDTH + COST_WIDTH.saturating_sub(cost.chars().count()) - word.len();
+        let parts = clip_parts(suffix, avail);
+        let used: usize = parts.iter().map(|(t, _)| t.chars().count()).sum();
+        let spans = parts
+            .into_iter()
+            .map(|(text, s)| {
+                let color = s.map_or(theme.dim, |s| status::color(theme, s));
+                Span::styled(text, Style::default().fg(color))
+            })
+            .chain([Span::raw(" ".repeat(avail - used))])
+            .collect::<Vec<_>>();
+        (spans, format!(" {cost}"))
+    };
     let line = Line::from(
         [
             Span::raw(format!(
@@ -1539,12 +1637,9 @@ fn history_row(
             Span::raw(fit_cell(&row.initiative, RUN_COLUMNS[2])),
             Span::raw(" "),
             Span::styled(word, Style::default().fg(outcome_color(theme, row.outcome))),
-            Span::styled(
-                fit_cell(&outcome_detail(row), HISTORY_OUTCOME_WIDTH - word.len()),
-                Style::default().fg(theme.dim),
-            ),
-            Span::raw(format!(" {:>COST_WIDTH$}", format!("${:.2}", row.cost_usd))),
         ])
+        .chain(detail_spans)
+        .chain([Span::raw(cost_cell)])
         .collect::<Vec<_>>(),
     );
     if selected {
@@ -4240,6 +4335,155 @@ mod tests {
         insta::assert_snapshot!(terminal.backend().to_string());
     }
 
+    /// One approved row whose `tasks` are the JSON literal `tasks` (an empty string sends no key).
+    fn approved_with(tasks: &str) -> String {
+        let key = if tasks.is_empty() {
+            String::new()
+        } else {
+            format!(r#","tasks":{tasks}"#)
+        };
+        format!(
+            r#"{{"run":"r5","machine":"host-b","initiative":"dash-feed","ended_at":"2026-10-04T12:40:00Z","outcome":"approved","cost_usd":0.5{key}}}"#
+        )
+    }
+
+    const ALL_LANDED: &str = r#"[{"id":"a","state":"landed","pr":474}]"#;
+    const SEVERAL_PRS: &str =
+        r#"[{"id":"a","state":"landed","pr":474},{"id":"b","state":"landed","pr":475}]"#;
+    const WAITING: &str = r#"[{"id":"a","state":"approved"},{"id":"b","state":"approved"}]"#;
+    const MIXED_TASKS: &str = r#"[{"id":"a","state":"landed","pr":474},{"id":"b","state":"approved"},{"id":"c","state":"approved"}]"#;
+    const REBUILT: &str = r#"[{"id":"a","state":"landed","pr":474},{"id":"b","state":"ready"}]"#;
+
+    /// A snapshot test per theme for an approved row carrying `tasks`.
+    macro_rules! approved_row_snapshots {
+        ($regatta:ident, $harbor:ident, $tasks:expr) => {
+            #[test]
+            fn $regatta() {
+                let app = history_app(&approved_with($tasks), TODAY);
+                insta::assert_snapshot!(
+                    draw_history_frame(&app, ThemeId::Regatta)
+                        .backend()
+                        .to_string()
+                );
+            }
+
+            #[test]
+            fn $harbor() {
+                let app = history_app(&approved_with($tasks), TODAY);
+                insta::assert_snapshot!(
+                    draw_history_frame(&app, ThemeId::HarborLight)
+                        .backend()
+                        .to_string()
+                );
+            }
+        };
+    }
+
+    approved_row_snapshots!(
+        an_approved_run_whose_task_landed_shows_the_pr_in_the_regatta_theme,
+        an_approved_run_whose_task_landed_shows_the_pr_in_the_harbor_light_theme,
+        ALL_LANDED
+    );
+    approved_row_snapshots!(
+        an_approved_run_with_several_landed_prs_lists_them_in_the_regatta_theme,
+        an_approved_run_with_several_landed_prs_lists_them_in_the_harbor_light_theme,
+        SEVERAL_PRS
+    );
+    approved_row_snapshots!(
+        an_approved_run_with_waiting_tasks_counts_them_in_the_regatta_theme,
+        an_approved_run_with_waiting_tasks_counts_them_in_the_harbor_light_theme,
+        WAITING
+    );
+    approved_row_snapshots!(
+        an_approved_run_with_landed_and_waiting_tasks_counts_both_in_the_regatta_theme,
+        an_approved_run_with_landed_and_waiting_tasks_counts_both_in_the_harbor_light_theme,
+        MIXED_TASKS
+    );
+    approved_row_snapshots!(
+        an_approved_run_with_a_rebuilt_task_counts_it_in_the_regatta_theme,
+        an_approved_run_with_a_rebuilt_task_counts_it_in_the_harbor_light_theme,
+        REBUILT
+    );
+    approved_row_snapshots!(
+        an_approved_run_from_an_older_cox_renders_as_before_in_the_regatta_theme,
+        an_approved_run_from_an_older_cox_renders_as_before_in_the_harbor_light_theme,
+        ""
+    );
+
+    fn suffix_text(tasks: &str) -> String {
+        let app = history_app(&approved_with(tasks), TODAY);
+        let row = &app.snapshot().expect("snapshot").history[0];
+        task_suffix(row).into_iter().map(|(t, _)| t).collect()
+    }
+
+    #[test]
+    fn task_suffix_names_what_happened_since_the_run_was_approved() {
+        assert_eq!(suffix_text(ALL_LANDED), " \u{2192} landed #474");
+        assert_eq!(suffix_text(SEVERAL_PRS), " \u{2192} landed #474 #475");
+        assert_eq!(suffix_text(WAITING), " \u{b7} 2 waiting");
+        assert_eq!(suffix_text(MIXED_TASKS), " \u{b7} 1 landed, 2 waiting");
+        assert_eq!(suffix_text(REBUILT), " \u{b7} 1 landed, 1 rebuilt");
+        assert_eq!(
+            suffix_text(r#"[{"id":"a","state":"dropped"}]"#),
+            " \u{b7} 1 rebuilt"
+        );
+        assert_eq!(suffix_text(""), "");
+        assert_eq!(suffix_text("[]"), "");
+    }
+
+    #[test]
+    fn task_suffix_is_empty_for_a_run_that_did_not_end_approved() {
+        let json = format!(
+            r#"{{"run":"r","machine":"host-b","initiative":"i","ended_at":"2026-10-04T12:40:00Z","outcome":"quarantined","cost_usd":0.5,"cause":"verify_failed","tasks":{WAITING}}}"#
+        );
+        let app = history_app(&json, TODAY);
+        assert!(task_suffix(&app.snapshot().expect("snapshot").history[0]).is_empty());
+    }
+
+    #[test]
+    fn task_suffix_parts_take_their_status_colours() {
+        let app = history_app(&approved_with(MIXED_TASKS), TODAY);
+        let parts = task_suffix(&app.snapshot().expect("snapshot").history[0]);
+        let statuses: Vec<Option<Status>> = parts.iter().map(|(_, s)| *s).collect();
+        assert_eq!(
+            statuses,
+            [None, Some(Status::Landed), None, Some(Status::Approved)]
+        );
+        let rebuilt = history_app(&approved_with(REBUILT), TODAY);
+        let parts = task_suffix(&rebuilt.snapshot().expect("snapshot").history[0]);
+        assert_eq!(parts.last().and_then(|(_, s)| *s), Some(Status::Ready));
+    }
+
+    #[test]
+    fn the_task_suffix_is_drawn_in_its_colours_and_the_cost_keeps_its_column() {
+        let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
+        let terminal = draw_history_frame(
+            &history_app(&approved_with(MIXED_TASKS), TODAY),
+            ThemeId::Regatta,
+        );
+        let buffer = terminal.backend().buffer();
+        let row: String = (0..80)
+            .map(|x| buffer[(x, 3)].symbol().to_string())
+            .collect();
+        let at = |needle: &str| row[..row.find(needle).expect(needle)].chars().count() as u16;
+        assert_eq!(buffer[(at("approved"), 3)].fg, theme.approved);
+        assert_eq!(buffer[(at("1 landed"), 3)].fg, theme.landed);
+        assert_eq!(buffer[(at("2 waiting"), 3)].fg, theme.approved);
+        assert!(row.ends_with("$0.50\u{2502}"), "{row}");
+    }
+
+    #[test]
+    fn clip_parts_cuts_across_parts_and_marks_the_cut() {
+        let parts = vec![
+            (" \u{b7} ".to_string(), None),
+            ("12 landed".to_string(), Some(Status::Landed)),
+        ];
+        let clipped = clip_parts(parts, 6);
+        let text: String = clipped.iter().map(|(t, _)| t.as_str()).collect();
+        assert_eq!(text, " \u{b7} 12\u{2026}");
+        assert_eq!(clipped.last().and_then(|(_, s)| *s), Some(Status::Landed));
+    }
+
     /// `row_json` with a `"project"` key whose value is the JSON literal `project`.
     fn with_project(row_json: &str, project: &str) -> String {
         format!("{},\"project\":{project}}}", row_json.trim_end_matches('}'))
@@ -4964,6 +5208,7 @@ mod tests {
             landed: Vec::new(),
             cause: None,
             project: None,
+            tasks: None,
         };
         let text = |ended_at: &str| -> String {
             history_row(

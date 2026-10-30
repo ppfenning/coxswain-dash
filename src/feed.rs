@@ -167,6 +167,16 @@ pub struct LandedTask {
     pub pr: Option<u64>,
 }
 
+/// One task of an ended run, with the state and PR it has now, not the ones it ended with.
+#[derive(Debug, Deserialize, PartialEq)]
+pub struct HistoryTask {
+    pub id: String,
+    /// A state word such as "approved" or "landed"; `ui::status::from_word` reads it.
+    pub state: String,
+    #[serde(default)]
+    pub pr: Option<u64>,
+}
+
 /// One ended run. `cause` is the first cause and is present only on a quarantined row.
 #[derive(Debug, Deserialize, PartialEq)]
 pub struct HistoryRow {
@@ -184,6 +194,10 @@ pub struct HistoryRow {
     /// A missing key and an explicit null both give `None`.
     #[serde(default)]
     pub project: Option<String>,
+    /// The run's tasks as they stand now. `None` on a feed that predates the field, which is not
+    /// the same as `Some` of an empty list.
+    #[serde(default)]
+    pub tasks: Option<Vec<HistoryTask>>,
 }
 
 #[derive(Debug, Default, Deserialize, PartialEq)]
@@ -1309,6 +1323,32 @@ mod tests {
         )
         .expect("idle row parses");
         assert_eq!(row.outcome, Outcome::Idle);
+    }
+
+    fn history_row_with(extra: &str) -> HistoryRow {
+        serde_json::from_str(&format!(
+            r#"{{"run":"r","machine":"m","initiative":"i","ended_at":"2026-10-05T12:00:00Z","outcome":"approved","cost_usd":0.0{extra}}}"#
+        ))
+        .expect("row parses")
+    }
+
+    #[test]
+    fn history_tasks_parse_with_state_and_pr() {
+        let row = history_row_with(
+            r#","tasks":[{"id":"t1","state":"landed","pr":474},{"id":"t2","state":"approved","pr":null},{"id":"t3","state":"ready"}]"#,
+        );
+        let tasks = row.tasks.expect("tasks present");
+        assert_eq!(tasks.len(), 3);
+        assert_eq!(tasks[0].state, "landed");
+        assert_eq!(tasks[0].pr, Some(474));
+        assert_eq!(tasks[1].pr, None);
+        assert_eq!(tasks[2].pr, None);
+    }
+
+    #[test]
+    fn history_tasks_are_none_on_an_older_feed_and_some_empty_when_sent_empty() {
+        assert_eq!(history_row_with("").tasks, None);
+        assert_eq!(history_row_with(r#","tasks":[]"#).tasks, Some(vec![]));
     }
 
     fn run_with(end: &str) -> Run {
