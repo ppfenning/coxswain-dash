@@ -8,7 +8,7 @@
 
 use std::collections::HashMap;
 
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 
 #[derive(Debug, Deserialize)]
 pub struct FeedSnapshot {
@@ -278,8 +278,28 @@ pub struct Spend {
     pub five_hour_resets_at: String,
     pub weekly_resets_at: String,
     /// Today's cost and landed count. Absent from an older cox.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient_today")]
     pub today: Option<SpendToday>,
+}
+
+/// A `today` block that fails to parse is None, so it never drops the whole feed line.
+fn lenient_today<'de, D: Deserializer<'de>>(d: D) -> Result<Option<SpendToday>, D::Error> {
+    let value = serde_json::Value::deserialize(d)?;
+    Ok(serde_json::from_value(value).ok())
+}
+
+/// Reads `measured` as a count of measured tasks. An older feed sent a bool: true is 1, false is 0.
+fn measured_count<'de, D: Deserializer<'de>>(d: D) -> Result<Option<u64>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Measured {
+        Count(u64),
+        Flag(bool),
+    }
+    Ok(Option::<Measured>::deserialize(d)?.map(|m| match m {
+        Measured::Count(n) => n,
+        Measured::Flag(flag) => u64::from(flag),
+    }))
 }
 
 /// Today's spend, a different scope from the 5h and weekly meter windows. A null field is a
@@ -296,8 +316,9 @@ pub struct SpendToday {
     /// A fraction in `0.0..=1.0`.
     #[serde(default)]
     pub first_try_rate: Option<f64>,
-    #[serde(default)]
-    pub measured: Option<bool>,
+    /// Count of measured tasks; "measured" means a count above zero.
+    #[serde(default, deserialize_with = "measured_count")]
+    pub measured: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -847,6 +868,40 @@ mod tests {
             (None, None, None)
         );
         assert!(with_today("").spend.today.is_none());
+    }
+
+    fn measured_of(measured: &str) -> Option<u64> {
+        let today = format!(r#","today":{{"date":"2026-09-29","measured":{measured}}}"#);
+        with_today(&today)
+            .spend
+            .today
+            .expect("today parses")
+            .measured
+    }
+
+    #[test]
+    fn measured_reads_an_integer_count_or_the_older_bool() {
+        assert_eq!(measured_of("1"), Some(1));
+        assert_eq!(measured_of("0"), Some(0));
+        assert_eq!(measured_of("true"), Some(1));
+        assert_eq!(measured_of("false"), Some(0));
+        assert_eq!(measured_of("null"), None);
+    }
+
+    #[test]
+    fn spend_today_in_the_current_coxswain_shape_parses() {
+        let snapshot = with_today(
+            r#","today":{"date":"2026-10-31","cost":6.0,"landed":4,"per_landed":1.5,"first_try_rate":0.75,"measured":3}"#,
+        );
+        let today = snapshot.spend.today.expect("today parses");
+        assert_eq!((today.landed, today.measured), (Some(4), Some(3)));
+    }
+
+    #[test]
+    fn a_malformed_today_is_none_and_the_frame_survives() {
+        let snapshot = with_today(r#","today":{"date":5,"measured":"many"}"#);
+        assert!(snapshot.spend.today.is_none());
+        assert_eq!(snapshot.schema, 1);
     }
 
     #[test]
