@@ -1216,7 +1216,7 @@ fn cost_text(dollars: f64) -> String {
     format!("${dollars:.2}")
 }
 
-/// The stage text's colour for a run status: running is cyan, paused yellow and needs a person
+/// The stage text's colour for a run status: running is blue, paused yellow and needs a person
 /// magenta, each borrowed from the role that already carries the hue. Any other status keeps the
 /// frame's text colour. The feed names no paused or needs-a-person status yet, so those are
 /// matched on the words `paused`, `needs_person` and `needs_chair`.
@@ -1783,18 +1783,42 @@ fn task_status(word: &str) -> Option<Status> {
     Some(status::from_word(word)).filter(|s| *s != Status::Dropped)
 }
 
-/// Each phase's drawn task statuses in feed order. A phase left with no tasks is left out.
-fn phase_statuses(phases: &[crate::feed::QueuePhase]) -> Vec<Vec<Status>> {
+/// Each phase's drawn task statuses in feed order. A phase left with no tasks is left out. Ready
+/// tasks of the `building` phase, by index, draw as running.
+fn phase_statuses(phases: &[crate::feed::QueuePhase], building: Option<usize>) -> Vec<Vec<Status>> {
     phases
         .iter()
-        .map(|p| {
+        .enumerate()
+        .map(|(i, p)| {
             p.tasks
                 .iter()
                 .filter_map(|t| task_status(&t.state))
+                .map(|s| match s {
+                    Status::Ready if building == Some(i) => Status::Running,
+                    other => other,
+                })
                 .collect()
         })
         .filter(|p: &Vec<Status>| !p.is_empty())
         .collect()
+}
+
+/// Whether `run` is a run id of `initiative`: the initiative, a dash and a run number.
+fn is_run_of(run: &str, initiative: &str) -> bool {
+    run.strip_prefix(initiative)
+        .and_then(|rest| rest.strip_prefix('-'))
+        .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// The index of the phase a live run is building for `q`, or `None`. The feed names no task or
+/// phase index per run, so a running run of this initiative on `current_phase` is taken to build
+/// the phase after the `phases_landed` landed ones.
+fn building_phase(q: &QueueEntry, runs: &[Run]) -> Option<usize> {
+    runs.iter()
+        .any(|r| {
+            r.status == "running" && r.phase == q.current_phase && is_run_of(&r.run, &q.initiative)
+        })
+        .then_some(q.phases_landed as usize)
 }
 
 /// The least advanced status of a non-empty run of statuses.
@@ -1927,26 +1951,29 @@ fn bar_cell_width(cell: BarCell) -> usize {
     }
 }
 
-/// The bar of an entry whose feed carries its tasks: one cell per task from `ui/status.rs`, padded
-/// with blanks to the bar width. `None` when there are no tasks to draw.
-fn task_bar_spans(q: &QueueEntry, theme: &Theme) -> Option<Vec<Span<'static>>> {
-    let cells = queue_bar_cells(&phase_statuses(q.phases.as_deref()?), QUEUE_BAR_CELLS);
+/// A task cell of the queue bar: always a filled square, with the state in its colour alone.
+const TASK_SQUARE: char = '\u{25a0}';
+
+/// The bar of an entry whose feed carries its tasks: one square per task coloured by its status,
+/// padded on the left with blanks to the bar width. `None` when there are no tasks to draw.
+fn task_bar_spans(q: &QueueEntry, runs: &[Run], theme: &Theme) -> Option<Vec<Span<'static>>> {
+    let statuses = phase_statuses(q.phases.as_deref()?, building_phase(q, runs));
+    let cells = queue_bar_cells(&statuses, QUEUE_BAR_CELLS);
     let drawn: usize = cells.iter().copied().map(bar_cell_width).sum();
     (!cells.is_empty()).then(|| {
-        cells
+        [Span::raw(" ".repeat(QUEUE_BAR_CELLS.saturating_sub(drawn)))]
             .into_iter()
-            .map(|cell| match cell {
-                BarCell::Task(s) => {
-                    let (glyph, color) = status::style(theme, s);
-                    Span::styled(glyph.to_string(), Style::default().fg(color))
-                }
+            .chain(cells.into_iter().map(|cell| match cell {
+                BarCell::Task(s) => Span::styled(
+                    TASK_SQUARE.to_string(),
+                    Style::default().fg(status::color(theme, s)),
+                ),
                 BarCell::Gap => Span::raw(" "),
                 BarCell::More(n, s) => Span::styled(
                     format!("+{n}"),
                     Style::default().fg(status::color(theme, s)),
                 ),
-            })
-            .chain([Span::raw(" ".repeat(QUEUE_BAR_CELLS.saturating_sub(drawn)))])
+            }))
             .collect()
     })
 }
@@ -1964,11 +1991,17 @@ fn phase_bar_spans(q: &QueueEntry, theme: &Theme) -> Vec<Span<'static>> {
     ]
 }
 
-fn queue_line(q: &QueueEntry, selected: bool, width: usize, theme: &Theme) -> Line<'static> {
+fn queue_line(
+    q: &QueueEntry,
+    runs: &[Run],
+    selected: bool,
+    width: usize,
+    theme: &Theme,
+) -> Line<'static> {
     let prefix = if selected { "\u{25b6} " } else { "  " };
     let tail = format!(" {}/{} phases", q.phases_landed, q.phases_total);
     let initiative_w = width.saturating_sub(2 + 1 + QUEUE_BAR_CELLS + tail.chars().count());
-    let bar = task_bar_spans(q, theme).unwrap_or_else(|| phase_bar_spans(q, theme));
+    let bar = task_bar_spans(q, runs, theme).unwrap_or_else(|| phase_bar_spans(q, theme));
     let line = Line::from(
         [
             Span::raw(prefix),
@@ -2011,10 +2044,15 @@ fn render_queue(
             Body::Header(label) => {
                 Some(Line::styled(label.clone(), Style::default().fg(theme.dim)))
             }
-            Body::Entity(index) => snapshot
-                .queue
-                .get(*index)
-                .map(|q| queue_line(q, at == Some(i), usize::from(inner.width), theme)),
+            Body::Entity(index) => snapshot.queue.get(*index).map(|q| {
+                queue_line(
+                    q,
+                    &snapshot.runs,
+                    at == Some(i),
+                    usize::from(inner.width),
+                    theme,
+                )
+            }),
         })
         .collect();
     let paragraph = Paragraph::new(lines).block(block).style(base_style(theme));
@@ -3349,7 +3387,7 @@ mod tests {
         let terminal = draw_page(&app, ThemeId::Regatta, 120, 40);
         let runs_rect = frame_rects(Rect::new(0, 0, 120, 40), &app)[4].expect("runs rect");
         let expected = [
-            Color::Rgb(0x56, 0xd4, 0xdd),
+            Color::Rgb(0x58, 0xa6, 0xff),
             Color::Rgb(0xd2, 0xa8, 0xff),
             Color::Rgb(0x56, 0xd3, 0x64),
             Color::Rgb(0xff, 0x7b, 0x72),
@@ -3489,7 +3527,7 @@ mod tests {
         let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
         assert_eq!(
             stage_color(&theme, "running"),
-            Some(Color::Rgb(0x56, 0xd4, 0xdd))
+            Some(Color::Rgb(0x58, 0xa6, 0xff))
         );
         assert_eq!(stage_color(&theme, "paused"), Some(MID));
         assert_eq!(
@@ -3534,7 +3572,7 @@ mod tests {
             stage_run("run-c", "needs_person", "p3-land", "land", 12.0),
         ]);
         insta::assert_snapshot!(terminal.backend().to_string());
-        let cyan = Some(Color::Rgb(0x56, 0xd4, 0xdd));
+        let cyan = Some(Color::Rgb(0x58, 0xa6, 0xff));
         let magenta = Some(Color::Rgb(0xd2, 0xa8, 0xff));
         // Lanes run lines sit on rows 1-3, runs rows on rows 8-10.
         for (lanes_row, runs_row, stage, color) in [
@@ -3587,7 +3625,7 @@ mod tests {
     #[test]
     fn the_queue_bar_turns_landed_at_three_quarters_done() {
         let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
-        assert_eq!(queue_bar_color(&theme, 2, 4), Color::Rgb(0x56, 0xd4, 0xdd));
+        assert_eq!(queue_bar_color(&theme, 2, 4), Color::Rgb(0x58, 0xa6, 0xff));
         assert_eq!(queue_bar_color(&theme, 3, 4), Color::Rgb(0x56, 0xd3, 0x64));
     }
 
@@ -3766,6 +3804,7 @@ mod tests {
             'Y' => "ready",
             'B' => "blocked",
             'Q' => "quarantined",
+            'F' => "failed",
             'D' => "dropped",
             other => panic!("no state for {other}"),
         }
@@ -3791,7 +3830,15 @@ mod tests {
     }
 
     fn queue_terminal(queue: &str, theme_id: ThemeId) -> Terminal<TestBackend> {
-        let app = feed_app("", queue, "");
+        queue_terminal_with_runs("", queue, theme_id)
+    }
+
+    fn queue_terminal_with_runs(
+        runs: &str,
+        queue: &str,
+        theme_id: ThemeId,
+    ) -> Terminal<TestBackend> {
+        let app = feed_app(runs, queue, "");
         let theme = crate::theme::resolve_for(theme_id, Some("truecolor"));
         let mut terminal = Terminal::new(TestBackend::new(60, 8)).expect("terminal");
         terminal
@@ -3865,7 +3912,7 @@ mod tests {
             let terminal = queue_terminal(&phased_row("mixed", 1, &["LADAAY", "YYY"]), theme_id);
             let row = row_text(&terminal, 1);
             assert!(row.contains(" 1/2 phases"), "{row}");
-            let x = col_of(&terminal, 1, "\u{2588}");
+            let x = col_of(&terminal, 1, "\u{25a0}");
             [
                 Some(Status::Landed),
                 Some(Status::Approved),
@@ -3884,11 +3931,130 @@ mod tests {
                 match expected {
                     Some(s) => {
                         assert_eq!(at.fg, status::color(&theme, s), "cell {i}");
-                        assert_eq!(at.symbol(), status::style(&theme, s).0.to_string());
+                        assert_eq!(at.symbol(), "\u{25a0}", "cell {i}");
                     }
                     None => assert_eq!(at.symbol(), " ", "cell {i}"),
                 }
             });
+        }
+    }
+
+    /// Spans of a bar as `(text, fg)`, the fg `None` for an unstyled span.
+    fn bar_parts(q: &QueueEntry, runs: &[Run], theme: &Theme) -> Vec<(String, Option<Color>)> {
+        task_bar_spans(q, runs, theme)
+            .expect("the entry carries tasks")
+            .into_iter()
+            .map(|s| (s.content.to_string(), s.style.fg))
+            .collect()
+    }
+
+    fn entry_of(row: &str) -> QueueEntry {
+        serde_json::from_str(row).expect("literal queue row parses")
+    }
+
+    fn runs_of(json: &[String]) -> Vec<Run> {
+        serde_json::from_str(&format!("[{}]", json.join(","))).expect("literal runs parse")
+    }
+
+    #[test]
+    fn every_task_cell_is_a_square_and_no_cross_is_drawn() {
+        for theme_id in THEMES {
+            let theme = crate::theme::resolve_for(theme_id, Some("truecolor"));
+            let q = entry_of(&phased_row("x", 1, &["LAQ", "RYBQ"]));
+            let parts = bar_parts(&q, &[], &theme);
+            let text: String = parts.iter().map(|(t, _)| t.as_str()).collect();
+            assert!(!text.contains('\u{2715}'), "{text:?}");
+            assert_eq!(text.matches('\u{25a0}').count(), 7, "{text:?}");
+            assert!(
+                text.chars().all(|c| c == '\u{25a0}' || c == ' '),
+                "{text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn quarantined_and_failed_squares_are_red_and_running_is_blue() {
+        for theme_id in THEMES {
+            let theme = crate::theme::resolve_for(theme_id, Some("truecolor"));
+            let q = entry_of(&phased_row("x", 0, &["Q", "F", "R"]));
+            let parts = bar_parts(&q, &[], &theme);
+            let squares: Vec<_> = parts.iter().filter(|(t, _)| t == "\u{25a0}").collect();
+            assert_eq!(squares[0].1, Some(theme.quarantined));
+            assert_eq!(squares[1].1, Some(theme.status_failed));
+            assert_eq!(squares[2].1, Some(theme.status_running));
+        }
+    }
+
+    #[test]
+    fn a_short_bar_is_right_aligned_with_its_padding_first() {
+        let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
+        let short = bar_parts(&entry_of(&phased_row("x", 0, &["LA"])), &[], &theme);
+        assert_eq!(short.first(), Some(&(" ".repeat(10), None)));
+        assert_eq!(short.last().map(|(t, _)| t.as_str()), Some("\u{25a0}"));
+        let width = |parts: &[(String, Option<Color>)]| {
+            parts.iter().map(|(t, _)| t.chars().count()).sum::<usize>()
+        };
+        let long = bar_parts(
+            &entry_of(&phased_row("y", 0, &["LAYQ", "YYYY"])),
+            &[],
+            &theme,
+        );
+        assert_eq!(
+            (width(&short), width(&long)),
+            (QUEUE_BAR_CELLS, QUEUE_BAR_CELLS)
+        );
+        let full = queue_terminal(&phased_row("x", 0, &["LA"]), ThemeId::Regatta);
+        let row = row_text(&full, 1);
+        assert!(row.contains("\u{25a0}\u{25a0} 0/1 phases"), "{row}");
+    }
+
+    #[test]
+    fn a_ready_task_in_a_phase_with_a_live_run_draws_as_running() {
+        let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
+        let q = entry_of(&phased_row("build", 1, &["LL", "AYY", "YY"]));
+        let ready = status::color(&theme, Status::Ready);
+        let squares = |runs: &[Run]| -> Vec<Option<Color>> {
+            bar_parts(&q, runs, &theme)
+                .into_iter()
+                .filter(|(t, _)| t == "\u{25a0}")
+                .map(|(_, c)| c)
+                .collect()
+        };
+        let running = Some(theme.status_running);
+        let waiting = Some(ready);
+        let live = runs_of(&[run_json("build-3", "running")]);
+        assert_eq!(squares(&live)[3..7], [running, running, waiting, waiting]);
+        let ended = runs_of(&[run_json("build-3", "landed")]);
+        assert_eq!(squares(&ended)[3..5], [waiting, waiting]);
+        let other = runs_of(&[
+            run_json("builder-3", "running"),
+            run_json("other-1", "running"),
+        ]);
+        assert_eq!(squares(&other)[3..5], [waiting, waiting]);
+    }
+
+    #[test]
+    fn a_run_belongs_to_the_initiative_its_id_is_numbered_under() {
+        assert!(is_run_of("dash-feed-0", "dash-feed"));
+        assert!(!is_run_of("dash-feed-0", "dash"));
+        assert!(!is_run_of("dash-feed", "dash-feed"));
+    }
+
+    #[test]
+    fn the_task_bar_snapshot_is_right_aligned_with_a_building_phase() {
+        let queue = phased_row("mixed", 1, &["LLA", "AYQ", "YY"]);
+        let runs = run_json("mixed-0", "running");
+        for theme_id in THEMES {
+            let slug = match theme_id {
+                ThemeId::Regatta => "regatta",
+                ThemeId::HarborLight => "harbor_light",
+            };
+            insta::assert_snapshot!(
+                format!("queue_bar_right_aligned_{slug}"),
+                queue_terminal_with_runs(&runs, &queue, theme_id)
+                    .backend()
+                    .to_string()
+            );
         }
     }
 
@@ -3902,8 +4068,8 @@ mod tests {
         assert!(row.contains("init-0"), "{row}");
         assert!(row.contains(" 2/4 phases"), "{row}");
         let x = col_of(&terminal, y, "\u{2588}");
-        assert_eq!(cell(&terminal, x, y).fg, Color::Rgb(0x56, 0xd4, 0xdd));
-        assert_eq!(cell(&terminal, x + 5, y).fg, Color::Rgb(0x56, 0xd4, 0xdd));
+        assert_eq!(cell(&terminal, x, y).fg, Color::Rgb(0x58, 0xa6, 0xff));
+        assert_eq!(cell(&terminal, x + 5, y).fg, Color::Rgb(0x58, 0xa6, 0xff));
         assert_eq!(cell(&terminal, x + 6, y).fg, Color::Rgb(0x21, 0x26, 0x2d));
         assert_eq!(cell(&terminal, x + 11, y).fg, Color::Rgb(0x21, 0x26, 0x2d));
         assert_eq!(row.chars().filter(|c| *c == '\u{2588}').count(), 12);
