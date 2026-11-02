@@ -6,10 +6,13 @@ confirm that shows the command. Part of [Coxswain](https://github.com/ppfenning/
 
 Spend lives in the Slipstream page. The right rail's SPEND section shows the 5h and weekly bars, and, from a cox that
 sends `spend.today`, today's cost with the landed count and the cost per landed task with the first-try rate (`--` for
-a figure the feed leaves null). `$` swaps the card column for a spend pane: the window's three-way split, the per-role
-table and one bar row per day. `f` flips the window between five-hour and weekly, and `$` or Esc returns to the cards.
-Below 100 columns the pane takes the full width and the rail hides. There is no separate Spend page; `Tab` cycles
-Regatta and Slipstream.
+a figure the feed leaves null). Below MACHINES the rail carries the spend panel in place of the inbox: the window's
+three-way split, the per-role table and one bar row per day, from `cox dash --detail spend`. From 120 columns the rail
+is 64 wide and the table shows Role, Model, Calls and Cost; below that it is 40 wide, shows Role and Cost, and stacks
+the split's legend one entry per line. On a short terminal the panel drops DAILY rows, then BY ROLE rows, before the
+split. `f` flips the panel between five-hour and
+weekly on Slipstream. `$` opens the full spend view on Regatta. There is no separate Spend page; `Tab` cycles Regatta
+and Slipstream.
 
 ## Install
 

@@ -1,6 +1,6 @@
 //! Rendering for the Slipstream page: a header row, one rounded card per run showing its
-//! position in the six-step pipeline (plan, build, handoff, review, arbitrate, land), a 40-column
-//! right rail (spend, machines, inbox, chair) and a key bar. Every color comes from
+//! position in the six-step pipeline (plan, build, handoff, review, arbitrate, land), a 40- or
+//! 64-column right rail (spend, machines, the spend panel, chair) and a key bar. Every color comes from
 //! `SlipstreamPalette`, dark or Harbor Light to follow the `t` theme toggle.
 
 use chrono::{DateTime, FixedOffset};
@@ -20,8 +20,8 @@ use super::regatta::action_hints;
 use super::spend_drill;
 use super::{CollapsedRun, collapse_runs, count_suffix, end_chip};
 use crate::app::{App, Focus, SpendWindow};
-use crate::detail::DetailSnapshot;
-use crate::feed::{Chair, FeedSnapshot, InboxEntry, Machine, Run, Spend, SpendToday};
+use crate::detail::SpendDetail;
+use crate::feed::{Chair, FeedSnapshot, Machine, Run, Spend, SpendToday};
 use crate::theme::{SlipstreamPalette, Theme, resolve, slipstream_palette_for};
 
 /// Width of the right rail, in columns.
@@ -50,10 +50,7 @@ const KEYS: [&str; 6] = [
 ];
 
 /// The view keys, after the palette. Fixed by the initiative, not read from the keymap.
-const KEY_VIEWS: &str = "w watch  $ spend  h health";
-
-/// The key row while the spend pane is open.
-const PANE_KEYS: &str = "$ cards   esc cards   f window   : palette   t theme   q quit";
+const KEY_VIEWS: &str = "w watch  f window  h health";
 
 /// The key row for a `width`-column row: `KEYS`, the focused list's action keys, `:` for the
 /// palette, then `KEY_VIEWS`. Over width, `KEYS` hints are dropped whole from the end, then action
@@ -220,8 +217,24 @@ struct Regions {
     keys: Rect,
 }
 
-/// Below this width an open spend pane takes the full width and the rail hides.
-const PANE_FULL_WIDTH_BELOW: u16 = 100;
+/// The rail's width when the terminal has room. 64 columns leave 60 for a card's content, which
+/// holds WHERE IT WENT's short legend (`● session $9.00 29%  ● agents $5.00 16%  ● seats $16.70
+/// 54%`, 59 columns) on one line at 160 columns, and BY ROLE's Role, Model, Calls and Cost.
+const WIDE_RAIL_WIDTH: u16 = 64;
+
+/// From this terminal width the rail is `WIDE_RAIL_WIDTH`, which leaves the cards at least 56
+/// columns. Below it the rail is `RAIL_WIDTH`, BY ROLE shows Role and Cost only, and the legend
+/// stacks one entry per line.
+const WIDE_RAIL_FROM: u16 = 120;
+
+/// The rail's width on a `terminal_width`-column terminal.
+pub fn rail_width(terminal_width: u16) -> u16 {
+    if terminal_width >= WIDE_RAIL_FROM {
+        WIDE_RAIL_WIDTH
+    } else {
+        RAIL_WIDTH
+    }
+}
 
 fn regions(area: Rect, rail_width: u16) -> Regions {
     let rows = Layout::default()
@@ -270,43 +283,32 @@ fn render_with(f: &mut Frame, area: Rect, app: &App, p: SlipstreamPalette, versi
         render_waiting(f, area, &p);
         return;
     };
-    let pane = app.spend_pane_open();
-    let rail_hidden = pane && area.width < PANE_FULL_WIDTH_BELOW;
-    let r = regions(area, if rail_hidden { 0 } else { RAIL_WIDTH });
+    let r = regions(area, rail_width(area.width));
     render_header(f, r.header, snapshot, app.utc_offset(), version, &p);
-    if pane {
-        let detail = match app.detail() {
-            Some((_, _, Some(DetailSnapshot::Spend(d)))) => Some(d),
-            _ => None,
-        };
-        let window = snapshot
-            .spend_split
-            .as_ref()
-            .map(|s| match app.spend_window() {
-                SpendWindow::FiveHour => ("5-hour", &s.five_hour),
-                SpendWindow::Weekly => ("weekly", &s.weekly),
-            });
-        spend_drill::render_pane(f, r.left, detail, window, &p);
+    render_cards(
+        f,
+        r.left,
+        snapshot,
+        app.selected(),
+        &p,
+        &resolve(app.theme()),
+    );
+    let window = snapshot
+        .spend_split
+        .as_ref()
+        .map(|s| match app.spend_window() {
+            SpendWindow::FiveHour => ("5-hour", &s.five_hour),
+            SpendWindow::Weekly => ("weekly", &s.weekly),
+        });
+    let columns = if r.rail.width >= WIDE_RAIL_WIDTH {
+        spend_drill::RoleColumns::Wide
     } else {
-        render_cards(
-            f,
-            r.left,
-            snapshot,
-            app.selected(),
-            &p,
-            &resolve(app.theme()),
-        );
-    }
-    if !rail_hidden {
-        render_rail(f, r.rail, snapshot, &p);
-    }
-    let keys = if pane {
-        PANE_KEYS.to_string()
-    } else {
-        keys_text(app.focus(), usize::from(r.keys.width))
+        spend_drill::RoleColumns::Narrow
     };
+    render_rail(f, r.rail, snapshot, (app.rail_spend(), window, columns), &p);
+    let keys = keys_text(app.focus(), usize::from(r.keys.width));
     f.render_widget(Paragraph::new(Span::styled(keys, dim_style(&p))), r.keys);
-    if let Some(err) = app.feed_error().filter(|_| !rail_hidden) {
+    if let Some(err) = app.feed_error() {
         render_error_line(f, chair_rect(r.rail), err, &p);
     }
 }
@@ -424,7 +426,21 @@ fn render_card(
     f.render_widget(Paragraph::new(lines), inner);
 }
 
-fn render_rail(f: &mut Frame, rail: Rect, snapshot: &FeedSnapshot, p: &SlipstreamPalette) {
+/// What the rail's spend panel draws: the drill, the chosen window of the feed's split, and the
+/// BY ROLE columns for the rail's width.
+type SpendPanel<'a> = (
+    Option<&'a SpendDetail>,
+    Option<(&'static str, &'a crate::feed::SpendWindow)>,
+    spend_drill::RoleColumns,
+);
+
+fn render_rail(
+    f: &mut Frame,
+    rail: Rect,
+    snapshot: &FeedSnapshot,
+    (detail, window, columns): SpendPanel<'_>,
+    p: &SlipstreamPalette,
+) {
     let chair_box = chair_rect(rail);
     let top = Rect {
         height: chair_box.y.saturating_sub(rail.y + 1),
@@ -443,7 +459,7 @@ fn render_rail(f: &mut Frame, rail: Rect, snapshot: &FeedSnapshot, p: &Slipstrea
         .split(top);
     render_rail_spend(f, sections[0], &snapshot.spend, p);
     render_rail_machines(f, sections[1], &snapshot.machines, p);
-    render_rail_inbox(f, sections[2], &snapshot.inbox, p);
+    spend_drill::render_panel(f, sections[2], detail, window, columns, p);
     let label_row = Rect {
         y: chair_box.y.saturating_sub(1).max(rail.y),
         ..rail
@@ -572,23 +588,6 @@ fn render_machine_box(
         Paragraph::new(vec![name_line, Line::from(lane_spans)]),
         inner,
     );
-}
-
-fn render_rail_inbox(f: &mut Frame, rect: Rect, inbox: &[InboxEntry], p: &SlipstreamPalette) {
-    render_label(f, rect, "INBOX", p);
-    let lines: Vec<Line> = inbox
-        .iter()
-        .flat_map(|entry| {
-            [
-                Line::from(vec![
-                    Span::styled(entry.kind.clone(), Style::default().fg(p.accents[1])),
-                    Span::raw(format!(" {}", entry.target)),
-                ]),
-                Line::from(Span::styled(format!("  {}", entry.reason), dim_style(p))),
-            ]
-        })
-        .collect();
-    f.render_widget(Paragraph::new(lines), below_first_row(rect));
 }
 
 fn render_rail_chair(f: &mut Frame, rect: Rect, chair: &Chair, p: &SlipstreamPalette) {
@@ -762,7 +761,7 @@ mod tests {
         let row: String = (0..buffer.area.width)
             .map(|x| buffer[(x, 39)].symbol())
             .collect();
-        assert!(row.contains("w watch  $ spend  h health"), "{row}");
+        assert!(row.contains("w watch  f window  h health"), "{row}");
         assert!(row.contains("p pause  k kill  m move   : palette"), "{row}");
         assert!(keys_text(Focus::Runs, 80).chars().count() <= 80);
     }
@@ -826,10 +825,7 @@ mod tests {
 
     fn pane_app(theme: ThemeId) -> App {
         let mut app = app_from(&with_spend(Some(TODAY)), theme);
-        app.open_spend();
-        app.apply_detail_snapshot(DetailSnapshot::Spend(
-            serde_json::from_str(SPEND_DETAIL).expect("detail parses"),
-        ));
+        app.apply_rail_spend(serde_json::from_str(SPEND_DETAIL).expect("detail parses"));
         app
     }
 
@@ -870,52 +866,72 @@ mod tests {
         insta::assert_snapshot!(screen(&draw(&app, 160, 46)));
     }
 
-    macro_rules! pane_snapshot {
+    macro_rules! panel_snapshot {
         ($name:ident, $theme:expr, $w:expr, $h:expr) => {
             #[test]
             fn $name() {
-                insta::assert_snapshot!(screen(&draw(&pane_app($theme), $w, $h)));
+                let text = screen(&draw(&pane_app($theme), $w, $h));
+                assert!(!text.contains("I N B O X"), "{text}");
+                insta::assert_snapshot!(text);
             }
         };
     }
 
-    pane_snapshot!(
-        the_spend_pane_at_160x46_in_the_regatta_theme,
+    panel_snapshot!(
+        the_spend_panel_at_160x46_in_the_regatta_theme,
         ThemeId::Regatta,
         160,
         46
     );
-    pane_snapshot!(
-        the_spend_pane_at_160x46_in_the_harbor_light_theme,
+    panel_snapshot!(
+        the_spend_panel_at_160x46_in_the_harbor_light_theme,
         ThemeId::HarborLight,
         160,
         46
     );
-    pane_snapshot!(
-        the_spend_pane_at_90x30_in_the_regatta_theme,
+    panel_snapshot!(
+        the_spend_panel_at_110x40_in_the_regatta_theme,
         ThemeId::Regatta,
-        90,
+        110,
+        40
+    );
+    panel_snapshot!(
+        the_spend_panel_at_110x40_in_the_harbor_light_theme,
+        ThemeId::HarborLight,
+        110,
+        40
+    );
+    // Short rails: at 30 rows DAILY is gone and BY ROLE stays; at 28 BY ROLE is gone too and
+    // WHERE IT WENT stays alone.
+    panel_snapshot!(
+        the_spend_panel_at_160x30_drops_daily_first,
+        ThemeId::Regatta,
+        160,
         30
     );
-    pane_snapshot!(
-        the_spend_pane_at_90x30_in_the_harbor_light_theme,
-        ThemeId::HarborLight,
-        90,
-        30
+    panel_snapshot!(
+        the_spend_panel_at_160x28_keeps_only_where_it_went,
+        ThemeId::Regatta,
+        160,
+        28
     );
 
     #[test]
-    fn the_open_pane_draws_all_three_parts_in_both_themes_at_both_widths() {
+    fn the_panel_draws_all_three_parts_in_both_themes_at_both_widths() {
         for theme in [ThemeId::Regatta, ThemeId::HarborLight] {
-            for (w, h) in [(160, 46), (90, 30)] {
+            for (w, h) in [(160, 46), (110, 40)] {
                 let text = screen(&draw(&pane_app(theme), w, h));
                 for part in [
                     "W H E R E   I T   W E N T",
-                    "chair session $9.00 29%",
-                    "Role           Tier     Model",
-                    "builder        sonnet   claude-sonnet",
+                    "B Y   R O L E",
+                    "D A I L Y",
+                    "R U N S",
                     "Wed 14",
                     "Total · 3 days",
+                    // Every split figure shows at both rail widths, the biggest slice last.
+                    "session $9.00 29%",
+                    "agents $5.00 16%",
+                    "seats $16.70 54%",
                 ] {
                     assert!(
                         text.contains(part),
@@ -927,30 +943,65 @@ mod tests {
     }
 
     #[test]
-    fn the_pane_replaces_the_cards_and_keeps_the_rail_until_the_width_narrows() {
+    fn the_wide_rail_keeps_model_and_calls_and_the_narrow_rail_drops_them() {
         let wide = screen(&draw(&pane_app(ThemeId::Regatta), 160, 46));
-        // Labels are letter-spaced by `render_label`.
+        assert!(wide.contains("Model") && wide.contains("Calls"), "{wide}");
+        assert!(!wide.contains("Tier") && !wide.contains("Tokens"), "{wide}");
+        let narrow = screen(&draw(&pane_app(ThemeId::Regatta), 110, 40));
         assert!(
-            wide.contains("B Y   R O L E") && wide.contains("M A C H I N E S"),
-            "{wide}"
-        );
-        assert!(!wide.contains("R U N S"), "{wide}");
-        let narrow = screen(&draw(&pane_app(ThemeId::Regatta), 90, 30));
-        assert!(
-            narrow.contains("B Y   R O L E") && !narrow.contains("M A C H I N E S"),
+            narrow.contains("Role") && narrow.contains("Cost"),
             "{narrow}"
         );
-        assert!(narrow.contains("D A I L Y"), "{narrow}");
+        assert!(
+            !narrow.contains("Model") && !narrow.contains("Calls"),
+            "{narrow}"
+        );
     }
 
     #[test]
-    fn the_open_pane_key_row_replaces_the_card_keys() {
-        let terminal = draw(&pane_app(ThemeId::Regatta), 160, 46);
-        let buffer = terminal.backend().buffer();
-        let row: String = (0..buffer.area.width)
-            .map(|x| buffer[(x, 45)].symbol())
-            .collect();
-        assert_eq!(row.trim_end(), PANE_KEYS);
+    fn a_short_rail_drops_daily_then_by_role_before_where_it_went() {
+        let has =
+            |h: u16, part: &str| screen(&draw(&pane_app(ThemeId::Regatta), 160, h)).contains(part);
+        assert!(has(46, "D A I L Y") && has(46, "B Y   R O L E"));
+        assert!(!has(30, "D A I L Y") && has(30, "B Y   R O L E"));
+        assert!(!has(24, "B Y   R O L E") && has(24, "W H E R E   I T   W E N T"));
+    }
+
+    #[test]
+    fn dollar_leaves_the_cards_drawn_and_f_flips_the_panel_window() {
+        use crossterm::event::KeyCode;
+        let mut app = pane_app(ThemeId::Regatta);
+        crate::input::handle_key(&mut app, KeyCode::Char('$'));
+        let text = screen(&draw(&app, 160, 46));
+        assert!(
+            text.contains("R U N S") && text.contains("5-hour"),
+            "{text}"
+        );
+        crate::input::handle_key(&mut app, KeyCode::Char('f'));
+        let text = screen(&draw(&app, 160, 46));
+        assert!(
+            text.contains("weekly") && !text.contains("5-hour"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn the_panel_draws_the_split_and_loading_lines_while_the_drill_is_missing() {
+        let app = app_from(&with_spend(Some(TODAY)), ThemeId::Regatta);
+        let text = screen(&draw(&app, 160, 46));
+        assert!(text.contains("W H E R E   I T   W E N T"), "{text}");
+        assert_eq!(text.matches("loading").count(), 2, "{text}");
+    }
+
+    #[test]
+    fn the_rail_is_wide_with_room_and_forty_columns_below_it() {
+        assert_eq!(rail_width(160), WIDE_RAIL_WIDTH);
+        assert_eq!(rail_width(110), RAIL_WIDTH);
+        let text = screen(&draw(&pane_app(ThemeId::Regatta), 160, 46));
+        assert!(
+            !text.contains("I N B O X") && text.contains("B Y   R O L E"),
+            "{text}"
+        );
     }
 
     #[test]

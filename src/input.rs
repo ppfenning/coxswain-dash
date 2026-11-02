@@ -136,9 +136,9 @@ pub fn handle_key(app: &mut App, key: KeyCode) {
         // `s` was unbound in the landed keymap, so it opens the settings screen.
         KeyCode::Char('s') => app.open_settings(),
         KeyCode::Char('v') => app.cycle_regatta_layout_preset(),
-        // `f` flips the Spend page between five-hour and weekly. No action binding uses it, and
-        // the guard keeps it from acting on any other page.
-        KeyCode::Char('f') if app.spend_pane_open() => app.toggle_spend_window(),
+        // `f` flips Slipstream's spend panel between five-hour and weekly. No action binding uses
+        // it, and the guard keeps it from acting on any other page.
+        KeyCode::Char('f') if app.page() == AppPage::Slipstream => app.toggle_spend_window(),
         // `g` is bound in no action table; it groups the queue, which only the Regatta page has.
         KeyCode::Char('g') if app.page() == AppPage::Regatta => app.toggle_queue_grouped(),
         // No action binding uses `w`, `$` or `h`; a test over `actions::bindings` holds that.
@@ -881,26 +881,22 @@ mod tests {
     }
 
     #[test]
-    fn dollar_toggles_the_spend_pane_and_esc_closes_it() {
+    fn dollar_opens_the_spend_view_on_regatta_and_does_nothing_on_slipstream() {
         let mut app = App::new(AppPage::Slipstream, ThemeId::Regatta);
-        assert!(!app.spend_pane_open());
         handle_key(&mut app, KeyCode::Char('$'));
-        assert!(app.spend_pane_open());
-        handle_key(&mut app, KeyCode::Char('$'));
-        assert!(!app.spend_pane_open());
-        handle_key(&mut app, KeyCode::Char('$'));
-        handle_key(&mut app, KeyCode::Esc);
-        assert!(!app.spend_pane_open());
         assert!(app.detail().is_none());
+        let mut app = App::new(AppPage::Regatta, ThemeId::Regatta);
+        handle_key(&mut app, KeyCode::Char('$'));
+        assert!(matches!(
+            app.detail(),
+            Some((crate::app::DetailKind::Spend, _, _))
+        ));
     }
 
     #[test]
-    fn f_flips_the_spend_window_only_while_the_pane_is_open() {
+    fn f_flips_the_spend_window_on_slipstream_at_all_times() {
         use crate::app::SpendWindow;
         let mut app = App::new(AppPage::Slipstream, ThemeId::Regatta);
-        handle_key(&mut app, KeyCode::Char('f'));
-        assert_eq!(app.spend_window(), SpendWindow::FiveHour);
-        handle_key(&mut app, KeyCode::Char('$'));
         assert_eq!(app.spend_window(), SpendWindow::FiveHour);
         handle_key(&mut app, KeyCode::Char('f'));
         assert_eq!(app.spend_window(), SpendWindow::Weekly);
@@ -1392,6 +1388,10 @@ mod tests {
         use crate::app::DetailKind::{Health, Spend, Watch};
         for page in [AppPage::Regatta, AppPage::Slipstream] {
             for (key, kind) in [('w', Watch), ('$', Spend), ('h', Health)] {
+                // Slipstream's rail always shows spend, so `$` opens nothing there.
+                if page == AppPage::Slipstream && key == '$' {
+                    continue;
+                }
                 let mut app = App::new(page, ThemeId::Regatta);
                 handle_key(&mut app, KeyCode::Char(key));
                 assert_eq!(view_kind(&app), Some(kind), "{key} on {page:?}");
@@ -1403,7 +1403,7 @@ mod tests {
 
     #[test]
     fn a_second_view_key_while_a_view_is_open_is_ignored() {
-        let mut app = App::new(AppPage::Slipstream, ThemeId::Regatta);
+        let mut app = App::new(AppPage::Regatta, ThemeId::Regatta);
         handle_key(&mut app, KeyCode::Char('$'));
         handle_key(&mut app, KeyCode::Char('h'));
         handle_key(&mut app, KeyCode::Char('w'));

@@ -285,12 +285,15 @@ fn segments(shares: [f64; 3], width: usize) -> [usize; 3] {
     [edge(1), edge(2) - edge(1), edge(3) - edge(2)]
 }
 
-fn legend_line(
+/// The split legend for `width` columns and at most `max_rows` rows. One line when the full or
+/// the short labels fit, else one line per entry, else one line with the names dropped.
+fn legend_lines(
     w: &SpendWindow,
     width: usize,
+    max_rows: usize,
     colors: [Color; 3],
     p: &SlipstreamPalette,
-) -> Line<'static> {
+) -> Vec<Line<'static>> {
     let items = [
         (
             "chair session",
@@ -306,23 +309,28 @@ fn legend_line(
         ),
         ("cox seats", "seats", w.cox_seats_usd, w.cox_seats_share),
     ];
-    let build = |short: bool| -> Vec<Span<'static>> {
-        items
-            .iter()
-            .zip(colors)
-            .enumerate()
-            .flat_map(|(i, (&(full, brief, usd, share), color))| {
-                let gap = if i == 0 { "" } else { "  " };
-                let name = if short { brief } else { full };
-                [
-                    Span::raw(gap),
-                    Span::styled("● ", fg(color)),
-                    Span::styled(
-                        format!("{name} ${usd:.2} {:.0}%", share * 100.0),
-                        fg(p.text),
-                    ),
-                ]
-            })
+    // One legend entry: the dot in the segment's color, then `name $usd share%`, or just
+    // `$usd share%` when `name` is empty.
+    let entry = |i: usize, name: &dyn Fn(usize) -> &'static str, gap: &'static str| {
+        let (_, _, usd, share) = items[i];
+        let label = name(i);
+        let text = if label.is_empty() {
+            format!("${usd:.2} {:.0}%", share * 100.0)
+        } else {
+            format!("{label} ${usd:.2} {:.0}%", share * 100.0)
+        };
+        vec![
+            Span::raw(gap),
+            Span::styled("● ", fg(colors[i])),
+            Span::styled(text, fg(p.text)),
+        ]
+    };
+    let full_name = |i: usize| items[i].0;
+    let short_name = |i: usize| items[i].1;
+    let no_name = |_: usize| "";
+    let row = |name: &dyn Fn(usize) -> &'static str, gap: &'static str| -> Vec<Span<'static>> {
+        (0..3)
+            .flat_map(|i| entry(i, name, if i == 0 { "" } else { gap }))
             .collect()
     };
     let size = |spans: &[Span]| {
@@ -331,12 +339,22 @@ fn legend_line(
             .map(|s| s.content.chars().count())
             .sum::<usize>()
     };
-    let full = build(false);
-    Line::from(if size(&full) <= width {
-        full
-    } else {
-        build(true)
-    })
+    let full = row(&full_name, "  ");
+    if size(&full) <= width {
+        return vec![Line::from(full)];
+    }
+    let short = row(&short_name, "  ");
+    if size(&short) <= width {
+        return vec![Line::from(short)];
+    }
+    if max_rows >= 3 {
+        // Neither one-line form fits: one entry per line keeps every name and figure.
+        return (0..3)
+            .map(|i| Line::from(entry(i, &short_name, "")))
+            .collect();
+    }
+    // No rows to stack in: keep the three figures and drop the names.
+    vec![Line::from(row(&no_name, " "))]
 }
 
 /// The `n` costliest nodes, costliest first.
@@ -387,7 +405,8 @@ fn where_lines(
                 .collect::<Vec<_>>(),
         )
     };
-    let spare = rows.saturating_sub(2);
+    let legend = legend_lines(w, width, rows.saturating_sub(1), colors, p);
+    let spare = rows.saturating_sub(1 + legend.len());
     let cpl = w.cost_per_landed_task.filter(|_| spare > 0);
     let node_rows = spare - usize::from(cpl.is_some());
     let nodes = if w.by_node.is_empty() && node_rows > 0 {
@@ -408,8 +427,8 @@ fn where_lines(
             ),
         ])
     });
-    [bar, legend_line(w, width, colors, p)]
-        .into_iter()
+    std::iter::once(bar)
+        .chain(legend)
         .chain(nodes)
         .chain(cpl_line)
         .collect()
@@ -487,8 +506,38 @@ pub fn render(
 
 const NO_BREAKDOWN: &str = "no per-role breakdown from this cox";
 const ROLE_HEADER: [&str; 7] = ["Role", "Tier", "Model", "Calls", "Turns", "Tokens", "Cost"];
-/// Rows of the pane's window split card: border, label, bar, legend, border.
+/// Rows of the panel's window split card: border, label, bar, legend, border.
 const SPLIT_HEIGHT: u16 = CHROME + 2;
+/// The most table rows or bar rows the panel asks for in one card.
+const PANEL_MAX_ROWS: u16 = 8;
+
+/// The BY ROLE columns the panel shows. Wide suits the wide rail, Narrow the 40-column one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RoleColumns {
+    Wide,
+    Narrow,
+}
+
+impl RoleColumns {
+    /// Indices into [`ROLE_HEADER`], in display order.
+    fn indices(self) -> &'static [usize] {
+        match self {
+            RoleColumns::Wide => &[0, 2, 3, 6],
+            RoleColumns::Narrow => &[0, 6],
+        }
+    }
+
+    fn constraint(self, index: usize) -> Constraint {
+        match (index, self) {
+            (0, RoleColumns::Narrow) => Constraint::Min(8),
+            (0, _) => Constraint::Length(14),
+            (1, _) => Constraint::Length(8),
+            (2, _) => Constraint::Min(12),
+            (3 | 4, _) => Constraint::Length(7),
+            _ => Constraint::Length(10),
+        }
+    }
+}
 
 /// One cell per column of [`ROLE_HEADER`], one row per node, in feed order.
 fn role_rows(w: &SpendWindow) -> Vec<[String; 7]> {
@@ -508,7 +557,11 @@ fn role_rows(w: &SpendWindow) -> Vec<[String; 7]> {
         .collect()
 }
 
-fn role_table(rows: Vec<[String; 7]>, p: &SlipstreamPalette) -> Table<'static> {
+fn role_table(
+    rows: Vec<[String; 7]>,
+    columns: RoleColumns,
+    p: &SlipstreamPalette,
+) -> Table<'static> {
     let cell = |i: usize, text: String| {
         if i >= 3 {
             Cell::from(Line::from(text).right_aligned())
@@ -516,49 +569,72 @@ fn role_table(rows: Vec<[String; 7]>, p: &SlipstreamPalette) -> Table<'static> {
             Cell::from(text)
         }
     };
-    let header = Row::new(
-        ROLE_HEADER
-            .iter()
-            .enumerate()
-            .map(|(i, h)| cell(i, (*h).to_string())),
-    )
-    .style(dim_style(p).add_modifier(Modifier::BOLD));
+    let keep = columns.indices();
+    let header = Row::new(keep.iter().map(|&i| cell(i, ROLE_HEADER[i].to_string())))
+        .style(dim_style(p).add_modifier(Modifier::BOLD));
     let body = rows
         .into_iter()
-        .map(|r| Row::new(r.into_iter().enumerate().map(|(i, t)| cell(i, t))).style(fg(p.text)));
-    Table::new(
-        body,
-        [
-            Constraint::Length(14),
-            Constraint::Length(8),
-            Constraint::Min(12),
-            Constraint::Length(7),
-            Constraint::Length(7),
-            Constraint::Length(10),
-            Constraint::Length(10),
-        ],
-    )
-    .header(header)
+        .map(|r| Row::new(keep.iter().map(|&i| cell(i, r[i].clone()))).style(fg(p.text)));
+    Table::new(body, keep.iter().map(|&i| columns.constraint(i))).header(header)
 }
 
-/// The spend pane that replaces Slipstream's card column: the window's three-way split, the
-/// per-role table and one bar row per day. Every color comes from `p`.
-pub fn render_pane(
+/// Card heights `[where, role, daily]` for `height` rows. WHERE IT WENT is filled first, then
+/// BY ROLE, and DAILY takes what is left, so a short rail loses DAILY rows, then BY ROLE rows.
+/// A card that cannot hold its label and one content row gets no height; BY ROLE and DAILY need
+/// two content rows (a header or a day, then a row) unless they only want one.
+fn panel_plan(height: u16, split_want: u16, role_want: u16, daily_want: u16) -> [u16; 3] {
+    let fit = |want: u16, left: u16, floor: u16| {
+        let h = want.min(left);
+        if h >= floor.min(want) { h } else { 0 }
+    };
+    let split = fit(split_want, height, CHROME + 1);
+    let role = fit(role_want, height - split, CHROME + 2);
+    let daily = fit(daily_want, height - split - role, CHROME + 2);
+    [split, role, daily]
+}
+
+/// The spend panel in Slipstream's rail: the window's three-way split, the per-role table and
+/// one bar row per day, stacked in `area`. Every color comes from `p`. With no drill yet the
+/// split still draws from the feed and BY ROLE and DAILY say `loading`.
+pub fn render_panel(
     f: &mut Frame,
     area: Rect,
     detail: Option<&SpendDetail>,
     window: Named,
+    columns: RoleColumns,
     p: &SlipstreamPalette,
 ) {
-    let rects = Layout::vertical([
-        Constraint::Length(SPLIT_HEIGHT),
-        Constraint::Fill(1),
-        Constraint::Fill(1),
-    ])
-    .split(area);
+    let nodes = match (detail, window) {
+        (Some(_), Some((_, w))) => w.by_node.len() as u16,
+        _ => 0,
+    };
+    let days = detail.map_or(0, |d| d.daily.len() as u16);
+    // The legend picks its form from the card's content width: the block's border and padding
+    // take four columns. The split is first in line, so it may use every row past its bar.
+    let legend_rows = window.map_or(1, |(_, w)| {
+        let colors = [p.accents[0], p.accents[1], p.accent];
+        let room = usize::from(area.height.saturating_sub(CHROME + 1));
+        legend_lines(
+            w,
+            usize::from(area.width.saturating_sub(4)),
+            room,
+            colors,
+            p,
+        )
+        .len()
+    });
+    let heights = panel_plan(
+        area.height,
+        CHROME + 1 + legend_rows as u16,
+        CHROME + 1 + nodes.min(PANEL_MAX_ROWS),
+        CHROME + days.saturating_add(1).clamp(1, PANEL_MAX_ROWS),
+    );
     let name = window.map_or("", |(name, _)| name);
-    for (i, &rect) in rects.iter().enumerate() {
-        if rect.height < CHROME + 1 {
+    let mut y = area.y;
+    for (i, &height) in heights.iter().enumerate() {
+        let rect = Rect { y, height, ..area };
+        y += height;
+        if height == 0 {
             continue;
         }
         let label = ["WHERE IT WENT", "BY ROLE", "DAILY"][i];
@@ -568,14 +644,19 @@ pub fn render_pane(
         match (i, window, detail) {
             (0, Some((_, w)), _) => {
                 // The split bar and its legend only; the table below carries the nodes.
-                f.render_widget(Paragraph::new(where_lines(w, width, 2, p)), content)
+                let lines = where_lines(w, width, 1 + legend_rows, p);
+                f.render_widget(Paragraph::new(lines), content)
             }
             (0, None, _) => f.render_widget(
                 Paragraph::new(Line::styled("no spend split yet", dim_style(p))),
                 content,
             ),
-            (1, Some((_, w)), _) if !w.by_node.is_empty() => {
-                f.render_widget(role_table(role_rows(w), p), content)
+            (_, _, None) => f.render_widget(
+                Paragraph::new(Line::styled("loading", dim_style(p))),
+                content,
+            ),
+            (1, Some((_, w)), Some(_)) if !w.by_node.is_empty() => {
+                f.render_widget(role_table(role_rows(w), columns, p), content)
             }
             (1, _, _) => f.render_widget(
                 Paragraph::new(Line::styled(NO_BREAKDOWN, dim_style(p))),
@@ -583,10 +664,6 @@ pub fn render_pane(
             ),
             (_, _, Some(d)) => f.render_widget(
                 Paragraph::new(daily_lines(&d.daily, width, rows, p)),
-                content,
-            ),
-            (_, _, None) => f.render_widget(
-                Paragraph::new(Line::styled("loading", dim_style(p))),
                 content,
             ),
         }
@@ -857,7 +934,7 @@ mod tests {
         let palette = for_colorterm(id, Some("truecolor"));
         let mut terminal = Terminal::new(TestBackend::new(100, 40)).expect("terminal");
         terminal
-            .draw(|f| render_pane(f, f.area(), detail, win, &palette))
+            .draw(|f| render_panel(f, f.area(), detail, win, RoleColumns::Wide, &palette))
             .expect("draw should not fail");
         terminal
     }
@@ -892,17 +969,99 @@ mod tests {
             Some(("5-hour", &w)),
             ThemeId::Regatta,
         ));
-        assert!(text.contains("Role"), "{text}");
-        assert!(text.contains("Tokens"), "{text}");
-        assert!(text.contains("900000"), "{text}");
+        for kept in ["Role", "Model", "Calls", "Cost"] {
+            assert!(text.contains(kept), "{text}");
+        }
+        for dropped in ["Tier", "Turns", "Tokens"] {
+            assert!(!text.contains(dropped), "{text}");
+        }
         let bare = window(false);
         let text = screen(&pane_terminal(
-            None,
+            Some(&d),
             Some(("5-hour", &bare)),
             ThemeId::Regatta,
         ));
         assert!(text.contains(NO_BREAKDOWN), "{text}");
-        assert!(text.contains("loading"), "{text}");
+    }
+
+    #[test]
+    fn the_narrow_columns_are_role_and_cost_only() {
+        let w = window(true);
+        let d = detail();
+        let palette = for_colorterm(ThemeId::Regatta, Some("truecolor"));
+        let mut terminal = Terminal::new(TestBackend::new(40, 30)).expect("terminal");
+        terminal
+            .draw(|f| {
+                render_panel(
+                    f,
+                    f.area(),
+                    Some(&d),
+                    Some(("5-hour", &w)),
+                    RoleColumns::Narrow,
+                    &palette,
+                )
+            })
+            .expect("draw should not fail");
+        let text = screen(&terminal);
+        assert!(text.contains("Role") && text.contains("Cost"), "{text}");
+        assert!(text.contains("$8.40"), "{text}");
+        assert!(!text.contains("Model") && !text.contains("Calls"), "{text}");
+    }
+
+    #[test]
+    fn a_missing_drill_draws_the_split_and_a_loading_line_for_role_and_daily() {
+        let w = window(true);
+        let text = screen(&pane_terminal(None, Some(("5-hour", &w)), ThemeId::Regatta));
+        assert!(text.contains("chair session $9.00 29%"), "{text}");
+        assert_eq!(text.matches("loading").count(), 2, "{text}");
+        assert!(!text.contains("Role"), "{text}");
+    }
+
+    #[test]
+    fn panel_plan_drops_daily_rows_then_role_rows_before_the_split() {
+        // Full: split 5, role 8, daily 9.
+        assert_eq!(panel_plan(30, 5, 8, 9), [5, 8, 9]);
+        // Short: DAILY shrinks first, and is gone before BY ROLE loses a row.
+        assert_eq!(panel_plan(18, 5, 8, 9), [5, 8, 5]);
+        assert_eq!(panel_plan(14, 5, 8, 9), [5, 8, 0]);
+        // Then BY ROLE shrinks, and is gone before WHERE IT WENT loses a row.
+        assert_eq!(panel_plan(11, 5, 8, 9), [5, 6, 0]);
+        assert_eq!(panel_plan(9, 5, 8, 9), [5, 0, 0]);
+        assert_eq!(panel_plan(5, 5, 8, 9), [5, 0, 0]);
+        // A taller split (stacked legend) is still filled first.
+        assert_eq!(panel_plan(12, 7, 8, 9), [7, 5, 0]);
+    }
+
+    #[test]
+    fn the_legend_keeps_every_figure_at_every_width() {
+        let w = window(true);
+        let p = for_colorterm(ThemeId::Regatta, Some("truecolor"));
+        let colors = [p.accents[0], p.accents[1], p.accent];
+        let text = |width: usize, rows: usize| -> Vec<String> {
+            legend_lines(&w, width, rows, colors, &p)
+                .iter()
+                .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+                .collect()
+        };
+        // Wide: full labels on one line.
+        assert_eq!(text(80, 1).len(), 1);
+        assert!(text(80, 1)[0].contains("chair session $9.00 29%"));
+        // Short labels on one line.
+        assert_eq!(
+            text(60, 3),
+            ["● session $9.00 29%  ● agents $5.00 16%  ● seats $16.70 54%"]
+        );
+        // Too narrow for one line: one entry per line, every figure intact.
+        assert_eq!(
+            text(36, 3),
+            [
+                "● session $9.00 29%",
+                "● agents $5.00 16%",
+                "● seats $16.70 54%"
+            ]
+        );
+        // No rows to stack in: the names go, the three figures stay.
+        assert_eq!(text(36, 1), ["● $9.00 29% ● $5.00 16% ● $16.70 54%"]);
     }
 
     #[test]
