@@ -69,7 +69,7 @@ pub fn from_word(word: &str) -> Status {
     match word {
         "ready" => Status::Ready,
         "blocked" => Status::Blocked,
-        "running" | "open" => Status::Running,
+        "running" | "open" | "in_progress" => Status::Running,
         "working" => Status::Working,
         "approved" => Status::Approved,
         "landed" | "done" | "merged" => Status::Landed,
@@ -215,6 +215,7 @@ mod tests {
         assert_eq!(from_word("merged"), Status::Landed);
         assert_eq!(from_word("closed"), Status::Dropped);
         assert_eq!(from_word("nonsense"), Status::Ready);
+        assert_eq!(from_word("in_progress"), Status::Running);
         assert_eq!(agent(AgentState::Done), outcome(Outcome::Landed));
         assert_eq!(liveness("live"), Status::Live);
         assert_eq!(liveness("gone"), Status::Crashed);

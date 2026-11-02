@@ -85,7 +85,7 @@ const REGATTA: Theme = Theme {
     landed: rgb(0x56d364),
     quarantined: rgb(0xff7b72),
     live_dot: rgb(0x56d364),
-    status_running: rgb(0x56d4dd),
+    status_running: rgb(0x58a6ff),
     status_done: rgb(0x56d364),
     status_failed: rgb(0xff7b72),
     status_waiting: rgb(0x8b949e),
@@ -112,7 +112,7 @@ const HARBOR_LIGHT: Theme = Theme {
     landed: rgb(0x1a7f37),
     quarantined: rgb(0xc21d2a),
     live_dot: rgb(0x1a7f37),
-    status_running: rgb(0x0a6c74),
+    status_running: rgb(0x0969da),
     status_done: rgb(0x1a7f37),
     status_failed: rgb(0xc21d2a),
     status_waiting: rgb(0x57606a),
@@ -130,7 +130,7 @@ const SLIPSTREAM_LIGHT: SlipstreamPalette = SlipstreamPalette {
     accent: rgb(0x0a6c74),
     done_chip: rgb(0x1a7f37),
     done_chip_text: rgb(0xfbfaf6),
-    running_chip: rgb(0x0a6c74),
+    running_chip: rgb(0x0969da),
     pending_chip: rgb(0xe8e3d6),
     pending_chip_text: rgb(0x57606a),
     failed_chip: rgb(0xc21d2a),
@@ -147,7 +147,7 @@ const SLIPSTREAM: SlipstreamPalette = SlipstreamPalette {
     accent: rgb(0x2dd4bf),
     done_chip: rgb(0x7ee787),
     done_chip_text: rgb(0x0b1020),
-    running_chip: rgb(0x56d4dd),
+    running_chip: rgb(0x58a6ff),
     pending_chip: rgb(0x17213a),
     pending_chip_text: rgb(0x7f8ba6),
     failed_chip: rgb(0xff8a80),
@@ -298,6 +298,16 @@ pub fn resolve(id: ThemeId) -> Theme {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_running_colour_is_blue_in_both_themes() {
+        for id in [ThemeId::Regatta, ThemeId::HarborLight] {
+            let Color::Rgb(r, g, b) = resolve_for(id, Some("truecolor")).status_running else {
+                panic!("truecolor theme gave an indexed colour for {id:?}");
+            };
+            assert!(b > g && g > r, "{id:?}: {r:#x} {g:#x} {b:#x}");
+        }
+    }
 
     #[test]
     fn regatta_and_harbor_light_resolve_to_different_themes() {
