@@ -169,8 +169,7 @@ fn render_base(f: &mut Frame, app: &App, theme: &Theme) {
     if let Some(screen) = app.settings() {
         return settings_frame::render(f, f.area(), theme, screen);
     }
-    // The spend pane is part of Slipstream, drawn by the page itself.
-    if app.detail().is_none() || app.spend_pane_open() {
+    if app.detail().is_none() {
         return render_page(f, app, theme);
     }
     // A detail view takes the page's share of the width, so the chair panel stays up beside it.
@@ -1120,7 +1119,7 @@ mod tests {
             slipstream::resolved_palette(crate::app::ThemeId::Regatta).failed_chip,
         );
         let (x, _) = find(&buffer, ERROR_LINE).expect("error line is on screen");
-        assert!(x >= 120 - slipstream::RAIL_WIDTH);
+        assert!(x >= 120 - slipstream::rail_width(120));
     }
 
     #[test]

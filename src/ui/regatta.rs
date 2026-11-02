@@ -2448,7 +2448,15 @@ mod tests {
         let snapshot = crate::feed::parse_snapshot(feed).expect("literal feed should parse");
         let mut app = App::new(AppPage::Slipstream, ThemeId::Regatta);
         app.apply_snapshot(snapshot);
-        app.open_spend();
+        app.apply_rail_spend(
+            serde_json::from_str(
+                r#"{"schema": 1, "at": "2026-10-14T12:00:00Z",
+                "five_hour": {"fraction": 0.42, "used_usd": 21.0, "ceiling_usd": 50.0, "resets_at": "2026-10-14T15:00:00Z"},
+                "weekly": {"fraction": 0.61, "used_usd": 183.0, "ceiling_usd": 300.0, "resets_at": "2026-10-18T04:00:00Z"},
+                "history": [], "daily": []}"#,
+            )
+            .expect("detail parses"),
+        );
         if weekly {
             app.toggle_spend_window();
         }
@@ -2476,7 +2484,7 @@ mod tests {
         let feed = spend_feed((FIVE_NODES, "2.5"), (WEEK_NODES, "null"));
         let rows = page_text(&draw_spend_page(&feed, false));
         let header = row_of(&rows, "Role");
-        for h in ["Tier", "Model", "Calls", "Turns", "Tokens", "Cost"] {
+        for h in ["Model", "Calls", "Cost"] {
             assert!(
                 rows[header].contains(h),
                 "{h:?} missing: {:?}",
@@ -2486,14 +2494,14 @@ mod tests {
         assert_eq!(row_of(&rows, "planner"), header + 1);
         assert_eq!(row_of(&rows, "builder"), header + 2);
         assert_eq!(row_of(&rows, "reviewer"), header + 3);
-        assert!(rows[header + 2].contains("84000") && rows[header + 2].contains("$1.25"));
+        assert!(rows[header + 2].contains("$1.25"));
     }
 
     #[test]
     fn a_window_without_by_node_draws_the_split_and_the_fallback_line() {
         let feed = spend_feed(("[]", "null"), (WEEK_NODES, "null"));
         let rows = page_text(&draw_spend_page(&feed, false));
-        for label in ["chair session", "chair agents", "cox seats"] {
+        for label in ["session", "agents", "seats"] {
             row_of(&rows, label);
         }
         row_of(&rows, "no per-role breakdown from this cox");
@@ -2512,21 +2520,19 @@ mod tests {
     }
 
     #[test]
-    fn the_spend_pane_is_reached_with_the_dollar_key_and_draws_its_split() {
+    fn the_slipstream_rail_draws_its_split_without_any_key() {
         let snapshot =
             crate::feed::parse_snapshot(&spend_feed((FIVE_NODES, "2.5"), ("[]", "null")))
                 .expect("literal feed should parse");
         let mut app = App::new(AppPage::Slipstream, ThemeId::Regatta);
         app.apply_snapshot(snapshot);
-        crate::input::handle_key(&mut app, crossterm::event::KeyCode::Char('$'));
-        assert!(app.spend_pane_open());
         let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
         let mut terminal = Terminal::new(TestBackend::new(140, 40)).expect("terminal");
         terminal
             .draw(|f| crate::ui::render(f, &app, &theme))
             .expect("draw should not fail");
         let rows = page_text(&terminal);
-        for label in ["chair session", "chair agents", "cox seats"] {
+        for label in ["session", "agents", "seats"] {
             row_of(&rows, label);
         }
     }

@@ -150,6 +150,30 @@ fn child_id(kind: DetailKind, id: &str) -> &str {
     }
 }
 
+/// Whether the loop runs the spend child that feeds Slipstream's rail panel.
+fn wants_rail_spend(page: AppPage) -> bool {
+    page == AppPage::Slipstream
+}
+
+/// What the loop does with the rail's spend child this turn.
+#[derive(Debug, PartialEq, Eq)]
+enum RailChild {
+    Spawn,
+    Stop,
+    Keep,
+}
+
+/// Starts the child on Slipstream once the retry time has passed, stops it off Slipstream, and
+/// otherwise leaves it. A child that exited or failed to start is retried on the feed's cadence,
+/// which is also how a one-shot drill gets refreshed.
+fn rail_child_action(wants: bool, running: bool, retry_due: bool) -> RailChild {
+    match (wants, running) {
+        (true, false) if retry_due => RailChild::Spawn,
+        (false, true) => RailChild::Stop,
+        _ => RailChild::Keep,
+    }
+}
+
 /// Whether the loop runs a detail child for `kind`. Watch reads the feed and has none.
 fn has_detail_child(kind: DetailKind) -> bool {
     kind != DetailKind::Watch
@@ -161,7 +185,18 @@ fn spawn_detail_reader(
     kind: DetailKind,
     id: &str,
 ) -> (std::process::Child, mpsc::Receiver<String>) {
-    let mut child = detail::spawn_detail(kind_arg(kind), child_id(kind, id));
+    attach_reader(detail::spawn_detail(kind_arg(kind), child_id(kind, id)))
+}
+
+/// Like [`spawn_detail_reader`], but a failed spawn is returned, not a panic.
+fn try_spawn_detail_reader(
+    kind: DetailKind,
+    id: &str,
+) -> io::Result<(std::process::Child, mpsc::Receiver<String>)> {
+    detail::try_spawn_detail(kind_arg(kind), child_id(kind, id)).map(attach_reader)
+}
+
+fn attach_reader(mut child: std::process::Child) -> (std::process::Child, mpsc::Receiver<String>) {
     let stdout = child.stdout.take().expect("detail stdout should be piped");
     let (tx, rx) = mpsc::channel::<String>();
     std::thread::spawn(move || {
@@ -484,6 +519,10 @@ fn run() {
     let mut detail_child: Option<std::process::Child> = None;
     let mut detail_rx: Option<mpsc::Receiver<String>> = None;
     let mut detail_key: Option<(DetailKind, String)> = None;
+    // The spend drill behind Slipstream's rail panel runs whenever that page shows.
+    let mut rail_child: Option<std::process::Child> = None;
+    let mut rail_rx: Option<mpsc::Receiver<String>> = None;
+    let mut rail_retry_at = Instant::now();
 
     let mut changed = true;
     let mut last_draw = Instant::now();
@@ -512,6 +551,61 @@ fn run() {
                 detail_rx = Some(rx);
             }
             changed = true;
+        }
+
+        let rail_retry = Duration::from_secs(FEED_INTERVAL_SECS);
+        match rail_child_action(
+            wants_rail_spend(app.page()),
+            rail_child.is_some(),
+            Instant::now() >= rail_retry_at,
+        ) {
+            RailChild::Stop => {
+                if let Some(mut child) = rail_child.take() {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                }
+                rail_rx = None;
+            }
+            // A missing `cox` leaves the panel on loading and tries again later; it never panics.
+            RailChild::Spawn => match try_spawn_detail_reader(DetailKind::Spend, "") {
+                Ok((child, rx)) => {
+                    rail_child = Some(child);
+                    rail_rx = Some(rx);
+                }
+                Err(_) => rail_retry_at = Instant::now() + rail_retry,
+            },
+            RailChild::Keep => {}
+        }
+        let mut rail_ended = false;
+        if let Some(rx) = &rail_rx {
+            loop {
+                match rx.try_recv() {
+                    // A line that does not parse leaves the panel on its last drill, or loading.
+                    Ok(line) => {
+                        if let Ok(detail::DetailSnapshot::Spend(spend)) =
+                            detail::parse_detail(&line)
+                        {
+                            app.apply_rail_spend(spend);
+                            changed = true;
+                        }
+                    }
+                    Err(mpsc::TryRecvError::Empty) => break,
+                    // The reader thread saw end of output: the child exited. Reap it, then
+                    // start a fresh one after the retry delay.
+                    Err(mpsc::TryRecvError::Disconnected) => {
+                        rail_ended = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if rail_ended {
+            if let Some(mut child) = rail_child.take() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+            rail_rx = None;
+            rail_retry_at = Instant::now() + rail_retry;
         }
 
         if let Some(rx) = &detail_rx {
@@ -637,6 +731,10 @@ fn run() {
         }
     }
 
+    if let Some(mut child) = rail_child {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
     config::save_state(&config::state_path(), app.page(), app.theme());
     // Kills the local attach process only. The chair's remote session keeps running.
     app.chair_panel_mut().close();
@@ -998,6 +1096,22 @@ mod tests {
     #[test]
     fn editor_argv_falls_back_to_vi_when_blank() {
         assert_eq!(editor_argv(Some("  "), "/t/f"), strings(&["vi", "/t/f"]));
+    }
+
+    #[test]
+    fn the_rail_spend_child_runs_on_slipstream_only() {
+        assert!(wants_rail_spend(AppPage::Slipstream));
+        assert!(!wants_rail_spend(AppPage::Regatta));
+    }
+
+    #[test]
+    fn the_rail_child_starts_when_due_stops_off_page_and_waits_after_a_failure() {
+        assert_eq!(rail_child_action(true, false, true), RailChild::Spawn);
+        // A failed or finished child waits for the retry time before the next spawn.
+        assert_eq!(rail_child_action(true, false, false), RailChild::Keep);
+        assert_eq!(rail_child_action(true, true, true), RailChild::Keep);
+        assert_eq!(rail_child_action(false, true, true), RailChild::Stop);
+        assert_eq!(rail_child_action(false, false, true), RailChild::Keep);
     }
 
     #[test]

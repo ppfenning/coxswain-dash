@@ -19,7 +19,7 @@ use crate::actions::{Target, action_for, move_prefill};
 use crate::chair_panel::{ChairPanel, CloseOutcome};
 use crate::confirm::{ConfirmAnswer, ConfirmState};
 use crate::decision_card::DecisionCard;
-use crate::detail::{DetailSnapshot, InitiativeDetail};
+use crate::detail::{DetailSnapshot, InitiativeDetail, SpendDetail};
 use crate::exec::{ExecResult, StatusLevel, frame_lines, status_summary};
 use crate::feed::{Chair, FeedSnapshot, QueueEntry, queue_repos};
 use crate::form::{Form, FormAnswer, shell_join};
@@ -206,6 +206,7 @@ pub struct App {
     /// that order).
     selected: [[usize; 7]; 3],
     detail: Option<(DetailKind, String, Option<DetailSnapshot>)>,
+    rail_spend: Option<SpendDetail>,
     chair_panel: ChairPanel<Box<dyn PtySession>>,
     /// Set by the backtick toggle. A shown panel with no open session is where Enter starts one.
     chair_panel_shown: bool,
@@ -293,6 +294,7 @@ impl Default for App {
             spend_window: SpendWindow::FiveHour,
             selected: [[0; 7]; 3],
             detail: None,
+            rail_spend: None,
             chair_panel: ChairPanel::new(Box::new(RealPty::new())),
             chair_panel_shown: false,
             chair_panel_focused: false,
@@ -1009,16 +1011,19 @@ impl App {
         self.open_view(DetailKind::Spend, "spend");
     }
 
-    /// True while the spend pane replaces Slipstream's card column.
-    pub fn spend_pane_open(&self) -> bool {
-        self.page == AppPage::Slipstream && matches!(self.detail, Some((DetailKind::Spend, _, _)))
+    /// The spend drill that feeds Slipstream's rail panel; `None` until the first one arrives.
+    pub fn rail_spend(&self) -> Option<&SpendDetail> {
+        self.rail_spend.as_ref()
     }
 
-    /// `$` on Slipstream: closes the open spend pane, else opens the spend view.
+    /// Stores the newest spend drill for the rail panel, apart from any open detail view.
+    pub fn apply_rail_spend(&mut self, detail: SpendDetail) {
+        self.rail_spend = Some(detail);
+    }
+
+    /// `$`: opens the spend view. Slipstream's rail always shows spend, so it does nothing there.
     pub fn toggle_spend(&mut self) {
-        if self.spend_pane_open() {
-            self.close_detail();
-        } else {
+        if self.page != AppPage::Slipstream {
             self.open_spend();
         }
     }
