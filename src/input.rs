@@ -251,8 +251,8 @@ fn press_with_chair_focus(app: &mut App, rects: &[Option<Rect>; 6], x: u16, y: u
 }
 
 /// A left-button press on a row of the runs, queue or machines frame focuses that list, selects
-/// the row and opens its detail. A press elsewhere inside `rects[i]` toggles regatta frame
-/// `i + 1`, today's behavior; a press outside every rect is a no-op. `rects` is
+/// the row and opens its detail. A press anywhere else, inside a frame or outside every rect,
+/// changes nothing; a frame is hidden only by its number key. `rects` is
 /// `regatta::frame_rects`'s output, so this never disagrees with what is actually drawn.
 /// While the chair panel has focus, a press inside it changes nothing and a press on any other
 /// frame releases focus and focuses that frame, without hiding it or opening a detail. A frame
@@ -273,15 +273,8 @@ pub fn handle_mouse(app: &mut App, event: MouseEvent, rects: &[Option<Rect>; 6])
         }
         app.select_at(row);
         app.open_detail();
-        return;
-    }
-    for (i, rect) in rects.iter().enumerate() {
-        if let Some(rect) = rect {
-            if contains(*rect, event.column, event.row) {
-                app.toggle_regatta_frame(i + 1);
-                return;
-            }
-        }
+    } else {
+        // A press that is not on a list row changes nothing; hiding a frame is the number keys.
     }
 }
 
@@ -317,14 +310,45 @@ mod tests {
     }
 
     #[test]
-    fn a_click_inside_rects_one_hides_frame_two() {
+    fn a_click_inside_any_rect_hides_no_frame() {
         let mut app = App::default();
         let rects = sample_rects();
-        handle_mouse(&mut app, left_click_at(12, 2), &rects);
+        for rect in rects.iter().flatten() {
+            handle_mouse(&mut app, left_click_at(rect.x + 1, rect.y + 1), &rects);
+            assert_eq!(app.regatta_frames_visible(), [true; 6]);
+        }
+    }
+
+    #[test]
+    fn a_click_on_a_frame_with_a_snapshot_never_hides_it() {
+        let mut app = App::default();
+        app.apply_snapshot(snapshot_with_two_runs());
+        let rects = crate::ui::regatta_frame_rects(Rect::new(0, 0, 120, 40), &app);
+        let runs_rect = rects[4].expect("runs frame is visible");
+        handle_mouse(
+            &mut app,
+            left_click_at(runs_rect.x + 1, runs_rect.y + 2),
+            &rects,
+        );
+        assert_eq!(app.regatta_frames_visible(), [true; 6]);
+        handle_mouse(
+            &mut app,
+            left_click_at(runs_rect.x + 1, runs_rect.y),
+            &rects,
+        );
+        assert_eq!(app.regatta_frames_visible(), [true; 6]);
+    }
+
+    #[test]
+    fn the_digit_two_key_hides_and_restores_frame_two() {
+        let mut app = App::default();
+        handle_key(&mut app, KeyCode::Char('2'));
         assert_eq!(
             app.regatta_frames_visible(),
             [true, false, true, true, true, true]
         );
+        handle_key(&mut app, KeyCode::Char('2'));
+        assert_eq!(app.regatta_frames_visible(), [true; 6]);
     }
 
     #[test]
