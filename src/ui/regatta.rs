@@ -874,17 +874,27 @@ fn fraction_text(fraction: f64, source: &str) -> String {
     }
 }
 
+/// Whether a window with this `source` has a limit. Source `none` means it has none.
+fn has_limit(source: &str) -> bool {
+    source != "none"
+}
+
 fn render_spend(f: &mut Frame, rect: Rect, snapshot: &FeedSnapshot, app: &App, theme: &Theme) {
     let spend = &snapshot.spend;
     let block = numbered_block(2, FRAME_NAMES[1], theme, false);
     let room = usize::from(block.inner(rect).width);
     let offset = app.utc_offset();
-    let resets = reset_text(&spend.five_hour_resets_at, offset, false);
-    let five_hour_fraction = fraction_text(spend.five_hour_fraction, &spend.five_hour_source);
-    let five_hour_text = if resets.is_empty() {
-        five_hour_fraction
+    let limited = has_limit(&spend.five_hour_source);
+    let five_hour_text = if limited {
+        let resets = reset_text(&spend.five_hour_resets_at, offset, false);
+        let five_hour_fraction = fraction_text(spend.five_hour_fraction, &spend.five_hour_source);
+        if resets.is_empty() {
+            five_hour_fraction
+        } else {
+            format!("{five_hour_fraction} \u{b7} resets {resets}")
+        }
     } else {
-        format!("{five_hour_fraction} \u{b7} resets {resets}")
+        String::new()
     };
     let week_text = format!(
         "{} of {:.0}% stop \u{b7} {}",
@@ -898,14 +908,21 @@ fn render_spend(f: &mut Frame, rect: Rect, snapshot: &FeedSnapshot, app: &App, t
         .count()
         .max(week_text.chars().count());
     let width = meter_width(room, SPEND_LABEL_WIDTH, longest);
-    let five_hour = spend_row(
-        "5 hour",
-        spend.five_hour_fraction,
-        None,
-        five_hour_text,
-        width,
-        theme,
-    );
+    let five_hour = if limited {
+        spend_row(
+            "5 hour",
+            spend.five_hour_fraction,
+            None,
+            five_hour_text,
+            width,
+            theme,
+        )
+    } else {
+        Line::from(vec![
+            Span::raw(format!("{:<SPEND_LABEL_WIDTH$}  ", "5 hour")),
+            Span::styled("no limit", Style::default().fg(theme.dim)),
+        ])
+    };
     let week = spend_row(
         "week",
         spend.weekly_fraction,
@@ -2887,6 +2904,89 @@ mod tests {
     #[test]
     fn fraction_text_over_the_limit_from_another_source_is_bare() {
         assert_eq!(fraction_text(1.2, "meter, store"), ">100%");
+    }
+
+    #[test]
+    fn has_limit_is_false_only_for_none() {
+        assert!(!has_limit("none"));
+        assert!(has_limit("meter"));
+        assert!(has_limit("est"));
+        assert!(has_limit("meter, store"));
+    }
+
+    /// The fixture's spend frame with the five-hour window's source, fraction and reset replaced.
+    fn draw_spend_five_hour(source: &str, resets: &str) -> Terminal<TestBackend> {
+        let feed = FIXTURE
+            .trim()
+            .replace(
+                "\"five_hour_source\": \"meter\"",
+                &format!("\"five_hour_source\": \"{source}\""),
+            )
+            .replace(
+                "\"five_hour_fraction\": 0.16",
+                "\"five_hour_fraction\": 0.0",
+            )
+            .replace(
+                "\"five_hour_resets_at\": \"2026-09-29T02:00:00Z\"",
+                &format!("\"five_hour_resets_at\": \"{resets}\""),
+            );
+        let snapshot = crate::feed::parse_snapshot(&feed).expect("literal feed should parse");
+        let mut app = App::new(AppPage::Regatta, ThemeId::Regatta);
+        app.apply_snapshot(snapshot);
+        let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
+        let mut terminal = Terminal::new(TestBackend::new(60, 4)).expect("terminal");
+        terminal
+            .draw(|f| render_spend(f, f.area(), app.snapshot().expect("snapshot"), &app, &theme))
+            .expect("draw should not fail");
+        terminal
+    }
+
+    #[test]
+    fn a_none_five_hour_source_draws_no_limit_and_no_meter() {
+        let terminal = draw_spend_five_hour("none", "");
+        let five = row_text(&terminal, 1);
+        let week = row_text(&terminal, 2);
+        assert!(five.contains("5 hour  no limit"), "{five:?}");
+        assert!(!five.contains('%'), "{five:?}");
+        assert!(!five.contains("resets"), "{five:?}");
+        // The frame border is a `\u{2502}` at either end, so the tick glyph is looked for inside it.
+        let inner: String = five.chars().skip(1).take(58).collect();
+        for glyph in ['\u{2588}', '\u{2591}', '\u{2502}'] {
+            assert!(!inner.contains(glyph), "{inner:?}");
+        }
+        let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
+        let buffer = terminal.backend().buffer();
+        let at = col_of(&terminal, 1, "no limit");
+        assert_eq!(buffer[(at, 1)].fg, theme.dim);
+        assert!(week.contains("35% of 93% stop \u{b7} Sun 4 AM"), "{week:?}");
+        assert!(week.contains('\u{2591}'), "{week:?}");
+        assert_eq!(buffer[(30, 2)].symbol(), "\u{2502}");
+        assert_eq!(buffer[(30, 2)].fg, TICK);
+    }
+
+    #[test]
+    fn a_none_five_hour_source_ignores_its_reset_and_leaves_the_week_bar_wide() {
+        let terminal = draw_spend_five_hour("none", "a reset far too long to sit beside any bar");
+        let five = row_text(&terminal, 1);
+        assert!(five.contains("5 hour  no limit"), "{five:?}");
+        assert!(!five.contains("resets"), "{five:?}");
+        // The week text alone sets the width: a 24-cell meter, tick at 8 + 22.
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(30, 2)].symbol(), "\u{2502}");
+        assert_eq!(buffer[(32, 2)].symbol(), " ");
+    }
+
+    #[test]
+    fn a_meter_five_hour_source_still_draws_the_bar_and_percent() {
+        let terminal = draw_spend_five_hour("meter", "2026-09-29T02:00:00Z");
+        let five = row_text(&terminal, 1);
+        assert!(five.contains("5 hour"), "{five:?}");
+        assert!(five.contains("0% \u{b7} resets 2 AM"), "{five:?}");
+        assert!(!five.contains("no limit"), "{five:?}");
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(8, 1)].symbol(), "\u{2591}");
+        assert_eq!(buffer[(8, 1)].fg, TRACK);
+        assert_eq!(col_of(&terminal, 1, "0%"), 33);
     }
 
     #[test]
