@@ -200,6 +200,83 @@ fn join_quoted(tokens: &[String]) -> String {
         .join(" ")
 }
 
+const APPLY_FLAG: &str = "--apply";
+
+/// Splits on whitespace, honouring single and double quotes; None on an unterminated quote.
+fn split_words(text: &str) -> Option<Vec<String>> {
+    let (mut out, cur, quote) = text.chars().fold(
+        (Vec::<String>::new(), None::<String>, None::<char>),
+        |(mut out, cur, quote), c| match (quote, c) {
+            (Some(q), c) if c == q => (out, cur, None),
+            (Some(_), c) => (
+                out,
+                cur.or(Some(String::new())).map(|s| s + &c.to_string()),
+                quote,
+            ),
+            (None, '\'' | '"') => (out, cur.or(Some(String::new())), Some(c)),
+            (None, c) if c.is_whitespace() => {
+                out.extend(cur);
+                (out, None, None)
+            }
+            (None, c) => (
+                out,
+                cur.or(Some(String::new())).map(|s| s + &c.to_string()),
+                None,
+            ),
+        },
+    );
+    out.extend(cur);
+    quote.is_none().then_some(out)
+}
+
+/// The argv of the `cox` command embedded in an inbox reason; it runs to the end of the text.
+// The inbox detail view will call this.
+#[allow(dead_code)]
+pub fn command_in_reason(reason: &str) -> Option<Vec<String>> {
+    let start = reason.match_indices("cox").map(|(i, _)| i).find(|&i| {
+        let before = reason[..i].chars().next_back();
+        let after = reason[i + 3..].chars().next();
+        before.is_none_or(char::is_whitespace) && after.is_none_or(char::is_whitespace)
+    })?;
+    split_words(&reason[start..])
+}
+
+/// The argv without the apply flag; None when it has none, since only an apply form has a dry run.
+// The inbox detail view will call this.
+#[allow(dead_code)]
+pub fn dry_run_argv(argv: &[String]) -> Option<Vec<String>> {
+    argv.iter()
+        .any(|a| a == APPLY_FLAG)
+        .then(|| argv.iter().filter(|a| *a != APPLY_FLAG).cloned().collect())
+}
+
+fn base64(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    bytes
+        .chunks(3)
+        .flat_map(|chunk| {
+            let n = chunk
+                .iter()
+                .enumerate()
+                .fold(0u32, |acc, (i, b)| acc | (*b as u32) << (16 - 8 * i));
+            (0..4).map(move |i| {
+                if i <= chunk.len() {
+                    ALPHABET[(n >> (18 - 6 * i) & 63) as usize] as char
+                } else {
+                    '='
+                }
+            })
+        })
+        .collect()
+}
+
+/// The OSC 52 escape that asks the terminal to put `text` on the clipboard selection.
+// The inbox detail view will call this.
+#[allow(dead_code)]
+pub fn osc52_copy(text: &str) -> String {
+    format!("\x1b]52;c;{}\x07", base64(text.as_bytes()))
+}
+
 impl Action {
     /// The full command line, starting with `cox`. The only place command spellings live.
     pub fn argv(&self) -> Vec<String> {
@@ -269,6 +346,82 @@ mod tests {
 
     fn s(v: &[&str]) -> Vec<String> {
         words(v)
+    }
+
+    #[test]
+    fn a_land_command_in_a_reason_yields_its_argv_and_dry_run() {
+        let reason =
+            "approved but not landed: cox land --run r-12 --task t-1 --repo coxswain-dash --apply";
+        let argv = command_in_reason(reason).expect("command found");
+        assert_eq!(
+            argv,
+            s(&[
+                "cox",
+                "land",
+                "--run",
+                "r-12",
+                "--task",
+                "t-1",
+                "--repo",
+                "coxswain-dash",
+                "--apply"
+            ])
+        );
+        assert_eq!(
+            dry_run_argv(&argv),
+            Some(s(&[
+                "cox",
+                "land",
+                "--run",
+                "r-12",
+                "--task",
+                "t-1",
+                "--repo",
+                "coxswain-dash"
+            ]))
+        );
+    }
+
+    #[test]
+    fn a_reason_starting_with_the_command_yields_it() {
+        assert_eq!(
+            command_in_reason("cox inbox accept t-1"),
+            Some(s(&["cox", "inbox", "accept", "t-1"]))
+        );
+    }
+
+    #[test]
+    fn a_reason_without_a_command_yields_none() {
+        assert_eq!(command_in_reason("waiting on review"), None);
+        assert_eq!(command_in_reason("see coxswain docs"), None);
+    }
+
+    #[test]
+    fn a_quoted_argument_keeps_its_spaces() {
+        assert_eq!(
+            command_in_reason("run cox land --repo 'my repo' --message \"ship it\""),
+            Some(s(&[
+                "cox",
+                "land",
+                "--repo",
+                "my repo",
+                "--message",
+                "ship it"
+            ]))
+        );
+        assert_eq!(command_in_reason("cox land --repo 'oops"), None);
+    }
+
+    #[test]
+    fn an_argv_without_the_apply_flag_has_no_dry_run() {
+        assert_eq!(dry_run_argv(&s(&["cox", "land", "--run", "r-12"])), None);
+    }
+
+    #[test]
+    fn osc52_copy_wraps_a_base64_payload() {
+        assert_eq!(osc52_copy("hi"), "\x1b]52;c;aGk=\x07");
+        assert_eq!(osc52_copy("a"), "\x1b]52;c;YQ==\x07");
+        assert_eq!(osc52_copy("abc"), "\x1b]52;c;YWJj\x07");
     }
 
     #[test]
