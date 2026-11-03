@@ -113,6 +113,16 @@ pub fn handle_key(app: &mut App, key: KeyCode) {
         app.form_key(KeyEvent::new(key, KeyModifiers::NONE));
         return;
     }
+    // An open inbox detail takes only Esc, `a` and `d`; `a` would otherwise be the accept action.
+    if app.inbox_detail_entry().is_some() {
+        match key {
+            KeyCode::Esc => app.close_inbox_detail(),
+            KeyCode::Char('a') => app.begin_inbox_ack(),
+            KeyCode::Char('d') => app.begin_inbox_dismiss(),
+            _ => {}
+        }
+        return;
+    }
     if key == KeyCode::Char(':') {
         app.open_palette();
         return;
@@ -165,6 +175,7 @@ pub fn handle_key(app: &mut App, key: KeyCode) {
             // The live pty holds focus from here; a failed start drops it back to the frames.
             app.set_chair_panel_focus(false);
         }
+        KeyCode::Enter if app.focus() == Focus::Inbox => app.open_inbox_detail(),
         KeyCode::Enter => app.open_detail(),
         KeyCode::Esc => app.close_detail(),
         KeyCode::Char(c) if c == KEY_ADD_MACHINE && app.focus() == Focus::Machines => {
@@ -1562,6 +1573,78 @@ mod tests {
         handle_key(&mut app, KeyCode::Char(KEY_REMOVE));
         assert_eq!(confirm_command(&app), Some("cox inbox deny t-1"));
         assert!(app.form().is_none());
+    }
+
+    fn app_with_inbox_detail_open() -> App {
+        let mut app = app_with_focus(4);
+        handle_key(&mut app, KeyCode::Enter);
+        app
+    }
+
+    #[test]
+    fn enter_on_the_inbox_opens_the_detail_on_the_focused_row() {
+        let app = app_with_inbox_detail_open();
+        assert_eq!(
+            app.inbox_detail_entry().map(|e| e.target.as_str()),
+            Some("t-1")
+        );
+        assert_eq!(app.selected_inbox_id(), Some("t-1".to_string()));
+    }
+
+    #[test]
+    fn esc_closes_the_inbox_detail() {
+        let mut app = app_with_inbox_detail_open();
+        handle_key(&mut app, KeyCode::Esc);
+        assert!(app.inbox_detail_entry().is_none());
+    }
+
+    #[test]
+    fn a_and_d_in_the_inbox_detail_open_the_courier_ack_confirm() {
+        for key in ['a', 'd'] {
+            let mut app = app_with_inbox_detail_open();
+            handle_key(&mut app, KeyCode::Char(key));
+            assert_eq!(confirm_command(&app), Some("cox courier ack t-1"));
+        }
+    }
+
+    #[test]
+    fn no_leaves_nothing_pending_and_yes_queues_the_argv() {
+        let mut app = app_with_inbox_detail_open();
+        handle_key(&mut app, KeyCode::Char('a'));
+        handle_key(&mut app, KeyCode::Char('n'));
+        assert_eq!(app.take_pending(), None);
+        handle_key(&mut app, KeyCode::Char('d'));
+        handle_key(&mut app, KeyCode::Char('y'));
+        let queued = app.take_pending().map(|p| p.argv);
+        assert_eq!(
+            queued,
+            Some(["cox", "courier", "ack", "t-1"].map(String::from).to_vec())
+        );
+    }
+
+    #[test]
+    fn other_keys_are_ignored_while_the_inbox_detail_is_open() {
+        let mut app = app_with_inbox_detail_open();
+        [
+            KeyCode::Down,
+            KeyCode::Right,
+            KeyCode::Char('t'),
+            KeyCode::Char('k'),
+        ]
+        .into_iter()
+        .for_each(|k| handle_key(&mut app, k));
+        assert!(app.inbox_detail_entry().is_some());
+        assert_eq!(app.focus(), Focus::Inbox);
+        assert!(app.modal().is_none());
+    }
+
+    #[test]
+    fn enter_on_an_empty_inbox_opens_nothing() {
+        let mut app = App::new(AppPage::Regatta, ThemeId::Regatta);
+        (0..4).for_each(|_| handle_key(&mut app, KeyCode::Right));
+        handle_key(&mut app, KeyCode::Enter);
+        assert!(app.inbox_detail_entry().is_none());
+        assert!(nothing_opened(&mut app));
     }
 
     #[test]
