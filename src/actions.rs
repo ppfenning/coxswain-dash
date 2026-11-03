@@ -64,6 +64,16 @@ pub enum Action {
     InboxDeny {
         id: String,
     },
+    /// No key builds this yet; the inbox detail view's key wiring is a follow-up task.
+    #[allow(dead_code)]
+    InboxAck {
+        id: String,
+    },
+    /// No key builds this yet; the inbox detail view's key wiring is a follow-up task.
+    #[allow(dead_code)]
+    InboxDismiss {
+        id: String,
+    },
 }
 
 /// The verb a key selects, before a target and the feed supply the rest.
@@ -299,6 +309,7 @@ impl Action {
             } => words(&["route", "priority", initiative, &priority.to_string()]),
             Self::InboxAccept { id } => words(&["inbox", "accept", id]),
             Self::InboxDeny { id } => words(&["inbox", "deny", id]),
+            Self::InboxAck { id } | Self::InboxDismiss { id } => words(&["courier", "ack", id]),
         };
         [words(&["cox"]), tail].concat()
     }
@@ -328,6 +339,8 @@ impl Action {
             } => format!("Set priority of {initiative} to {priority}"),
             Self::InboxAccept { id } => format!("Accept inbox item {id}"),
             Self::InboxDeny { id } => format!("Deny inbox item {id}"),
+            Self::InboxAck { id } => format!("Acknowledge inbox entry {id}"),
+            Self::InboxDismiss { id } => format!("Dismiss inbox entry {id}"),
         }
     }
 }
@@ -509,6 +522,35 @@ mod tests {
     fn display_escapes_an_embedded_single_quote() {
         let action = Action::InboxDeny { id: "it's".into() };
         assert_eq!(action.display(), "cox inbox deny 'it'\\''s'");
+    }
+
+    #[test]
+    fn inbox_ack_builds_a_courier_ack_command() {
+        let action = Action::InboxAck { id: "t-1".into() };
+        assert_eq!(action.argv(), s(&["cox", "courier", "ack", "t-1"]));
+        assert_eq!(action.display(), "cox courier ack t-1");
+        assert_eq!(action.title(), "Acknowledge inbox entry t-1");
+    }
+
+    #[test]
+    fn inbox_dismiss_builds_the_same_command_with_its_own_title() {
+        let action = Action::InboxDismiss { id: "t-1".into() };
+        assert_eq!(action.argv(), Action::InboxAck { id: "t-1".into() }.argv());
+        assert_eq!(action.argv(), s(&["cox", "courier", "ack", "t-1"]));
+        assert_eq!(action.display(), "cox courier ack t-1");
+        assert_eq!(action.title(), "Dismiss inbox entry t-1");
+    }
+
+    #[test]
+    fn inbox_ack_and_dismiss_quote_an_id_with_whitespace() {
+        let ack = Action::InboxAck { id: "t 1".into() };
+        let dismiss = Action::InboxDismiss { id: "t 1".into() };
+        assert_eq!(ack.argv(), s(&["cox", "courier", "ack", "t 1"]));
+        assert_eq!(ack.display(), "cox courier ack 't 1'");
+        assert_eq!(ack.title(), "Acknowledge inbox entry t 1");
+        assert_eq!(dismiss.argv(), s(&["cox", "courier", "ack", "t 1"]));
+        assert_eq!(dismiss.display(), "cox courier ack 't 1'");
+        assert_eq!(dismiss.title(), "Dismiss inbox entry t 1");
     }
 
     #[test]
