@@ -432,6 +432,18 @@ pub struct InboxEntry {
     pub kind: String,
     pub target: String,
     pub reason: String,
+    /// RFC 3339 text of when the entry was raised.
+    #[serde(default)]
+    pub at: Option<String>,
+    /// The run the entry came from.
+    #[serde(default)]
+    pub run: Option<String>,
+    /// The initiative the target belongs to.
+    #[serde(default)]
+    pub initiative: Option<String>,
+    /// Set by the producer; the feed decides what stale means.
+    #[serde(default)]
+    pub stale: Option<bool>,
 }
 
 /// One watched item. `kind` is "pr" or "run"; `id` is a pull request reference or a run id.
@@ -686,6 +698,41 @@ mod tests {
         assert_eq!(snapshot.chair.host, "host-b");
         assert_eq!(snapshot.runs[0].node, "build");
         assert_eq!(snapshot.inbox[0].kind, "needs_chair");
+    }
+
+    #[test]
+    fn parse_inbox_entry_reads_all_four_optional_fields() {
+        let json = r#"{"kind":"needs_chair","target":"t-1","reason":"r","at":"2026-11-03T04:12:00Z","run":"run-9","initiative":"init-a","stale":true}"#;
+        let entry: InboxEntry = serde_json::from_str(json).expect("entry parses");
+        assert_eq!(entry.at.as_deref(), Some("2026-11-03T04:12:00Z"));
+        assert_eq!(entry.run.as_deref(), Some("run-9"));
+        assert_eq!(entry.initiative.as_deref(), Some("init-a"));
+        assert_eq!(entry.stale, Some(true));
+    }
+
+    #[test]
+    fn parse_inbox_entry_without_the_optional_fields_leaves_them_none() {
+        let bare = r#"{"kind":"needs_chair","target":"t-1","reason":"r"}"#;
+        let nulls = r#"{"kind":"needs_chair","target":"t-1","reason":"r","at":null,"run":null,"initiative":null,"stale":null}"#;
+        for json in [bare, nulls] {
+            let entry: InboxEntry = serde_json::from_str(json).expect("entry parses");
+            assert_eq!(
+                (entry.at, entry.run, entry.initiative, entry.stale),
+                (None, None, None, None)
+            );
+        }
+    }
+
+    #[test]
+    fn parse_snapshot_keeps_the_fixture_inbox_entry_unchanged() {
+        let snapshot = parse_snapshot(FIXTURE).expect("fixture should parse");
+        assert_eq!(snapshot.inbox.len(), 1);
+        let entry = &snapshot.inbox[0];
+        assert_eq!(entry.kind, "needs_chair");
+        assert_eq!(
+            (&entry.at, &entry.run, &entry.initiative, &entry.stale),
+            (&None, &None, &None, &None)
+        );
     }
 
     const ACTIVITY_FIXTURE: &str = include_str!("../tests/fixtures/dash_activity_v1.json");
