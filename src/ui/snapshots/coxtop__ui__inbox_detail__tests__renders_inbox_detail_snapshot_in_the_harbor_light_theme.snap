@@ -1,0 +1,21 @@
+---
+source: src/ui/inbox_detail.rs
+assertion_line: 255
+expression: "drawn(&e, ThemeId::HarborLight, 60, 16).backend().to_string()"
+---
+"┌Inbox entry───────────────────────────────────────────────┐"
+"│Kind    approved-not-landed                               │"
+"│Target  demo/inbox-detail-view                            │"
+"│Raised  2026-11-03T09:30:00+00:00                         │"
+"│Run     run-20261103-1                                    │"
+"│                                                          │"
+"│Reason                                                    │"
+"│approved but not landed on lane-1: cox land --run         │"
+"│run-20261103-1 --task inbox-detail-view --repo            │"
+"│/home/operator/repos/demo --apply                         │"
+"│                                                          │"
+"│                                                          │"
+"│                                                          │"
+"│                                                          │"
+"│a acknowledge  d dismiss  Esc back                        │"
+"└──────────────────────────────────────────────────────────┘"
