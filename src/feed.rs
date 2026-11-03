@@ -464,6 +464,57 @@ pub fn parse_snapshot(line: &str) -> Result<FeedSnapshot, serde_json::Error> {
     serde_json::from_str(line)
 }
 
+/// An inbox entry is stale when the producer says so, or, absent that flag, when its target or run has ended.
+/// An explicit `stale: false` always wins. Ended means the run appears in the snapshot's history.
+pub fn is_stale(entry: &InboxEntry, snapshot: &FeedSnapshot) -> bool {
+    match entry.stale {
+        Some(flag) => flag,
+        None => snapshot
+            .history
+            .iter()
+            .any(|row| row.run == entry.target || entry.run.as_deref() == Some(row.run.as_str())),
+    }
+}
+
+/// The inbox entries sharing one kind and initiative, each with its index into `FeedSnapshot::inbox`.
+#[derive(Debug)]
+pub struct InboxGroup<'a> {
+    pub kind: String,
+    pub initiative: Option<String>,
+    pub count: usize,
+    pub entries: Vec<(usize, &'a InboxEntry)>,
+}
+
+/// Groups the inbox by kind, then initiative, with entries lacking an initiative last in their kind.
+/// Entries keep feed order inside a group.
+pub fn grouped_inbox(snapshot: &FeedSnapshot) -> Vec<InboxGroup<'_>> {
+    let mut ordered: Vec<(usize, &InboxEntry)> = snapshot.inbox.iter().enumerate().collect();
+    ordered.sort_by(|(_, a), (_, b)| {
+        a.kind
+            .cmp(&b.kind)
+            .then_with(|| a.initiative.is_none().cmp(&b.initiative.is_none()))
+            .then_with(|| a.initiative.cmp(&b.initiative))
+    });
+    ordered.into_iter().fold(
+        Vec::new(),
+        |mut groups: Vec<InboxGroup<'_>>, (index, entry)| {
+            match groups.last_mut() {
+                Some(group) if group.kind == entry.kind && group.initiative == entry.initiative => {
+                    group.entries.push((index, entry));
+                    group.count += 1;
+                }
+                _ => groups.push(InboxGroup {
+                    kind: entry.kind.clone(),
+                    initiative: entry.initiative.clone(),
+                    count: 1,
+                    entries: vec![(index, entry)],
+                }),
+            }
+            groups
+        },
+    )
+}
+
 /// The distinct non-empty repos of the queue, in order of first appearance.
 pub fn queue_repos(snapshot: &FeedSnapshot) -> Vec<String> {
     snapshot
@@ -1504,5 +1555,96 @@ mod tests {
         assert_eq!(run_with(r#","end":"someday""#).end, None);
         assert_eq!(run_with(r#","end":{"kind":"someday"}"#).end, None);
         assert_eq!(run_with(r#","end":7"#).end, None);
+    }
+
+    fn inbox_snapshot(inbox: &str, history_runs: &[&str]) -> FeedSnapshot {
+        let history = history_runs
+            .iter()
+            .map(|run| format!(r#"{{"run":"{run}","machine":"m","initiative":"i","ended_at":"2026-10-11T18:00:00Z","outcome":"landed","cost_usd":1.0,"landed":[],"cause":null,"project":"p"}}"#))
+            .collect::<Vec<_>>()
+            .join(",");
+        let json = format!(
+            r#"{{"schema":1,"at":"2026-10-11T19:00:00Z","chair":{{"holder":"h","host":"x","epoch":1,"liveness":"live","beat_age_s":1,"session":"s","today":{{"lands":0,"launches":0,"refused_or_failed":0,"needs_chair_open":0}}}},"spend":{{"five_hour_fraction":0.1,"five_hour_source":"meter","weekly_fraction":0.1,"weekly_source":"meter","hard_stop_fraction":0.99,"five_hour_resets_at":"","weekly_resets_at":""}},"spend_series":[],"machines":[],"runs":[],"queue":[],"queue_total":0,"inbox":[{inbox}],"inbox_total":0,"decisions":[],"watch":[],"history":[{history}],"history_today":{{"lands":0,"quarantines":0,"cost_usd":0.0,"runs":0}}}}"#
+        );
+        parse_snapshot(&json).expect("the literal snapshot parses")
+    }
+
+    fn stale_of(entry: &str, history_runs: &[&str]) -> bool {
+        let snapshot = inbox_snapshot(entry, history_runs);
+        is_stale(&snapshot.inbox[0], &snapshot)
+    }
+
+    #[test]
+    fn a_stale_true_entry_is_stale_with_no_history() {
+        let entry = r#"{"kind":"k","target":"t-1","reason":"r","stale":true}"#;
+        assert!(stale_of(entry, &[]));
+    }
+
+    #[test]
+    fn a_stale_false_entry_is_not_stale_even_when_its_target_is_in_history() {
+        let entry = r#"{"kind":"k","target":"r-1","reason":"r","run":"r-1","stale":false}"#;
+        assert!(!stale_of(entry, &["r-1"]));
+    }
+
+    #[test]
+    fn an_entry_without_a_flag_is_stale_when_its_target_is_in_history() {
+        let entry = r#"{"kind":"k","target":"r-1","reason":"r"}"#;
+        assert!(stale_of(entry, &["r-1"]));
+    }
+
+    #[test]
+    fn an_entry_without_a_flag_is_stale_when_its_run_is_in_history() {
+        let entry = r#"{"kind":"k","target":"t-1","reason":"r","run":"r-2"}"#;
+        assert!(stale_of(entry, &["r-1", "r-2"]));
+    }
+
+    #[test]
+    fn an_entry_without_a_flag_is_not_stale_when_target_and_run_are_absent_from_history() {
+        let entry = r#"{"kind":"k","target":"t-1","reason":"r","run":"r-3"}"#;
+        assert!(!stale_of(entry, &["r-1", "r-2"]));
+    }
+
+    #[test]
+    fn grouped_inbox_orders_by_kind_then_initiative_with_none_last() {
+        let entries = [
+            r#"{"kind":"pr","target":"t0","reason":"r","initiative":"b"}"#,
+            r#"{"kind":"needs_chair","target":"t1","reason":"r"}"#,
+            r#"{"kind":"run","target":"t2","reason":"r","initiative":"a"}"#,
+            r#"{"kind":"needs_chair","target":"t3","reason":"r","initiative":"z"}"#,
+            r#"{"kind":"pr","target":"t4","reason":"r","initiative":"a"}"#,
+            r#"{"kind":"needs_chair","target":"t5","reason":"r","initiative":"z"}"#,
+            r#"{"kind":"pr","target":"t6","reason":"r","initiative":"b"}"#,
+        ]
+        .join(",");
+        let snapshot = inbox_snapshot(&entries, &[]);
+        let groups = grouped_inbox(&snapshot);
+        let shape: Vec<(&str, Option<&str>, usize, Vec<usize>)> = groups
+            .iter()
+            .map(|g| {
+                (
+                    g.kind.as_str(),
+                    g.initiative.as_deref(),
+                    g.count,
+                    g.entries.iter().map(|(i, _)| *i).collect(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            shape,
+            vec![
+                ("needs_chair", Some("z"), 2, vec![3, 5]),
+                ("needs_chair", None, 1, vec![1]),
+                ("pr", Some("a"), 1, vec![4]),
+                ("pr", Some("b"), 2, vec![0, 6]),
+                ("run", Some("a"), 1, vec![2]),
+            ]
+        );
+        assert_eq!(groups[0].entries[1].1.target, "t5");
+    }
+
+    #[test]
+    fn an_empty_inbox_has_no_groups() {
+        let snapshot = inbox_snapshot("", &[]);
+        assert!(grouped_inbox(&snapshot).is_empty());
     }
 }
