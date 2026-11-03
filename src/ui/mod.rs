@@ -7,6 +7,7 @@ mod chrome;
 pub mod confirm_dialog;
 pub mod form_frame;
 pub mod health_drill;
+mod inbox_detail;
 pub mod initiative_drill;
 pub mod machine_drill;
 pub mod palette_frame;
@@ -168,6 +169,17 @@ fn render_modal(f: &mut Frame, app: &App, theme: &Theme) {
 fn render_base(f: &mut Frame, app: &App, theme: &Theme) {
     if let Some(screen) = app.settings() {
         return settings_frame::render(f, f.area(), theme, screen);
+    }
+    if let Some(entry) = app.inbox_detail_entry() {
+        // Like a detail view, the entry takes the page's share and the chair panel stays beside it.
+        let (body, side) = split_page(f.area(), app);
+        if body.width > 0 {
+            inbox_detail::render(f, body, entry, theme);
+        }
+        if let Some(side) = side {
+            render_panel(f, side, app, theme);
+        }
+        return;
     }
     if app.detail().is_none() {
         return render_page(f, app, theme);

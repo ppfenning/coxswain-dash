@@ -1,0 +1,21 @@
+---
+source: src/ui/inbox_detail.rs
+assertion_line: 236
+expression: terminal.backend().to_string()
+---
+"┌Inbox approved-not-landed─────────────────────┐"
+"│kind    approved-not-landed                   │"
+"│target  coxswain-dash/inbox-detail-view       │"
+"│raised  2026-11-03T09:00:00Z                  │"
+"│run     run-20261103-abcdef                   │"
+"│                                              │"
+"│reason                                        │"
+"│Approved but not landed. Run cox land --run   │"
+"│run-20261103-abcdef --task inbox-detail-view  │"
+"│--repo /home/pfenningpat/repos/coxswain-dash  │"
+"│--apply                                       │"
+"│                                              │"
+"│                                              │"
+"│                                              │"
+"│a acknowledge  d dismiss  Esc back            │"
+"└──────────────────────────────────────────────┘"
