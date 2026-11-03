@@ -484,6 +484,18 @@ fn bar_line(
     ])
 }
 
+/// The rail's five-hour row. A source of `none` has no ceiling to draw a bar against.
+fn five_hour_line(spend: &Spend, width: usize, p: &SlipstreamPalette) -> Line<'static> {
+    if spend.five_hour_source == "none" {
+        Line::from(vec![
+            Span::styled("5h ", dim_style(p)),
+            Span::styled(" no limit", dim_style(p)),
+        ])
+    } else {
+        bar_line("5h", spend.five_hour_fraction, width, p.accents[0], p)
+    }
+}
+
 /// Rows of the rail's SPEND section: the label, two bars, and two today lines when the feed
 /// carries `spend.today`.
 fn spend_height(spend: &Spend) -> u16 {
@@ -522,7 +534,7 @@ fn render_rail_spend(f: &mut Frame, rect: Rect, spend: &Spend, p: &SlipstreamPal
     // "5h " before the bar and " 16%" after it.
     let width = usize::from(rect.width).saturating_sub(3 + 5);
     let lines: Vec<Line<'static>> = [
-        bar_line("5h", spend.five_hour_fraction, width, p.accents[0], p),
+        five_hour_line(spend, width, p),
         bar_line("wk", spend.weekly_fraction, width, p.accents[1], p),
     ]
     .into_iter()
@@ -831,6 +843,63 @@ mod tests {
 
     fn screen(terminal: &Terminal<TestBackend>) -> String {
         terminal.backend().to_string()
+    }
+
+    /// The fixture with a zero five-hour fraction, the given source and an empty reset time.
+    fn with_five_hour_source(source: &str) -> String {
+        let fraction = r#""five_hour_fraction": 0.16, "five_hour_source": "meter""#;
+        let resets = r#""five_hour_resets_at": "2026-09-29T02:00:00Z""#;
+        assert!(FIXTURE.contains(fraction), "fixture spend object changed");
+        assert!(FIXTURE.contains(resets), "fixture spend object changed");
+        FIXTURE
+            .replace(
+                fraction,
+                &format!(r#""five_hour_fraction": 0.0, "five_hour_source": "{source}""#),
+            )
+            .replace(resets, r#""five_hour_resets_at": """#)
+    }
+
+    /// The first screen line that contains `label`.
+    fn row_with(text: &str, label: &str) -> String {
+        text.lines()
+            .find(|l| l.contains(label))
+            .unwrap_or_else(|| panic!("no {label} row in\n{text}"))
+            .to_string()
+    }
+
+    #[test]
+    fn a_none_five_hour_source_draws_no_limit_and_no_bar() {
+        let app = app_from(&with_five_hour_source("none"), ThemeId::Regatta);
+        let text = screen(&draw(&app, 160, 46));
+        let row = row_with(&text, "5h ");
+        assert!(row.contains("5h  no limit"), "{row}");
+        assert!(
+            !row.contains('\u{2588}') && !row.contains('\u{2591}'),
+            "{row}"
+        );
+        assert!(!row.contains('%'), "{row}");
+    }
+
+    #[test]
+    fn a_none_five_hour_source_leaves_the_weekly_row_alone() {
+        let app = app_from(&with_five_hour_source("none"), ThemeId::Regatta);
+        let text = screen(&draw(&app, 160, 46));
+        let row = row_with(&text, "wk ");
+        assert!(
+            row.contains('\u{2588}') && row.contains('\u{2591}'),
+            "{row}"
+        );
+        assert!(row.contains("35%"), "{row}");
+    }
+
+    #[test]
+    fn a_meter_five_hour_source_still_draws_the_bar_and_percent() {
+        let app = app_from(&with_five_hour_source("meter"), ThemeId::Regatta);
+        let text = screen(&draw(&app, 160, 46));
+        let row = row_with(&text, "5h ");
+        assert!(row.contains('\u{2591}'), "{row}");
+        assert!(row.contains("0%"), "{row}");
+        assert!(!row.contains("no limit"), "{row}");
     }
 
     #[test]
