@@ -1145,7 +1145,7 @@ fn lane_runs_width(inner_width: u16, runs: usize) -> u16 {
 fn lane_run_line(r: &Run, theme: &Theme) -> Line<'static> {
     Line::from(vec![
         Span::raw(format!("{} ", fit_cell(&r.run, RUN_COLUMNS[0]))),
-        stage_span(r, RUN_COLUMNS[2], theme),
+        lane_stage_span(r, RUN_COLUMNS[2], theme),
         Span::raw(format!(" {:>COST_WIDTH$}", cost_text(r.cost))),
     ])
 }
@@ -1161,19 +1161,27 @@ fn render_lane_runs(f: &mut Frame, area: Rect, runs: &[Run], theme: &Theme) {
     f.render_widget(Paragraph::new(lines).style(base_style(theme)), area);
 }
 
-/// Widths of the runs columns, left to right: run, machine, phase, node. The runs frame joins
-/// phase and node into one stage column of `STAGE_WIDTH`. ATT and COST are right-aligned in
+/// Widths of the columns the runs, lanes and history frames share, left to right: run, machine,
+/// and the wide cell the lanes frame gives its joined stage and the history frame its initiative.
+/// The runs frame has its own PHASE and STAGE widths. ATT and COST are right-aligned in
 /// `ATT_WIDTH` and `COST_WIDTH`.
-const RUN_COLUMNS: [usize; 4] = [12, 10, 22, 12];
-const STAGE_WIDTH: usize = RUN_COLUMNS[2] + 1 + RUN_COLUMNS[3];
+const RUN_COLUMNS: [usize; 3] = [12, 10, 22];
 const ATT_WIDTH: usize = 3;
 const COST_WIDTH: usize = 7;
+/// The PHASE column at full width in a runs frame. A narrow frame gives it less, down to
+/// `PHASE_FLOOR`, and then drops it.
+const PHASE_WIDTH: usize = 16;
+/// The least PHASE keeps; under it the column and its separator leave the runs frame.
+const PHASE_FLOOR: usize = 6;
+/// The STAGE column (the node alone) at full width in a runs frame.
+const STAGE_WIDTH: usize = 16;
 /// The least a narrow runs frame leaves the STAGE column before the end chip is cut.
 const STAGE_FLOOR: usize = 12;
 /// The PROJECT column at full width; a narrow runs frame gives it less, down to nothing.
 const PROJECT_WIDTH: usize = 14;
-/// Columns a runs row spends left of the project cell and the end chip: the prefix, RUN, MACHINE,
-/// the stage and the run tail, each with its separator. PROJECT never takes any of these.
+/// Columns a runs row spends left of the end chip that neither PROJECT nor PHASE gives up: the
+/// prefix, RUN, MACHINE, STAGE and the run tail, each with its separator. Width is taken from
+/// PROJECT first, then PHASE, then STAGE, so the narrowing functions subtract this from the frame.
 const RUN_FIXED_WIDTH: usize =
     2 + RUN_COLUMNS[0] + 1 + RUN_COLUMNS[1] + 1 + STAGE_WIDTH + ATT_WIDTH + COST_WIDTH + 3;
 /// Status words a run row can fall back to when its feed sends no end kind.
@@ -1203,6 +1211,7 @@ fn fit_cell(text: &str, width: usize) -> String {
 }
 
 /// A run's stage: `phase · node`, whichever of the two is known, or `starting` when neither is.
+/// The lanes frame alone joins them; the runs frame has a column for each.
 fn stage_label(phase: Option<&str>, node: Option<&str>) -> String {
     match (phase, node) {
         (Some(phase), Some(node)) => format!("{phase} \u{b7} {node}"),
@@ -1229,9 +1238,9 @@ fn stage_color(theme: &Theme, status: &str) -> Option<Color> {
     }
 }
 
-/// A run's stage padded to `width` and coloured by its status. The feed sends an unknown phase
-/// or node as an empty string.
-fn stage_span(r: &Run, width: usize, theme: &Theme) -> Span<'static> {
+/// A run's joined stage padded to `width` and coloured by its status, for the lanes frame. The
+/// feed sends an unknown phase or node as an empty string.
+fn lane_stage_span(r: &Run, width: usize, theme: &Theme) -> Span<'static> {
     let label = stage_label(
         Some(r.phase.as_str()).filter(|s| !s.is_empty()),
         Some(r.node.as_str()).filter(|s| !s.is_empty()),
@@ -1239,6 +1248,23 @@ fn stage_span(r: &Run, width: usize, theme: &Theme) -> Span<'static> {
     let style = stage_color(theme, &r.status)
         .map_or_else(Style::default, |color| Style::default().fg(color));
     Span::styled(fit_cell(&label, width), style)
+}
+
+/// A run's node alone in one `width`-char STAGE cell coloured by its status; `starting` when the
+/// feed sends no node.
+fn stage_span(r: &Run, width: usize, theme: &Theme) -> Span<'static> {
+    let node = Some(r.node.as_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or("starting");
+    let style = stage_color(theme, &r.status)
+        .map_or_else(Style::default, |color| Style::default().fg(color));
+    Span::styled(fit_cell(node, width), style)
+}
+
+/// A phase in one dim `width`-char cell: cut like PROJECT, `-` when the feed sends none. It is
+/// never coloured by status.
+fn phase_cell(phase: &str, width: usize, theme: &Theme) -> Span<'static> {
+    project_cell(Some(phase), width, theme)
 }
 
 /// A project in one dim `width`-char cell: cut like RUN and MACHINE, `-` when the row has none.
@@ -1269,18 +1295,33 @@ fn widest_end_chip(theme: &Theme) -> usize {
         .unwrap_or(0)
 }
 
-/// The PROJECT column's width in a runs frame `inner_width` wide. It takes only what is left
-/// after the fixed columns, the end chip's `chip_reserve` and its own separator, so it shrinks
-/// first and can reach 0; RUN, MACHINE and the stage keep their widths.
+/// The PROJECT column's width in a runs frame `inner_width` wide. Narrowing goes PROJECT first,
+/// then PHASE, then STAGE. PROJECT takes only what is left after the fixed columns, the end
+/// chip's `chip_reserve`, a full PHASE column and its own separator, so it shrinks first and can
+/// reach 0; RUN, MACHINE, PHASE and STAGE keep their widths meanwhile.
 fn project_width(inner_width: usize, chip_reserve: usize) -> usize {
-    let spare = inner_width.saturating_sub(RUN_FIXED_WIDTH + chip_reserve);
+    let spare = inner_width
+        .saturating_sub(RUN_FIXED_WIDTH + chip_reserve)
+        .saturating_sub(PHASE_WIDTH + 1);
     PROJECT_WIDTH.min(spare.saturating_sub(1))
 }
 
-/// The STAGE column's width in a runs frame `inner_width` wide. It keeps `STAGE_WIDTH` while the
-/// end chip's `chip_reserve` still fits after the other fixed columns, then gives up one column
-/// per column the chip needs, down to `STAGE_FLOOR`. PROJECT is already 0 where STAGE starts to
-/// shrink, so `project_width` needs no knowledge of this.
+/// The PHASE column's width in a runs frame `inner_width` wide. Narrowing goes PROJECT first,
+/// then PHASE, then STAGE. PHASE keeps `PHASE_WIDTH` while PROJECT still has room, then takes
+/// what is left after the fixed columns, the chip's `chip_reserve` and its own separator. Under
+/// `PHASE_FLOOR` it is 0: the column and its separator leave the header and the rows, before
+/// `stage_width` gives up anything.
+fn phase_width(inner_width: usize, chip_reserve: usize) -> usize {
+    let spare = inner_width.saturating_sub(RUN_FIXED_WIDTH + chip_reserve);
+    let width = PHASE_WIDTH.min(spare.saturating_sub(1));
+    if width < PHASE_FLOOR { 0 } else { width }
+}
+
+/// The STAGE column's width in a runs frame `inner_width` wide. Narrowing goes PROJECT first,
+/// then PHASE, then STAGE. It keeps `STAGE_WIDTH` while the end chip's `chip_reserve` still fits
+/// after the other fixed columns, then gives up one column per column the chip needs, down to
+/// `STAGE_FLOOR`. PROJECT and PHASE are already 0 where STAGE starts to shrink, so
+/// `project_width` and `phase_width` need no knowledge of this.
 fn stage_width(inner_width: usize, chip_reserve: usize) -> usize {
     inner_width
         .saturating_sub(RUN_FIXED_WIDTH - STAGE_WIDTH + chip_reserve)
@@ -1307,8 +1348,17 @@ fn run_tail(att: &str, cost: &str) -> String {
     format!(" {att:>ATT_WIDTH$} {cost:>COST_WIDTH$} ")
 }
 
-fn run_header(project_w: usize, stage_w: usize, theme: &Theme) -> Line<'static> {
+/// The PHASE cell and its separator, shared by the header and the rows; empty at width 0.
+fn run_phase(phase: Option<Span<'static>>) -> Vec<Span<'static>> {
+    phase
+        .into_iter()
+        .flat_map(|p| [p, Span::raw(" ")])
+        .collect()
+}
+
+fn run_header(project_w: usize, phase_w: usize, stage_w: usize, theme: &Theme) -> Line<'static> {
     let project = (project_w > 0).then(|| project_cell(Some("PROJECT"), project_w, theme));
+    let phase = (phase_w > 0).then(|| phase_cell("PHASE", phase_w, theme));
     let rest = format!(
         "{}{}STATUS",
         fit_cell("STAGE", stage_w),
@@ -1316,6 +1366,7 @@ fn run_header(project_w: usize, stage_w: usize, theme: &Theme) -> Line<'static> 
     );
     let spans = run_lead("  ", "RUN", project, "MACHINE")
         .into_iter()
+        .chain(run_phase(phase))
         .chain([Span::raw(rest)])
         .collect::<Vec<_>>();
     Line::from(spans).style(Style::default().fg(theme.dim))
@@ -1327,12 +1378,14 @@ fn run_row(
     row: &CollapsedRun,
     selected: bool,
     project_w: usize,
+    phase_w: usize,
     stage_w: usize,
     theme: &Theme,
 ) -> Line<'static> {
     let r = row.run;
     let prefix = if selected { "\u{25b6} " } else { "  " };
     let project = (project_w > 0).then(|| project_cell(r.project.as_deref(), project_w, theme));
+    let phase = (phase_w > 0).then(|| phase_cell(&r.phase, phase_w, theme));
     let lead = run_lead(prefix, &r.run, project, &r.machine);
     let stage = [
         stage_span(r, stage_w, theme),
@@ -1341,6 +1394,7 @@ fn run_row(
     let chip = end_chip(r.end.as_ref(), &r.status, theme).spans;
     let line = Line::from(
         lead.into_iter()
+            .chain(run_phase(phase))
             .chain(stage)
             .chain(chip)
             .chain(count_suffix(row.count, theme))
@@ -1374,8 +1428,9 @@ fn render_runs(
         .unwrap_or(0);
     let chip_reserve = widest_end_chip(theme) + count_w;
     let project_w = project_width(usize::from(inner.width), chip_reserve);
+    let phase_w = phase_width(usize::from(inner.width), chip_reserve);
     let stage_w = stage_width(usize::from(inner.width), chip_reserve);
-    let header = std::iter::once(run_header(project_w, stage_w, theme));
+    let header = std::iter::once(run_header(project_w, phase_w, stage_w, theme));
     let (body, at) = runs_rows(&snapshot.runs).visible(selected, usize::from(inner.height));
     let at = at.filter(|_| focused);
     let rows = body.iter().enumerate().filter_map(|(i, line)| match line {
@@ -1387,7 +1442,7 @@ fn render_runs(
                     .get(*index)
                     .is_some_and(|r| std::ptr::eq(r, row.run))
             })
-            .map(|row| run_row(row, at == Some(i), project_w, stage_w, theme)),
+            .map(|row| run_row(row, at == Some(i), project_w, phase_w, stage_w, theme)),
         Body::Header(_) => None,
     });
     let paragraph = Paragraph::new(header.chain(rows).collect::<Vec<_>>())
@@ -3433,8 +3488,8 @@ mod tests {
         let header = row_text(&terminal, rect.y + 1);
         let words: Vec<&str> = header.split_whitespace().skip(1).collect();
         assert_eq!(
-            words[..7].join(" "),
-            "RUN PROJECT MACHINE STAGE ATT COST STATUS"
+            words[..8].join(" "),
+            "RUN PROJECT MACHINE PHASE STAGE ATT COST STATUS"
         );
         assert_eq!(
             fg_at(&terminal, rect.y + 1, "RUN"),
@@ -3507,12 +3562,97 @@ mod tests {
         assert!(hits[0].contains("\u{d7}3"), "row: {:?}", hits[0]);
     }
 
+    /// A runs frame `width` wide holding the given runs, drawn through `render_runs`.
+    fn draw_phase_runs_frame(runs: &[String], width: u16) -> Terminal<TestBackend> {
+        let app = feed_app(&runs.join(","), "", "");
+        draw_project_runs_frame(&app, &project_theme(), width)
+    }
+
     #[test]
-    fn stage_label_joins_phase_and_node_or_names_the_one_known() {
-        assert_eq!(stage_label(Some("p1"), Some("build")), "p1 \u{b7} build");
-        assert_eq!(stage_label(Some("p1"), None), "p1");
-        assert_eq!(stage_label(None, Some("build")), "build");
-        assert_eq!(stage_label(None, None), "starting");
+    fn a_runs_row_shows_its_phase_and_node_each_in_its_own_column() {
+        let terminal = draw_phase_runs_frame(
+            &[stage_run("run-a", "running", "p1-build", "plan", 1.5)],
+            120,
+        );
+        let (header, row) = (row_text(&terminal, 1), row_text(&terminal, 2));
+        assert!(
+            header.contains("PHASE") && header.contains("STAGE"),
+            "{header:?}"
+        );
+        assert!(!row.contains('\u{b7}'), "{row:?}");
+        assert_eq!(
+            col_of(&terminal, 2, "p1-build"),
+            col_of(&terminal, 1, "PHASE")
+        );
+        assert_eq!(col_of(&terminal, 2, "plan"), col_of(&terminal, 1, "STAGE"));
+        assert!(col_of(&terminal, 1, "PHASE") < col_of(&terminal, 1, "STAGE"));
+        let theme = project_theme();
+        let buffer = terminal.backend().buffer();
+        let (phase_x, stage_x) = (col_of(&terminal, 1, "PHASE"), col_of(&terminal, 1, "STAGE"));
+        assert_eq!(buffer[(phase_x, 2)].fg, theme.dim);
+        assert_eq!(buffer[(stage_x, 2)].fg, Color::Rgb(0x58, 0xa6, 0xff));
+    }
+
+    #[test]
+    fn an_unknown_phase_shows_a_dim_dash_and_an_unknown_node_shows_starting() {
+        let theme = project_theme();
+        let terminal = draw_phase_runs_frame(&[stage_run("run-a", "running", "", "", 0.0)], 120);
+        let x = col_of(&terminal, 1, "PHASE");
+        let cell = &terminal.backend().buffer()[(x, 2)];
+        assert_eq!(cell.symbol(), "-");
+        assert_eq!(cell.fg, theme.dim);
+        assert_eq!(terminal.backend().buffer()[(x + 1, 2)].symbol(), " ");
+        assert_eq!(
+            col_of(&terminal, 2, "starting"),
+            col_of(&terminal, 1, "STAGE")
+        );
+    }
+
+    #[test]
+    fn a_long_phase_is_cut_in_its_column_and_does_not_move_stage() {
+        let long = "a-very-long-phase-name-indeed";
+        let short = draw_phase_runs_frame(&[stage_run("run-a", "running", "p1", "plan", 1.5)], 120);
+        let cut = draw_phase_runs_frame(&[stage_run("run-a", "running", long, "plan", 1.5)], 120);
+        let cell = fit_cell(long, PHASE_WIDTH);
+        assert!(cell.ends_with('\u{2026}') && cell.chars().count() == PHASE_WIDTH);
+        assert!(row_text(&cut, 2).contains(&cell), "{:?}", row_text(&cut, 2));
+        let stage_x = col_of(&cut, 1, "STAGE");
+        assert_eq!(stage_x, col_of(&short, 1, "STAGE"));
+        assert_eq!(col_of(&cut, 2, "plan"), stage_x);
+        assert_eq!(col_of(&short, 2, "plan"), stage_x);
+    }
+
+    #[test]
+    fn a_narrow_frame_drops_phase_before_it_cuts_stage_or_the_end_chip() {
+        let runs = [stage_run("run-a", "needs_person", "p1-build", "plan", 1.5)];
+        let chip = "\u{25cf} needs_person";
+        let widest = draw_phase_runs_frame(&runs, 120);
+        assert!(row_text(&widest, 1).contains("PHASE"));
+        // The frame's border takes 2 columns. `floor_frame` is the narrowest that holds PHASE.
+        let chip_reserve = widest_end_chip(&project_theme());
+        let floor_frame = (RUN_FIXED_WIDTH + chip_reserve + PHASE_FLOOR + 1 + 2) as u16;
+        let kept = draw_phase_runs_frame(&runs, floor_frame);
+        assert!(
+            row_text(&kept, 1).contains("PHASE"),
+            "{:?}",
+            row_text(&kept, 1)
+        );
+        for narrower in [1, 3, 7] {
+            let width = floor_frame - narrower;
+            let terminal = draw_phase_runs_frame(&runs, width);
+            let (header, row) = (row_text(&terminal, 1), row_text(&terminal, 2));
+            assert!(
+                !header.contains("PHAS") && !row.contains("p1-build"),
+                "{width}: {header:?}"
+            );
+            assert!(
+                header.contains("STAGE") && row.contains("plan"),
+                "{width}: {row:?}"
+            );
+            assert!(row.contains(chip), "{width}: {row:?}");
+            let stage_w = col_of(&terminal, 1, "ATT") - col_of(&terminal, 1, "STAGE") - 1;
+            assert_eq!(usize::from(stage_w), STAGE_WIDTH, "{width}");
+        }
     }
 
     #[test]
@@ -3574,14 +3714,20 @@ mod tests {
         insta::assert_snapshot!(terminal.backend().to_string());
         let cyan = Some(Color::Rgb(0x58, 0xa6, 0xff));
         let magenta = Some(Color::Rgb(0xd2, 0xa8, 0xff));
-        // Lanes run lines sit on rows 1-3, runs rows on rows 8-10.
+        // Lanes run lines sit on rows 1-3, runs rows on rows 8-10 under the header on row 7. The
+        // lanes frame keeps the joined stage; the runs frame colours the STAGE cell only.
+        let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
+        let phase_x = col_of(&terminal, 7, "PHASE");
+        let stage_x = col_of(&terminal, 7, "STAGE");
         for (lanes_row, runs_row, stage, color) in [
             (1, 8, "p1-build \u{b7} build", cyan),
             (2, 9, "p2-review \u{b7} review", Some(MID)),
             (3, 10, "p3-land \u{b7} land", magenta),
         ] {
             assert_eq!(fg_at(&terminal, lanes_row, stage), color);
-            assert_eq!(fg_at(&terminal, runs_row, stage), color);
+            let buffer = terminal.backend().buffer();
+            assert_eq!(Some(buffer[(stage_x, runs_row)].fg), color);
+            assert_eq!(buffer[(phase_x, runs_row)].fg, theme.dim);
         }
         assert!(row_text(&terminal, 1).contains("$1.37"));
         assert!(row_text(&terminal, 10).contains("$12.00"));
@@ -4741,8 +4887,8 @@ mod tests {
         let app = feed_app(&runs.join(","), "", "");
         let chip = "\u{25cf} needs_person";
         let at = |width| draw_project_runs_frame(&app, &theme, width);
-        let (wide, hundred, ninety) = (at(120), at(100), at(90));
-        for terminal in [&wide, &hundred, &ninety] {
+        let (wide, hundred, narrowest) = (at(120), at(100), at(85));
+        for terminal in [&wide, &hundred, &narrowest] {
             assert!(row_text(terminal, 1).contains("STATUS"));
             assert!(row_text(terminal, 2).contains(chip));
             assert!(row_text(terminal, 3).contains(chip));
@@ -4755,8 +4901,8 @@ mod tests {
             col_of(&hundred, 2, "example"),
             col_of(&hundred, 1, "PROJECT")
         );
-        assert_eq!(header_widths(&ninety).0, 0);
-        assert!(!row_text(&ninety, 2).contains("example"));
+        assert_eq!(header_widths(&narrowest).0, 0);
+        assert!(!row_text(&narrowest, 2).contains("example"));
     }
 
     #[test]
@@ -4784,7 +4930,7 @@ mod tests {
     #[test]
     fn project_width_takes_only_what_is_left_after_the_fixed_columns_and_chip() {
         let chip = 14;
-        let full = RUN_FIXED_WIDTH + chip;
+        let full = RUN_FIXED_WIDTH + chip + PHASE_WIDTH + 1;
         assert_eq!(project_width(full + 100, chip), PROJECT_WIDTH);
         assert_eq!(project_width(full + 10, chip), 9);
         assert_eq!(project_width(full + 10, chip + 3), 6);
@@ -4794,13 +4940,32 @@ mod tests {
     }
 
     #[test]
+    fn phase_width_narrows_after_project_and_drops_out_at_its_floor() {
+        let chip = 14;
+        let fixed = RUN_FIXED_WIDTH + chip;
+        assert_eq!(phase_width(fixed + 100, chip), PHASE_WIDTH);
+        assert_eq!(phase_width(fixed + PHASE_WIDTH + 1, chip), PHASE_WIDTH);
+        assert_eq!(phase_width(fixed + 10, chip), 9);
+        assert_eq!(phase_width(fixed + PHASE_FLOOR + 1, chip), PHASE_FLOOR);
+        assert_eq!(phase_width(fixed + PHASE_FLOOR, chip), 0);
+        assert_eq!(phase_width(fixed, chip), 0);
+        assert_eq!(phase_width(0, chip), 0);
+        // Wherever PROJECT has any width, PHASE is still whole.
+        for inner in 0..fixed + 100 {
+            if project_width(inner, chip) > 0 {
+                assert_eq!(phase_width(inner, chip), PHASE_WIDTH, "{inner}");
+            }
+        }
+    }
+
+    #[test]
     fn stage_width_keeps_its_full_width_until_the_chip_needs_the_room() {
         let chip = 14;
         assert_eq!(stage_width(100, chip), STAGE_WIDTH);
-        assert_eq!(stage_width(88, chip), 35);
-        assert_eq!(stage_width(87, chip), 34);
-        assert_eq!(stage_width(78, chip), 25);
-        assert_eq!(stage_width(78, chip + 3), 22);
+        assert_eq!(stage_width(69, chip), STAGE_WIDTH);
+        assert_eq!(stage_width(68, chip), 15);
+        assert_eq!(stage_width(67, chip), 14);
+        assert_eq!(stage_width(68, chip + 3), 12);
     }
 
     #[test]
