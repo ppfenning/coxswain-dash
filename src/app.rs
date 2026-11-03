@@ -15,13 +15,13 @@ use chrono::{DateTime, FixedOffset};
 use crossterm::event::KeyEvent;
 use ratatui::layout::Rect;
 
-use crate::actions::{Target, action_for, move_prefill};
+use crate::actions::{Action, Target, action_for, move_prefill};
 use crate::chair_panel::{ChairPanel, CloseOutcome};
 use crate::confirm::{ConfirmAnswer, ConfirmState};
 use crate::decision_card::DecisionCard;
 use crate::detail::{DetailSnapshot, InitiativeDetail, SpendDetail};
 use crate::exec::{ExecResult, StatusLevel, frame_lines, status_summary};
-use crate::feed::{Chair, FeedSnapshot, QueueEntry, queue_repos};
+use crate::feed::{Chair, FeedSnapshot, InboxEntry, QueueEntry, queue_repos};
 use crate::form::{Form, FormAnswer, shell_join};
 use crate::form_initiative::{self, Prefill};
 use crate::form_machine;
@@ -180,6 +180,8 @@ pub struct App {
     parse_error_count: u32,
     latest_parse_error: Option<String>,
     detail_error: Option<String>,
+    /// The inbox row whose full detail is open; the row index at the time it was opened.
+    inbox_detail: Option<usize>,
     page: AppPage,
     theme: ThemeId,
     regatta_frames_visible: [bool; 6],
@@ -278,6 +280,7 @@ impl Default for App {
             parse_error_count: 0,
             latest_parse_error: None,
             detail_error: None,
+            inbox_detail: None,
             page: AppPage::Regatta,
             theme: ThemeId::Regatta,
             regatta_frames_visible: [true; 6],
@@ -988,6 +991,48 @@ impl App {
                 .get(self.selected())
                 .map(|e| e.target.clone()),
             _ => None,
+        }
+    }
+
+    /// The open inbox entry, its index clamped to the inbox. `None` when no detail is open, the
+    /// snapshot is absent or the inbox is empty.
+    pub fn inbox_detail_entry(&self) -> Option<&InboxEntry> {
+        let idx = self.inbox_detail?;
+        let inbox = &self.snapshot.as_ref()?.inbox;
+        inbox.get(idx.min(inbox.len().checked_sub(1)?))
+    }
+
+    /// Opens the focused inbox row's detail; a no-op off the inbox focus or with no row selected.
+    /// The selection is left where it is.
+    pub fn open_inbox_detail(&mut self) {
+        if self.selected_inbox_id().is_some() {
+            self.inbox_detail = Some(self.selected());
+        }
+    }
+
+    pub fn close_inbox_detail(&mut self) {
+        self.inbox_detail = None;
+    }
+
+    /// Opens the acknowledge confirm for the open inbox entry; a no-op when none is open.
+    pub fn begin_inbox_ack(&mut self) {
+        self.begin_inbox_action(|id| Action::InboxAck { id });
+    }
+
+    /// Opens the dismiss confirm for the open inbox entry; a no-op when none is open.
+    pub fn begin_inbox_dismiss(&mut self) {
+        self.begin_inbox_action(|id| Action::InboxDismiss { id });
+    }
+
+    fn begin_inbox_action(&mut self, action: fn(String) -> Action) {
+        if let Some(entry) = self.inbox_detail_entry() {
+            let action = action(entry.target.clone());
+            self.open_confirm(
+                action.title(),
+                action.argv(),
+                action.display(),
+                Origin::Action,
+            );
         }
     }
 
@@ -2367,6 +2412,112 @@ mod tests {
     fn selected_inbox_id_is_none_on_an_empty_inbox() {
         let app = app_on_inbox(Some(snapshot_with_inbox(&[])));
         assert_eq!(app.selected_inbox_id(), None);
+    }
+
+    fn confirm_text(app: &App) -> Option<&str> {
+        match app.modal() {
+            Some(Modal::Confirm(confirm)) => Some(confirm.command.as_str()),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn open_inbox_detail_opens_the_focused_row_and_keeps_the_selection() {
+        let mut app = app_on_inbox(Some(snapshot_with_inbox(&["a", "b", "c"])));
+        app.select_next();
+        app.open_inbox_detail();
+        assert_eq!(
+            app.inbox_detail_entry().map(|e| e.target.as_str()),
+            Some("b")
+        );
+        assert_eq!(app.selected(), 1);
+        assert_eq!(app.selected_inbox_id(), Some("b".to_string()));
+    }
+
+    #[test]
+    fn close_inbox_detail_closes_it() {
+        let mut app = app_on_inbox(Some(snapshot_with_inbox(&["a"])));
+        app.open_inbox_detail();
+        app.close_inbox_detail();
+        assert!(app.inbox_detail_entry().is_none());
+    }
+
+    #[test]
+    fn open_inbox_detail_is_a_no_op_off_the_inbox_focus() {
+        let mut app = app_on_inbox(Some(snapshot_with_inbox(&["a"])));
+        app.cycle_focus_next();
+        app.open_inbox_detail();
+        app.cycle_focus_prev();
+        assert!(app.inbox_detail_entry().is_none());
+    }
+
+    #[test]
+    fn open_inbox_detail_opens_nothing_on_an_empty_inbox_or_without_a_snapshot() {
+        for snap in [Some(snapshot_with_inbox(&[])), None] {
+            let mut app = app_on_inbox(snap);
+            app.open_inbox_detail();
+            assert!(app.inbox_detail_entry().is_none());
+        }
+    }
+
+    #[test]
+    fn the_open_entry_is_clamped_when_the_inbox_shrinks() {
+        let mut app = app_on_inbox(Some(snapshot_with_inbox(&["a", "b", "c"])));
+        app.select_prev();
+        app.open_inbox_detail();
+        app.apply_snapshot(snapshot_with_inbox(&["a", "b"]));
+        assert_eq!(
+            app.inbox_detail_entry().map(|e| e.target.as_str()),
+            Some("b")
+        );
+        app.apply_snapshot(snapshot_with_inbox(&[]));
+        assert!(app.inbox_detail_entry().is_none());
+    }
+
+    #[test]
+    fn ack_and_dismiss_each_open_a_confirm_with_the_courier_ack_line() {
+        let open = |begin: fn(&mut App)| {
+            let mut app = app_on_inbox(Some(snapshot_with_inbox(&["a", "b"])));
+            app.select_next();
+            app.open_inbox_detail();
+            begin(&mut app);
+            app
+        };
+        let ack = open(App::begin_inbox_ack);
+        let dismiss = open(App::begin_inbox_dismiss);
+        assert_eq!(confirm_text(&ack), Some("cox courier ack b"));
+        assert_eq!(confirm_text(&dismiss), Some("cox courier ack b"));
+    }
+
+    #[test]
+    fn ack_without_an_open_detail_opens_no_confirm() {
+        let mut app = app_on_inbox(Some(snapshot_with_inbox(&["a"])));
+        app.begin_inbox_ack();
+        app.begin_inbox_dismiss();
+        assert_eq!(app.modal(), None);
+    }
+
+    #[test]
+    fn no_on_the_inbox_confirm_leaves_nothing_pending() {
+        let mut app = app_on_inbox(Some(snapshot_with_inbox(&["a"])));
+        app.open_inbox_detail();
+        app.begin_inbox_ack();
+        app.modal_key(press(crossterm::event::KeyCode::Char('n')));
+        assert_eq!(app.modal(), None);
+        assert_eq!(app.take_pending(), None);
+    }
+
+    #[test]
+    fn yes_on_the_inbox_confirm_queues_the_argv() {
+        let mut app = app_on_inbox(Some(snapshot_with_inbox(&["a"])));
+        app.open_inbox_detail();
+        app.begin_inbox_dismiss();
+        app.modal_key(press(crossterm::event::KeyCode::Char('y')));
+        let expected = Pending {
+            argv: argv(&["cox", "courier", "ack", "a"]),
+            origin: Origin::Action,
+        };
+        assert_eq!(app.take_pending(), Some(expected));
     }
 
     #[test]
