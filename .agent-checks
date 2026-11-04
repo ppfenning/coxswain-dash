@@ -1,3 +1,4 @@
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test
+python .github/check_clean.py --require-names .
