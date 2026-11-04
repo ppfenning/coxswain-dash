@@ -663,12 +663,11 @@ pub fn collapse_runs(runs: &[Run]) -> Vec<CollapsedRun<'_>> {
         .collect()
 }
 
-/// The dim `×N` suffix for a collapsed row, drawn only when more than one run was collapsed.
-#[allow(dead_code)] // consumed by the regatta and slipstream run lists in later tasks
+/// The dim `N runs` chip for a collapsed row, drawn only when more than one run was collapsed.
 pub fn count_suffix(count: usize, theme: &Theme) -> Option<Span<'static>> {
     if count > 1 {
         Some(Span::styled(
-            format!(" \u{d7}{count}"),
+            format!(" {count} runs"),
             Style::default().fg(theme.dim).bg(theme.bg),
         ))
     } else {
@@ -882,7 +881,7 @@ mod tests {
         let t = theme();
         assert!(count_suffix(1, &t).is_none());
         let suffix = count_suffix(3, &t).expect("suffix");
-        assert_eq!(suffix.content, " \u{d7}3");
+        assert_eq!(suffix.content, " 3 runs");
         assert_eq!(suffix.style.fg, Some(t.dim));
     }
 
