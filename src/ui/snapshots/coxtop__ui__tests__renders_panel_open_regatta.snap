@@ -1,6 +1,5 @@
 ---
 source: src/ui/mod.rs
-assertion_line: 1508
 expression: text
 ---
 ╭ 1 chair ────────────────────────────╮╭ 2 spend ────────────────────────────╮┌ chair · Ctrl-] leaves ─────────────────┐
@@ -15,8 +14,8 @@ expression: text
 │                                              ││00:00 lanes in use · peak 1 ││                                        │
 ╰──────────────────────────────────────────────╯╰────────────────────────────╯│                                        │
 ╭ 5 runs ────────────────────────────────────────────────────────────────────╮│                                        │
-│  RUN          MACHINE    PHASE  STAGE            ATT    COST STATUS        ││                                        │
-│▶ alpha-1      host-b     p1     build              1   $0.50 ● running     ││                                        │
+│  RUNS         MACHINE    PHASE      STEP                COST STATUS        ││                                        │
+│▶ alpha-1      host-b     p1         build              $0.50 ● running     ││                                        │
 ╰────────────────────────────────────────────────────────────────────────────╯│                                        │
 ╭ 6 queue ──────────────────────────────────╮╭ 9 inbox ──────────────────────╮│                                        │
 │                                           ││✓ nothing waiting on you       ││                                        │

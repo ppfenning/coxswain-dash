@@ -1294,7 +1294,7 @@ mod tests {
         let terminal = draw(&app_from(&json, ThemeId::Regatta), 120, 20);
         let buffer = terminal.backend().buffer();
         let name = cell_of(buffer, 3, "foo-3");
-        let count = cell_of(buffer, 3, "\u{d7}3");
+        let count = cell_of(buffer, 3, "3 runs");
         assert_eq!(name.symbol(), "f");
         assert_eq!(count.fg, slipstream_palette().dim);
         let rows: String = (0..20)
