@@ -1,6 +1,5 @@
 ---
 source: src/ui/regatta.rs
-assertion_line: 5844
 expression: terminal.backend().to_string()
 ---
 "╭ 1 chair ─────────────────────────────╮╭ 2 spend ─────────────────────────────╮"
@@ -15,10 +14,10 @@ expression: terminal.backend().to_string()
 "│                                              ││00:00 lanes in use · peak 0 00│"
 "╰──────────────────────────────────────────────╯╰──────────────────────────────╯"
 "╭ 5 runs ──────────────────────────────────────────────────────────────────────╮"
-"│  RUNS         MACHINE    STEP                COST STATUS         RUNS LANDED │"
-"│▶ w-1          m0         build              $1.50 ● running                  │"
-"│  x-1          m0         build              $1.50 ● needs_person             │"
-"│  y-1          m0         build              $1.50 ● quarantined              │"
+"│  RUNS         MACHINE    PHASE  STEP                COST STATUS         TASKS│"
+"│▶ w-1          m0         p1     build              $1.50 ● running           │"
+"│  x-1          m0         p1     build              $1.50 ● needs_person      │"
+"│  y-1          m0         p1     build              $1.50 ● quarantined       │"
 "╰──────────────────────────────────────────────────────────────────────────────╯"
 "╭ 6 queue ─────────────────────────────────────────────────────────────────────╮"
 "│                                                                              │"

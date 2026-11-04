@@ -1,10 +1,9 @@
 ---
 source: src/ui/regatta.rs
-assertion_line: 6083
 expression: terminal.backend().to_string()
 ---
 "╭ 5 runs ──────────────────────────────────────────────────────────────────────────────────────────────────────────────╮"
-"│  RUNS         PROJECT        MACHINE    PHASE            STEP             TRIES    COST STATUS         RUNS LANDED   │"
+"│  RUNS         PROJECT        MACHINE    PHASE            STEP             TRIES    COST STATUS         TASKS         │"
 "│  r20-1        -              m0         p                n                        $1.50 ● running                    │"
 "│  r21-1        -              m0         p                n                        $1.50 ● running                    │"
 "│  r22-1        -              m0         p                n                        $1.50 ● running                    │"
