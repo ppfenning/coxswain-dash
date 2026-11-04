@@ -15,7 +15,9 @@ use chrono::{DateTime, FixedOffset};
 use crossterm::event::KeyEvent;
 use ratatui::layout::Rect;
 
-use crate::actions::{Action, Target, action_for, move_prefill};
+use crate::actions::{
+    Action, Target, action_for, command_in_reason, dry_run_argv, move_prefill, osc52_copy,
+};
 use crate::chair_panel::{ChairPanel, CloseOutcome};
 use crate::confirm::{ConfirmAnswer, ConfirmState};
 use crate::decision_card::DecisionCard;
@@ -228,6 +230,8 @@ pub struct App {
     modal: Option<Modal>,
     /// Set by a confirmed action or a submitted palette line; emptied by `take_pending`.
     pending: Option<Pending>,
+    /// An OSC 52 copy sequence for the event loop to write; emptied by `take_copy`.
+    pending_copy: Option<String>,
     /// The origin a Yes on the open confirm queues. Set with the confirm, cleared on No.
     confirm_origin: Option<Origin>,
     status: Option<(StatusLevel, String)>,
@@ -310,6 +314,7 @@ impl Default for App {
             bells: 0,
             modal: None,
             pending: None,
+            pending_copy: None,
             confirm_origin: None,
             status: None,
             settings: None,
@@ -1033,6 +1038,40 @@ impl App {
         self.begin_inbox_action(|id| Action::InboxDismiss { id });
     }
 
+    /// Queues the open entry's command as an OSC 52 copy; the status says copied, or that the
+    /// reason holds no command. A no-op when no detail is open.
+    pub fn copy_inbox_command(&mut self) {
+        let Some(entry) = self.inbox_detail_entry() else {
+            return;
+        };
+        match command_in_reason(&entry.reason) {
+            Some(argv) => {
+                self.pending_copy = Some(osc52_copy(&shell_join(&argv)));
+                self.status = Some((StatusLevel::Ok, "copied".to_string()));
+            }
+            None => {
+                self.status = Some((StatusLevel::Failed, "no command to copy".to_string()));
+            }
+        }
+    }
+
+    /// Opens the confirm for the open entry's dry run, shown without the apply flag; a Yes runs
+    /// it as a palette command. With no dry run the status says so and nothing is queued.
+    pub fn preview_inbox_command(&mut self) {
+        let Some(entry) = self.inbox_detail_entry() else {
+            return;
+        };
+        match command_in_reason(&entry.reason).and_then(|argv| dry_run_argv(&argv)) {
+            Some(dry) => {
+                let display = shell_join(&dry);
+                self.open_confirm("Dry run".to_string(), dry, display, Origin::Palette);
+            }
+            None => {
+                self.status = Some((StatusLevel::Failed, "no dry run for this entry".to_string()));
+            }
+        }
+    }
+
     /// Opens the dismiss confirm for the focused inbox row, from the list, when that entry is
     /// stale. A fresh entry, an empty inbox or another focus opens nothing.
     pub fn begin_inbox_dismiss_selected(&mut self) {
@@ -1364,6 +1403,10 @@ impl App {
         self.pending.take()
     }
 
+    pub fn take_copy(&mut self) -> Option<String> {
+        self.pending_copy.take()
+    }
+
     /// Records a finished command: the status line for an action or palette command, the output
     /// lines on the open palette for a palette command, and the settings screen for its own.
     pub fn apply_exec_result(&mut self, result: ExecResult, origin: Origin) {
@@ -1371,8 +1414,15 @@ impl App {
             Origin::Action => self.status = Some(status_summary(&result)),
             Origin::Palette => {
                 self.status = Some(status_summary(&result));
-                if let Some(Modal::Palette(palette)) = &mut self.modal {
-                    palette.set_output(frame_lines(&result));
+                match &mut self.modal {
+                    Some(Modal::Palette(palette)) => palette.set_output(frame_lines(&result)),
+                    // A confirm closed on Yes before this result came back; show it in a palette.
+                    None => {
+                        let mut palette = PaletteState::open();
+                        palette.set_output(frame_lines(&result));
+                        self.modal = Some(Modal::Palette(palette));
+                    }
+                    Some(_) => {}
                 }
             }
             Origin::Form { step } => self.form_result(&result, step),
@@ -2634,6 +2684,80 @@ mod tests {
             origin: Origin::Action,
         };
         assert_eq!(app.take_pending(), Some(expected));
+    }
+
+    /// An app on the inbox with one entry whose reason is `reason`, its detail open.
+    fn app_with_detail_reason(reason: &str) -> App {
+        let snap = snapshot_with_inbox(&["a"]);
+        let json = serde_json::json!({
+            "kind": "needs_chair", "target": "a", "reason": reason
+        });
+        let mut app = app_on_inbox(Some(FeedSnapshot {
+            inbox: vec![serde_json::from_value(json).expect("literal entry parses")],
+            ..snap
+        }));
+        app.open_inbox_detail();
+        app
+    }
+
+    #[test]
+    fn c_on_a_land_command_queues_its_osc52_sequence() {
+        let mut app = app_with_detail_reason("ready, run cox runs land r1 --apply");
+        app.copy_inbox_command();
+        assert_eq!(
+            app.take_copy(),
+            Some(osc52_copy("cox runs land r1 --apply"))
+        );
+        assert_eq!(app.status(), Some(&(StatusLevel::Ok, "copied".to_string())));
+    }
+
+    #[test]
+    fn c_on_plain_text_queues_nothing_and_says_so() {
+        let mut app = app_with_detail_reason("the target moved on");
+        app.copy_inbox_command();
+        assert_eq!(app.take_copy(), None);
+        assert_eq!(
+            app.status(),
+            Some(&(StatusLevel::Failed, "no command to copy".to_string()))
+        );
+    }
+
+    #[test]
+    fn p_on_an_apply_command_opens_a_confirm_without_the_apply_flag() {
+        let mut app = app_with_detail_reason("ready, run cox runs land r1 --apply");
+        app.preview_inbox_command();
+        assert_eq!(confirm_text(&app), Some("cox runs land r1"));
+        app.modal_key(press(crossterm::event::KeyCode::Char('y')));
+        let expected = Pending {
+            argv: argv(&["cox", "runs", "land", "r1"]),
+            origin: Origin::Palette,
+        };
+        assert_eq!(app.take_pending(), Some(expected));
+    }
+
+    #[test]
+    fn p_without_an_apply_flag_queues_nothing_and_says_so() {
+        let mut app = app_with_detail_reason("run cox runs land r1");
+        app.preview_inbox_command();
+        assert_eq!(app.modal(), None);
+        assert_eq!(app.take_pending(), None);
+        assert_eq!(
+            app.status().map(|s| s.1.as_str()),
+            Some("no dry run for this entry")
+        );
+    }
+
+    #[test]
+    fn a_palette_result_with_no_modal_open_opens_the_output_frame() {
+        let mut app = App::default();
+        app.apply_exec_result(result(Some(0), "stopped r0\n"), Origin::Palette);
+        let Some(Modal::Palette(palette)) = app.modal() else {
+            panic!("expected a palette, got {:?}", app.modal());
+        };
+        assert_eq!(
+            palette.output(),
+            Some(&argv(&["$ cox runs stop r0", "stopped r0", "exit 0"])[..])
+        );
     }
 
     #[test]

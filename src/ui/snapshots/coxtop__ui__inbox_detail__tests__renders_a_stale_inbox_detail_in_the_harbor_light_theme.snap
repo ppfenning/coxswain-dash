@@ -1,6 +1,6 @@
 ---
 source: src/ui/inbox_detail.rs
-assertion_line: 291
+assertion_line: 318
 expression: "draw(&e, true, &theme, 50, 18).backend().to_string()"
 ---
 "┌Inbox───────────────────────────────────────────┐"
@@ -18,6 +18,6 @@ expression: "draw(&e, true, &theme, 50, 18).backend().to_string()"
 "│raised   2026-11-03T04:12:00Z                   │"
 "│run      run-0042                               │"
 "│                                                │"
-"│d dismiss  a acknowledge  Esc back              │"
-"│                                                │"
+"│d dismiss  a acknowledge  c copy  p preview     │"
+"│Esc back                                        │"
 "└────────────────────────────────────────────────┘"

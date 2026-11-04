@@ -705,6 +705,11 @@ fn run() {
             changed = true;
         }
 
+        if let Some(copy) = app.take_copy() {
+            let out = terminal.backend_mut();
+            let _ = out.write_all(copy.as_bytes()).and_then(|()| out.flush());
+        }
+
         let mut refresh = false;
         while let Ok((origin, result)) = exec_rx.try_recv() {
             let code = result.code;

@@ -1,7 +1,7 @@
 ---
 source: src/ui/inbox_detail.rs
-assertion_line: 207
-expression: "draw(&e, &theme, 50, 18).backend().to_string()"
+assertion_line: 304
+expression: "draw(&e, false, &theme, 50, 18).backend().to_string()"
 ---
 "┌Inbox───────────────────────────────────────────┐"
 "│kind     approved                               │"
@@ -16,8 +16,8 @@ expression: "draw(&e, &theme, 50, 18).backend().to_string()"
 "│raised   2026-11-03T04:12:00Z                   │"
 "│run      run-0042                               │"
 "│                                                │"
-"│a acknowledge  d dismiss  Esc back              │"
-"│                                                │"
+"│a acknowledge  d dismiss  c copy  p preview     │"
+"│Esc back                                        │"
 "│                                                │"
 "│                                                │"
 "└────────────────────────────────────────────────┘"
