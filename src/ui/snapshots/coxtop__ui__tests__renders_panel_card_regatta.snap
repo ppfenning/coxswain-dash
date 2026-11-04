@@ -14,7 +14,7 @@ expression: screen(&buffer)
 │                                              ││00:00 lanes in use · peak 1 ││Tab goes to the session                 │
 ╰──────────────────────────────────────────────╯╰────────────────────────────╯│                                        │
 ╭ 5 runs ────────────────────────────────────────────────────────────────────╮╰────────────────────────────────────────╯
-│  RUNS         MACHINE    STEP                COST STATUS         RUNS      │┌ chair · ` focus · \ close · ~ width ───┐
+│  RUNS         MACHINE    STEP                COST STATUS         TASKS     │┌ chair · ` focus · \ close · ~ width ───┐
 │▶ alpha-1      host-b     build              $0.50 ● running                ││chair> waiting for you                  │
 ╰────────────────────────────────────────────────────────────────────────────╯│                                        │
 ╭ 6 queue ──────────────────────────────────╮╭ 9 inbox ──────────────────────╮│                                        │

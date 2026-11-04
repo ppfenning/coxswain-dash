@@ -1,6 +1,5 @@
 ---
 source: src/ui/regatta.rs
-assertion_line: 4360
 expression: terminal.backend().to_string()
 ---
 "╭ 4 lanes over 24h ────────────────────────────────────────────────────────────────────────────────────────────────────╮"
@@ -10,7 +9,7 @@ expression: terminal.backend().to_string()
 "│00:00                                           lanes in use · peak 0                                            00:00│"
 "╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯"
 "╭ 5 runs ──────────────────────────────────────────────────────────────────────────────────────────────────────────────╮"
-"│  RUNS         PROJECT        MACHINE    PHASE            STEP             TRIES    COST STATUS         RUNS LANDED   │"
+"│  RUNS         PROJECT        MACHINE    PHASE            STEP             TRIES    COST STATUS         TASKS         │"
 "│  run-a        -              m0         p1-build         build                    $1.37 ● running                    │"
 "│  run-b        -              m0         p2-review        review                   $0.50 ● paused                     │"
 "│  run-c        -              m0         p3-land          land                    $12.00 ● needs_person               │"
