@@ -24,6 +24,7 @@ use crate::feed::{
 use crate::form::{KEY_ADD_MACHINE, KEY_EDIT, KEY_NEW, KEY_REMOVE};
 use crate::theme::Theme;
 
+use super::budget_panel;
 use super::chair_agents;
 use super::chair_card::{Freshness, TICK_INTERVAL_S, beat_freshness, short_age};
 use super::rows::{Body, queue_rows, runs_rows};
@@ -879,12 +880,56 @@ fn has_limit(source: &str) -> bool {
     source != "none"
 }
 
+/// Whether the weekly window has a limit. Source `none` means it has none.
+fn has_weekly_limit(source: &str) -> bool {
+    source != "none"
+}
+
+/// The budget form that fits in `space` rows. The today line goes first, then the projection;
+/// the bar and verdict stay. Under two rows nothing is drawn, so the meter rows keep the frame.
+fn fit_budget_form(
+    today: Vec<Line<'static>>,
+    budget: Vec<Line<'static>>,
+    space: u16,
+) -> Vec<Line<'static>> {
+    match space {
+        0 | 1 => Vec::new(),
+        2 => budget
+            .into_iter()
+            .enumerate()
+            .filter_map(|(row, line)| (row != 1).then_some(line))
+            .collect(),
+        3 => budget,
+        _ => today.into_iter().chain(budget).collect(),
+    }
+}
+
 fn render_spend(f: &mut Frame, rect: Rect, snapshot: &FeedSnapshot, app: &App, theme: &Theme) {
     let spend = &snapshot.spend;
     let block = numbered_block(2, FRAME_NAMES[1], theme, false);
-    let room = usize::from(block.inner(rect).width);
+    let inner = block.inner(rect);
+    let room = usize::from(inner.width);
     let offset = app.utc_offset();
+    let palette = super::slipstream::resolved_palette(app.theme());
+    let budget = snapshot.budget().filter(|b| b.verdict().is_some());
     let limited = has_limit(&spend.five_hour_source);
+    let weekly_limited = has_weekly_limit(&spend.weekly_source);
+    if budget.is_none() && !limited && !weekly_limited {
+        let lines = budget_panel::no_limit_lines(
+            spend.today.as_ref(),
+            snapshot.budget(),
+            inner.width,
+            &palette,
+        );
+        f.render_widget(
+            Paragraph::new(lines).block(block).style(base_style(theme)),
+            rect,
+        );
+        return;
+    }
+    // With a budget an absent meter draws nothing; without one both rows draw as they always did.
+    let show_five = limited || budget.is_none();
+    let show_week = weekly_limited || budget.is_none();
     let five_hour_text = if limited {
         let resets = reset_text(&spend.five_hour_resets_at, offset, false);
         let five_hour_fraction = fraction_text(spend.five_hour_fraction, &spend.five_hour_source);
@@ -896,12 +941,16 @@ fn render_spend(f: &mut Frame, rect: Rect, snapshot: &FeedSnapshot, app: &App, t
     } else {
         String::new()
     };
-    let week_text = format!(
-        "{} of {:.0}% stop \u{b7} {}",
-        fraction_text(spend.weekly_fraction, &spend.weekly_source),
-        spend.hard_stop_fraction * 100.0,
-        reset_text(&spend.weekly_resets_at, offset, true)
-    );
+    let week_text = if show_week {
+        format!(
+            "{} of {:.0}% stop \u{b7} {}",
+            fraction_text(spend.weekly_fraction, &spend.weekly_source),
+            spend.hard_stop_fraction * 100.0,
+            reset_text(&spend.weekly_resets_at, offset, true)
+        )
+    } else {
+        String::new()
+    };
     // Both meters share one width, so the text columns line up.
     let longest = five_hour_text
         .chars()
@@ -931,7 +980,19 @@ fn render_spend(f: &mut Frame, rect: Rect, snapshot: &FeedSnapshot, app: &App, t
         width,
         theme,
     );
-    let paragraph = Paragraph::new(vec![five_hour, week])
+    let meters: Vec<Line<'static>> = [(show_five, five_hour), (show_week, week)]
+        .into_iter()
+        .filter_map(|(shown, line)| shown.then_some(line))
+        .collect();
+    let form = budget.map_or_else(Vec::new, |b| {
+        let space = inner.height.saturating_sub(meters.len() as u16);
+        fit_budget_form(
+            budget_panel::today_average_lines(spend.today.as_ref(), Some(b), inner.width, &palette),
+            budget_panel::budget_lines(b, inner.width, &palette),
+            space,
+        )
+    });
+    let paragraph = Paragraph::new(meters.into_iter().chain(form).collect::<Vec<_>>())
         .block(block)
         .style(base_style(theme));
     f.render_widget(paragraph, rect);
@@ -3137,10 +3198,178 @@ mod tests {
         assert!(has_limit("meter, store"));
     }
 
+    #[test]
+    fn has_weekly_limit_is_false_only_for_none() {
+        assert!(!has_weekly_limit("none"));
+        assert!(has_weekly_limit("meter"));
+        assert!(has_weekly_limit("est"));
+    }
+
+    #[test]
+    fn the_budget_form_drops_the_today_line_then_the_projection() {
+        let lines = |names: &[&'static str]| -> Vec<Line<'static>> {
+            names.iter().map(|n| Line::from(*n)).collect()
+        };
+        let texts = |lines: Vec<Line<'static>>| -> Vec<String> {
+            lines.iter().map(ToString::to_string).collect()
+        };
+        let form = |space| {
+            texts(fit_budget_form(
+                lines(&["today"]),
+                lines(&["bar", "projection", "verdict"]),
+                space,
+            ))
+        };
+        assert_eq!(form(4), ["today", "bar", "projection", "verdict"]);
+        assert_eq!(form(3), ["bar", "projection", "verdict"]);
+        assert_eq!(form(2), ["bar", "verdict"]);
+        assert!(form(1).is_empty());
+        assert!(form(0).is_empty());
+    }
+
+    /// The chair feed with both window sources replaced, a `today` block in the spend object and,
+    /// when `budget` is set, a month budget at $190 of $400 that projects $600.
+    fn limit_feed(five: &str, weekly: &str, budget: bool) -> String {
+        let budget_json = if budget {
+            r#""budget": {"period": "month", "spent_usd": 190.0, "budget_usd": 400.0, "fraction": 0.475, "daily_avg_usd": 20.0, "projected_usd": 600.0, "days_left": 20},"#
+        } else {
+            ""
+        };
+        chair_feed(IDLE)
+            .replace(
+                "\"five_hour_source\": \"meter\"",
+                &format!("\"five_hour_source\": \"{five}\""),
+            )
+            .replace(
+                "\"weekly_source\": \"meter\"",
+                &format!("\"weekly_source\": \"{weekly}\""),
+            )
+            .replace(
+                "\"weekly_resets_at\": \"2026-10-04T04:00:00Z\"}",
+                "\"weekly_resets_at\": \"2026-10-04T04:00:00Z\", \"today\": {\"date\": \"2026-09-28\", \"cost\": 12.5}}",
+            )
+            .replace(
+                "\"machines\": []",
+                &format!("{budget_json} \"machines\": []"),
+            )
+    }
+
+    fn app_for_feed(feed: &str) -> App {
+        let snapshot = crate::feed::parse_snapshot(feed).expect("literal feed should parse");
+        let mut app = App::new(AppPage::Regatta, ThemeId::Regatta);
+        app.apply_snapshot(snapshot);
+        app
+    }
+
+    /// The Regatta page's top five rows, which hold the chair and spend frames, as one string.
+    fn page_top(feed: &str, width: u16, height: u16) -> String {
+        let terminal = draw_page(&app_for_feed(feed), ThemeId::Regatta, width, height);
+        (0..5)
+            .map(|y| row_text(&terminal, y))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Only the spend frame, in a terminal of exactly its own size.
+    fn spend_frame(feed: &str, width: u16, height: u16) -> String {
+        let app = app_for_feed(feed);
+        let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
+        terminal
+            .draw(|f| render_spend(f, f.area(), app.snapshot().expect("snapshot"), &app, &theme))
+            .expect("draw should not fail");
+        (0..height)
+            .map(|y| row_text(&terminal, y))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    const PAGE_SIZES: [(u16, u16); 2] = [(80, 24), (160, 46)];
+
+    #[test]
+    fn a_budget_with_no_meter_limit_draws_the_budget_and_no_meter() {
+        for (width, height) in PAGE_SIZES {
+            let top = page_top(&limit_feed("none", "none", true), width, height);
+            assert!(top.contains("$190.00/$400.00"), "{width}: {top}");
+            assert!(top.contains("$600.00"), "{width}: {top}");
+            assert!(top.contains("over pace"), "{width}: {top}");
+            for absent in ["5 hour", "week", "stop", "no limit"] {
+                assert!(!top.contains(absent), "{width} {absent:?}: {top}");
+            }
+            // The frame holds three rows, so the today line is the one dropped.
+            assert!(!top.contains("Today"), "{width}: {top}");
+        }
+    }
+
+    #[test]
+    fn a_roomy_spend_frame_adds_the_today_line_above_the_budget() {
+        let frame = spend_frame(&limit_feed("none", "none", true), 60, 6);
+        let rows: Vec<&str> = frame.lines().collect();
+        assert!(rows[1].contains("Today $12.50  avg $20.00/day"), "{frame}");
+        assert!(rows[2].contains("$190.00/$400.00"), "{frame}");
+        assert!(rows[4].contains("over pace"), "{frame}");
+        let short = spend_frame(&limit_feed("none", "none", true), 60, 5);
+        assert!(!short.contains("Today"), "{short}");
+        assert!(short.contains("$190.00/$400.00"), "{short}");
+        assert!(short.contains("over pace"), "{short}");
+    }
+
+    #[test]
+    fn a_budget_draws_only_the_meter_that_has_a_limit() {
+        let five_only = spend_frame(&limit_feed("meter", "none", true), 70, 8);
+        assert!(five_only.contains("5 hour"), "{five_only}");
+        assert!(!five_only.contains("week"), "{five_only}");
+        assert!(!five_only.contains("stop"), "{five_only}");
+        assert!(five_only.contains("$190.00/$400.00"), "{five_only}");
+        let week_only = spend_frame(&limit_feed("none", "meter", true), 70, 8);
+        assert!(week_only.contains("week"), "{week_only}");
+        assert!(week_only.contains("20% of 90% stop"), "{week_only}");
+        assert!(!week_only.contains("5 hour"), "{week_only}");
+        assert!(week_only.contains("$190.00/$400.00"), "{week_only}");
+    }
+
+    #[test]
+    fn no_budget_and_no_limit_says_so_beside_today() {
+        for (width, height) in PAGE_SIZES {
+            let top = page_top(&limit_feed("none", "none", false), width, height);
+            assert!(top.contains("Today $12.50"), "{width}: {top}");
+            assert!(top.contains("avg --/day"), "{width}: {top}");
+            assert!(top.contains("no limit configured"), "{width}: {top}");
+            for absent in ["5 hour", "week", "stop"] {
+                assert!(!top.contains(absent), "{width} {absent:?}: {top}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_limited_feed_without_a_budget_draws_both_meters_as_before() {
+        for (width, height) in PAGE_SIZES {
+            let top = page_top(&limit_feed("meter", "meter", false), width, height);
+            assert!(top.contains("5 hour"), "{width}: {top}");
+            assert!(top.contains("10%"), "{width}: {top}");
+            assert!(top.contains("20% of 90% stop"), "{width}: {top}");
+            for absent in ["no limit", "Today", "$190.00"] {
+                assert!(!top.contains(absent), "{width} {absent:?}: {top}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_limited_feed_with_a_budget_keeps_its_meters_when_the_frame_is_short() {
+        for (width, height) in PAGE_SIZES {
+            let top = page_top(&limit_feed("meter", "meter", true), width, height);
+            assert!(top.contains("5 hour"), "{width}: {top}");
+            assert!(top.contains("20% of 90% stop"), "{width}: {top}");
+            assert!(!top.contains("$190.00"), "{width}: {top}");
+        }
+    }
+
     /// The fixture's spend frame with the five-hour window's source, fraction and reset replaced.
+    /// The fixture's month budget is switched off: with one set, a window without a limit draws no row.
     fn draw_spend_five_hour(source: &str, resets: &str) -> Terminal<TestBackend> {
         let feed = FIXTURE
             .trim()
+            .replace("\"period\": \"month\"", "\"period\": \"none\"")
             .replace(
                 "\"five_hour_source\": \"meter\"",
                 &format!("\"five_hour_source\": \"{source}\""),
