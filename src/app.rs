@@ -21,7 +21,9 @@ use crate::confirm::{ConfirmAnswer, ConfirmState};
 use crate::decision_card::DecisionCard;
 use crate::detail::{DetailSnapshot, InitiativeDetail, SpendDetail};
 use crate::exec::{ExecResult, StatusLevel, frame_lines, status_summary};
-use crate::feed::{Chair, FeedSnapshot, InboxEntry, QueueEntry, queue_repos};
+use crate::feed::{
+    Chair, FeedSnapshot, InboxEntry, QueueEntry, grouped_inbox, is_stale, queue_repos,
+};
 use crate::form::{Form, FormAnswer, shell_join};
 use crate::form_initiative::{self, Prefill};
 use crate::form_machine;
@@ -980,26 +982,33 @@ impl App {
         }
     }
 
+    /// The inbox entry at `pos` in the grouped order the list draws, not the feed order.
+    /// Header rows take no position, so `pos` runs over entries only.
+    fn grouped_inbox_entry(&self, pos: usize) -> Option<&InboxEntry> {
+        grouped_inbox(self.snapshot.as_ref()?)
+            .into_iter()
+            .flat_map(|group| group.entries)
+            .map(|(_, entry)| entry)
+            .nth(pos)
+    }
+
     /// The `target` of the focused inbox row (the feed carries no separate id), or `None` when
-    /// the focus is not the inbox or the inbox is empty.
+    /// the focus is not the inbox or the inbox is empty. The row is addressed in grouped order.
     pub fn selected_inbox_id(&self) -> Option<String> {
         match self.focus() {
             Focus::Inbox => self
-                .snapshot
-                .as_ref()?
-                .inbox
-                .get(self.selected())
+                .grouped_inbox_entry(self.selected())
                 .map(|e| e.target.clone()),
             _ => None,
         }
     }
 
-    /// The open inbox entry, its index clamped to the inbox. `None` when no detail is open, the
-    /// snapshot is absent or the inbox is empty.
+    /// The open inbox entry, its grouped position clamped to the inbox. `None` when no detail is
+    /// open, the snapshot is absent or the inbox is empty.
     pub fn inbox_detail_entry(&self) -> Option<&InboxEntry> {
         let idx = self.inbox_detail?;
-        let inbox = &self.snapshot.as_ref()?.inbox;
-        inbox.get(idx.min(inbox.len().checked_sub(1)?))
+        let last = self.snapshot.as_ref()?.inbox.len().checked_sub(1)?;
+        self.grouped_inbox_entry(idx.min(last))
     }
 
     /// Opens the focused inbox row's detail; a no-op off the inbox focus or with no row selected.
@@ -1022,6 +1031,27 @@ impl App {
     /// Opens the dismiss confirm for the open inbox entry; a no-op when none is open.
     pub fn begin_inbox_dismiss(&mut self) {
         self.begin_inbox_action(|id| Action::InboxDismiss { id });
+    }
+
+    /// Opens the dismiss confirm for the focused inbox row, from the list, when that entry is
+    /// stale. A fresh entry, an empty inbox or another focus opens nothing.
+    pub fn begin_inbox_dismiss_selected(&mut self) {
+        let stale_target = match (self.focus(), self.snapshot.as_ref()) {
+            (Focus::Inbox, Some(snap)) => self
+                .grouped_inbox_entry(self.selected())
+                .filter(|entry| is_stale(entry, snap))
+                .map(|entry| entry.target.clone()),
+            _ => None,
+        };
+        if let Some(id) = stale_target {
+            let action = Action::InboxDismiss { id };
+            self.open_confirm(
+                action.title(),
+                action.argv(),
+                action.display(),
+                Origin::Action,
+            );
+        }
     }
 
     fn begin_inbox_action(&mut self, action: fn(String) -> Action) {
@@ -2432,6 +2462,92 @@ mod tests {
         );
         assert_eq!(app.selected(), 1);
         assert_eq!(app.selected_inbox_id(), Some("b".to_string()));
+    }
+
+    /// Four entries out of group order across two kinds. Grouped order is d1, d2, n1, n2.
+    /// `d1` is stale, `d2` is explicitly fresh and `n1` carries no flag with an empty history.
+    fn grouped_order_app() -> App {
+        let entry = |kind: &str, target: &str, stale: &str| {
+            format!(r#"{{"kind":"{kind}","target":"{target}","reason":"r"{stale}}}"#)
+        };
+        let rows = [
+            entry("needs_chair", "n1", ""),
+            entry("decision", "d1", r#","stale":true"#),
+            entry("needs_chair", "n2", r#","stale":true"#),
+            entry("decision", "d2", r#","stale":false"#),
+        ]
+        .join(",");
+        let json = format!(
+            r#"{{"schema":1,"at":"2026-09-29T00:00:00Z","chair":{{"holder":"h","host":"h","epoch":1,"liveness":"live","beat_age_s":0}},"spend":{{"five_hour_fraction":0.0,"five_hour_source":"meter","weekly_fraction":0.0,"weekly_source":"meter","hard_stop_fraction":0.0,"five_hour_resets_at":"2026-09-29T00:00:00Z","weekly_resets_at":"2026-09-29T00:00:00Z"}},"machines":[],"runs":[],"queue":[],"inbox":[{rows}],"watch":[]}}"#
+        );
+        app_on_inbox(Some(
+            crate::feed::parse_snapshot(&json).expect("literal snapshot should parse"),
+        ))
+    }
+
+    #[test]
+    fn inbox_selection_moves_through_entries_in_group_order() {
+        let mut app = grouped_order_app();
+        let walked: Vec<Option<String>> = (0..4)
+            .map(|_| {
+                let id = app.selected_inbox_id();
+                app.select_next();
+                id
+            })
+            .collect();
+        assert_eq!(
+            walked,
+            ["d1", "d2", "n1", "n2"]
+                .map(|t| Some(t.to_string()))
+                .to_vec()
+        );
+        assert_eq!(app.selected(), 0);
+    }
+
+    #[test]
+    fn open_inbox_detail_opens_the_entry_the_grouped_selection_names() {
+        let mut app = grouped_order_app();
+        app.select_next();
+        app.select_next();
+        app.open_inbox_detail();
+        assert_eq!(app.selected_inbox_id(), Some("n1".to_string()));
+        assert_eq!(
+            app.inbox_detail_entry().map(|e| e.target.as_str()),
+            Some("n1")
+        );
+    }
+
+    #[test]
+    fn begin_inbox_dismiss_selected_opens_the_courier_ack_confirm_on_a_stale_entry() {
+        let mut app = grouped_order_app();
+        app.begin_inbox_dismiss_selected();
+        assert_eq!(confirm_text(&app), Some("cox courier ack d1"));
+    }
+
+    #[test]
+    fn begin_inbox_dismiss_selected_opens_nothing_on_a_fresh_entry() {
+        let mut app = grouped_order_app();
+        app.select_next();
+        assert_eq!(app.selected_inbox_id(), Some("d2".to_string()));
+        app.begin_inbox_dismiss_selected();
+        assert!(app.modal().is_none());
+        app.select_next();
+        assert_eq!(app.selected_inbox_id(), Some("n1".to_string()));
+        app.begin_inbox_dismiss_selected();
+        assert!(app.modal().is_none());
+    }
+
+    #[test]
+    fn begin_inbox_dismiss_selected_opens_nothing_off_the_inbox_or_on_an_empty_one() {
+        let mut off = grouped_order_app();
+        off.cycle_focus_next();
+        off.begin_inbox_dismiss_selected();
+        assert!(off.modal().is_none());
+        for snap in [Some(snapshot_with_inbox(&[])), None] {
+            let mut app = app_on_inbox(snap);
+            app.begin_inbox_dismiss_selected();
+            assert!(app.modal().is_none());
+        }
     }
 
     #[test]

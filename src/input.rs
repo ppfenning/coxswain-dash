@@ -176,6 +176,9 @@ pub fn handle_key(app: &mut App, key: KeyCode) {
             app.set_chair_panel_focus(false);
         }
         KeyCode::Enter if app.focus() == Focus::Inbox => app.open_inbox_detail(),
+        // `a` and `x` are the inbox actions bound in `actions::bindings`; `d` is bound there for
+        // machines only, so on the inbox it dismisses a stale entry straight from the list.
+        KeyCode::Char('d') if app.focus() == Focus::Inbox => app.begin_inbox_dismiss_selected(),
         KeyCode::Enter => app.open_detail(),
         KeyCode::Esc => app.close_detail(),
         KeyCode::Char(c) if c == KEY_ADD_MACHINE && app.focus() == Focus::Machines => {
@@ -1589,6 +1592,58 @@ mod tests {
             Some("t-1")
         );
         assert_eq!(app.selected_inbox_id(), Some("t-1".to_string()));
+    }
+
+    /// Four inbox entries out of group order across two kinds. Grouped order is d1, d2, n1, n2.
+    /// `d1` is stale and `d2` is fresh.
+    fn app_on_a_grouped_inbox() -> App {
+        let json = r#"{"schema":1,"at":"2026-09-29T00:00:00Z","chair":{"holder":"h","host":"h","epoch":1,"liveness":"live","beat_age_s":0},"spend":{"five_hour_fraction":0.0,"five_hour_source":"meter","weekly_fraction":0.0,"weekly_source":"meter","hard_stop_fraction":0.0,"five_hour_resets_at":"2026-09-29T00:00:00Z","weekly_resets_at":"2026-09-29T00:00:00Z"},"machines":[],"runs":[],"queue":[],"inbox":[{"kind":"needs_chair","target":"n1","reason":"r"},{"kind":"decision","target":"d1","reason":"r","stale":true},{"kind":"needs_chair","target":"n2","reason":"r"},{"kind":"decision","target":"d2","reason":"r","stale":false}],"watch":[]}"#;
+        let mut app = App::new(AppPage::Regatta, ThemeId::Regatta);
+        app.apply_snapshot(
+            crate::feed::parse_snapshot(json).expect("literal snapshot should parse"),
+        );
+        (0..4).for_each(|_| handle_key(&mut app, KeyCode::Right));
+        assert_eq!(app.focus(), Focus::Inbox);
+        app
+    }
+
+    #[test]
+    fn down_then_enter_on_the_inbox_opens_the_detail_of_the_grouped_entry() {
+        let mut app = app_on_a_grouped_inbox();
+        [KeyCode::Down, KeyCode::Down, KeyCode::Enter]
+            .into_iter()
+            .for_each(|k| handle_key(&mut app, k));
+        assert_eq!(app.selected_inbox_id(), Some("n1".to_string()));
+        assert_eq!(
+            app.inbox_detail_entry().map(|e| e.target.as_str()),
+            Some("n1")
+        );
+    }
+
+    #[test]
+    fn d_on_a_stale_inbox_row_opens_the_courier_ack_confirm() {
+        let mut app = app_on_a_grouped_inbox();
+        handle_key(&mut app, KeyCode::Char('d'));
+        assert_eq!(confirm_command(&app), Some("cox courier ack d1"));
+    }
+
+    #[test]
+    fn d_on_a_fresh_inbox_row_opens_nothing() {
+        let mut app = app_on_a_grouped_inbox();
+        handle_key(&mut app, KeyCode::Down);
+        assert_eq!(app.selected_inbox_id(), Some("d2".to_string()));
+        handle_key(&mut app, KeyCode::Char('d'));
+        assert!(nothing_opened(&mut app));
+    }
+
+    #[test]
+    fn a_and_x_on_the_inbox_list_act_on_the_grouped_selection() {
+        let mut app = app_on_a_grouped_inbox();
+        handle_key(&mut app, KeyCode::Char('a'));
+        assert_eq!(confirm_command(&app), Some("cox inbox accept d1"));
+        let mut app = app_on_a_grouped_inbox();
+        handle_key(&mut app, KeyCode::Char(KEY_REMOVE));
+        assert_eq!(confirm_command(&app), Some("cox inbox deny d1"));
     }
 
     #[test]

@@ -1,0 +1,11 @@
+---
+source: src/ui/regatta.rs
+assertion_line: 4753
+expression: "rows.join(\"\\n\")"
+---
+needs_chair init-a (2)
+needs_chair task-0 budget stop stale
+needs_chair task-1 budget stop
+review init-b (2)
+review pr-1 needs eyes
++ 1 more
