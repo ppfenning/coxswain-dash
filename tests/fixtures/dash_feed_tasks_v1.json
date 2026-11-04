@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "at": "2026-09-29T00:00:00Z",
+  "chair": {"holder": "chair@host-b:12345", "host": "host-b", "epoch": 7, "liveness": "live", "beat_age_s": 4, "session": "d2820a82", "today": {"lands": 0, "launches": 1, "refused_or_failed": 0, "needs_chair_open": 0}},
+  "spend": {"five_hour_fraction": 0.16, "five_hour_source": "meter", "weekly_fraction": 0.35, "weekly_source": "meter", "hard_stop_fraction": 0.93, "five_hour_resets_at": "2026-09-29T02:00:00Z", "weekly_resets_at": "2026-10-04T04:00:00Z"},
+  "machines": [],
+  "runs": [{"run": "dash-feed-1", "machine": "host-b", "phase": "p1-foundations", "node": "build", "attempt": 1, "turns": 12, "cost": 0.84, "verdict": "approve", "status": "running", "cost_series": [["2026-10-04T14:00:10Z", 0.10, "plan"], ["2026-10-04T14:01:20Z", 0.42, "build"], ["2026-10-04T14:02:10Z", 0.84, "build"]], "landed": 0, "quarantined": 1, "tasks": [
+    {"id": "dash-feed-p1-parse", "phase": "p1-foundations", "state": "approved", "run": "dash-feed-1", "tries": 1, "node": "review", "turns": 9, "cost": 0.52, "reason": "", "run_verdict": "landed"},
+    {"id": "dash-feed-p1-fixture", "phase": "p1-foundations", "state": "quarantined", "run": "dash-feed-1", "tries": 3, "node": "build", "turns": 21, "cost": 1.4, "reason": "build budget stop after 3 attempts", "reason_full": "build budget stop after 3 attempts: the fixture task kept failing cargo clippy on the new struct literal and the retry budget ran out before a clean build"},
+    {"id": "dash-feed-p2-render", "phase": "p2-render", "state": "ready", "run": "", "tries": 0, "node": "", "turns": 0, "cost": 0.0, "reason": "", "waiting_on": "dash-feed-p1-parse"}
+  ]}],
+  "queue": [],
+  "inbox": []
+}

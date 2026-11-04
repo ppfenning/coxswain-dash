@@ -687,6 +687,9 @@ mod tests {
             cost_series: Vec::new(),
             end: None,
             project: None,
+            tasks: Vec::new(),
+            landed: None,
+            quarantined: None,
         }
     }
 

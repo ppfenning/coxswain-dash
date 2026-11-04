@@ -741,6 +741,9 @@ mod tests {
             cost_series: vec![],
             end,
             project: None,
+            tasks: vec![],
+            landed: None,
+            quarantined: None,
         }
     }
 

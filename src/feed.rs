@@ -358,6 +358,46 @@ pub struct Run {
     /// A missing key and an explicit null both give `None`.
     #[serde(default)]
     pub project: Option<String>,
+    /// Every task of the run's initiative, grouped by phase in plan order. Empty on an older producer.
+    #[serde(default)]
+    pub tasks: Vec<RunTask>,
+    /// Count of landed tasks; `None` on an older producer.
+    #[serde(default)]
+    pub landed: Option<u32>,
+    /// Count of quarantined tasks; `None` on an older producer.
+    #[serde(default)]
+    pub quarantined: Option<u32>,
+}
+
+/// One task of a run. `state` stays a string so a value this build does not know still parses.
+#[derive(Debug, Deserialize, PartialEq)]
+pub struct RunTask {
+    pub id: String,
+    pub phase: String,
+    /// ready, building, in review, approved, merged, landed or quarantined.
+    pub state: String,
+    #[serde(default)]
+    pub run: String,
+    #[serde(default)]
+    pub tries: u32,
+    #[serde(default)]
+    pub node: String,
+    #[serde(default)]
+    pub turns: u32,
+    #[serde(default)]
+    pub cost: f64,
+    /// Empty unless the task was refused; at most 120 characters.
+    #[serde(default)]
+    pub reason: String,
+    /// What the run itself says when it differs from `state`.
+    #[serde(default)]
+    pub run_verdict: Option<String>,
+    /// `reason` untruncated; sent only when `reason` was cut.
+    #[serde(default)]
+    pub reason_full: Option<String>,
+    /// The id of the task this one waits on, when it is ready but not picked up.
+    #[serde(default)]
+    pub waiting_on: Option<String>,
 }
 
 /// One `[at, cumulative_cost_usd, node]` point. `at` is RFC 3339 UTC, kept as sent.
@@ -1502,6 +1542,59 @@ mod tests {
     fn history_tasks_are_none_on_an_older_feed_and_some_empty_when_sent_empty() {
         assert_eq!(history_row_with("").tasks, None);
         assert_eq!(history_row_with(r#","tasks":[]"#).tasks, Some(vec![]));
+    }
+
+    const TASKS_FIXTURE: &str = include_str!("../tests/fixtures/dash_feed_tasks_v1.json");
+
+    #[test]
+    fn run_tasks_parse_from_the_tasks_fixture() {
+        let snapshot = parse_snapshot(TASKS_FIXTURE).expect("tasks fixture parses");
+        let run = &snapshot.runs[0];
+        assert_eq!((run.landed, run.quarantined), (Some(0), Some(1)));
+        let [approved, quarantined, ready] = run.tasks.as_slice() else {
+            panic!("want three tasks, got {}", run.tasks.len());
+        };
+        assert_eq!(approved.state, "approved");
+        assert_eq!(approved.tries, 1);
+        assert_eq!(approved.reason, "");
+        assert_eq!(approved.run_verdict.as_deref(), Some("landed"));
+        assert_eq!(
+            (&approved.reason_full, &approved.waiting_on),
+            (&None, &None)
+        );
+        assert_eq!(quarantined.state, "quarantined");
+        assert_eq!(quarantined.tries, 3);
+        assert!(quarantined.reason.len() <= 120);
+        let full = quarantined
+            .reason_full
+            .as_deref()
+            .expect("reason_full sent");
+        assert!(full.len() > quarantined.reason.len());
+        assert_eq!(
+            (&quarantined.run_verdict, &quarantined.waiting_on),
+            (&None, &None)
+        );
+        assert_eq!(ready.state, "ready");
+        assert_eq!(ready.waiting_on.as_deref(), Some(approved.id.as_str()));
+        assert_eq!((&ready.run_verdict, &ready.reason_full), (&None, &None));
+    }
+
+    #[test]
+    fn the_v1_fixture_runs_have_no_tasks_and_no_counts() {
+        let snapshot = parse_snapshot(FIXTURE).expect("fixture should parse");
+        assert!(!snapshot.runs.is_empty());
+        for run in &snapshot.runs {
+            assert!(run.tasks.is_empty());
+            assert_eq!((run.landed, run.quarantined), (None, None));
+        }
+    }
+
+    #[test]
+    fn merged_and_landed_task_states_parse() {
+        let json = r#"{"run":"r","machine":"m","phase":"p","node":"n","attempt":1,"turns":2,"cost":0.5,"verdict":"","status":"running","landed":1,"quarantined":0,"tasks":[{"id":"a","phase":"p","state":"merged"},{"id":"b","phase":"p","state":"landed"}]}"#;
+        let run: Run = serde_json::from_str(json).expect("run parses");
+        let states: Vec<&str> = run.tasks.iter().map(|t| t.state.as_str()).collect();
+        assert_eq!(states, ["merged", "landed"]);
     }
 
     fn run_with(end: &str) -> Run {
