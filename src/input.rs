@@ -184,6 +184,8 @@ pub fn handle_key(app: &mut App, key: KeyCode) {
         // machines only, so on the inbox it dismisses a stale entry straight from the list.
         KeyCode::Char('d') if app.focus() == Focus::Inbox => app.begin_inbox_dismiss_selected(),
         KeyCode::Enter => app.open_detail(),
+        // Space is bound in no action table and no other arm, so it expands the selected run.
+        KeyCode::Char(' ') if app.focus() == Focus::Runs => app.toggle_run_expanded(),
         KeyCode::Esc => app.close_detail(),
         KeyCode::Char(c) if c == KEY_ADD_MACHINE && app.focus() == Focus::Machines => {
             app.open_add_machine()
@@ -1326,6 +1328,40 @@ mod tests {
         app.apply_snapshot(snapshot_with_two_runs());
         handle_key(&mut app, KeyCode::Enter);
         assert!(app.detail().is_some());
+    }
+
+    #[test]
+    fn space_on_the_runs_frame_expands_then_collapses_the_selected_run() {
+        let mut app = App::default();
+        app.apply_snapshot(snapshot_with_two_runs());
+        handle_key(&mut app, KeyCode::Char(' '));
+        assert!(app.run_expanded("r0"));
+        assert!(!app.run_expanded("r1"));
+        handle_key(&mut app, KeyCode::Char(' '));
+        assert!(!app.run_expanded("r0"));
+        assert!(app.detail().is_none());
+    }
+
+    #[test]
+    fn space_on_another_frame_does_not_toggle() {
+        let mut app = App::default();
+        app.apply_snapshot(snapshot_with_two_runs());
+        handle_key(&mut app, KeyCode::Right);
+        assert_ne!(app.focus(), Focus::Runs);
+        handle_key(&mut app, KeyCode::Char(' '));
+        assert!(!app.run_expanded("r0"));
+        assert!(!app.run_expanded("r1"));
+    }
+
+    #[test]
+    fn enter_on_the_runs_frame_still_opens_the_detail_and_does_not_expand() {
+        let mut app = App::default();
+        app.apply_snapshot(snapshot_with_two_runs());
+        handle_key(&mut app, KeyCode::Enter);
+        let (kind, id, _) = app.detail().expect("detail should be open");
+        assert_eq!(*kind, crate::app::DetailKind::Run);
+        assert_eq!(id, "r0");
+        assert!(!app.run_expanded("r0"));
     }
 
     #[test]
