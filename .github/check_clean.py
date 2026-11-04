@@ -10,13 +10,18 @@ Rules that need no names, so they are committed:
   address    an address in the CGNAT (tailnet) range or the 192.168 private range
   vendor     a tracker or platform a tool must never assume
 The names rule needs the names themselves, so they are never committed: it reads a regex from
-the COXSWAIN_CLEAN_DENY environment variable, and without it says so and skips.
+the COXSWAIN_CLEAN_DENY environment variable, and without it says so and skips. With
+--require-names the skip is a failure instead.
 
 A line carrying the marker `clean: allow` is exempt from every rule; keep it to the lines that
 define the rules and the fixtures that test them.
 
-Usage: python .github/check_clean.py [root]. Stdlib only, so any repo can copy this file as is.
-Exits 1 on any hit, 2 on an unusable COXSWAIN_CLEAN_DENY.
+A path whose first component under the root is `target` is not scanned: the cargo build
+directory holds dependency files that carry the building machine's home path.
+
+Usage: python .github/check_clean.py [--require-names] [root]. Stdlib only, so any repo can copy
+this file as is. The flag may come before or after root. Exits 1 on any hit, 2 on an unusable
+COXSWAIN_CLEAN_DENY or on --require-names with COXSWAIN_CLEAN_DENY unset or empty.
 """
 import ipaddress
 import os
@@ -86,6 +91,8 @@ def rules(environ):
 def text_files(root):
     for path in sorted(root.rglob("*")):
         relative = path.relative_to(root)
+        if relative.parts[0] == "target":
+            continue
         if set(relative.parts) & SKIP_DIRS or any(p.endswith(".egg-info") for p in relative.parts):
             continue
         if not path.is_file():
@@ -107,12 +114,21 @@ def hits(root, active):
                     yield f"{relative}:{number}: {name}: '{found}'"
 
 
+def split_args(argv):
+    """The root (first non-flag argument, default current directory) and whether --require-names is set."""
+    operands = [arg for arg in argv[1:] if not arg.startswith("--")]
+    return pathlib.Path(operands[0] if operands else "."), "--require-names" in argv[1:]
+
+
 def main(argv, environ):
-    root = pathlib.Path(argv[1] if len(argv) > 1 else ".")
+    root, require_names = split_args(argv)
     try:
         active, skipped = rules(environ)
     except re.error as error:
         print(f"COXSWAIN_CLEAN_DENY is not a usable regex: {error}")
+        return 2
+    if skipped and require_names:
+        print("names rule cannot run: COXSWAIN_CLEAN_DENY is not set")
         return 2
     if skipped:
         print(skipped)
