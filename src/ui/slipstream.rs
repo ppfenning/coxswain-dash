@@ -12,6 +12,9 @@ use ratatui::{
     widgets::{Block, Borders, Clear, Paragraph},
 };
 
+use super::budget_panel::{
+    Section, budget_lines, lines_height, no_limit_lines, today_average_lines,
+};
 use super::chair_card::{Freshness, TICK_INTERVAL_S, beat_freshness, short_age};
 use super::chrome::{
     bar_parts, base_style, below_first_row, card_block, clip, dim_style, render_label,
@@ -21,7 +24,7 @@ use super::spend_drill;
 use super::{CollapsedRun, collapse_runs, count_suffix, end_chip};
 use crate::app::{App, Focus, SpendWindow};
 use crate::detail::SpendDetail;
-use crate::feed::{Chair, FeedSnapshot, Machine, Run, Spend, SpendToday};
+use crate::feed::{Budget, Chair, FeedSnapshot, Machine, Run, Spend, SpendToday};
 use crate::theme::{SlipstreamPalette, Theme, resolve, slipstream_palette_for};
 
 /// Width of the right rail, in columns.
@@ -452,12 +455,12 @@ fn render_rail(
     let sections = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(spend_height(&snapshot.spend)),
+            Constraint::Length(spend_height(&snapshot.spend, snapshot.budget(), top.width)),
             Constraint::Length(machines_height),
             Constraint::Min(0),
         ])
         .split(top);
-    render_rail_spend(f, sections[0], &snapshot.spend, p);
+    render_rail_spend(f, sections[0], &snapshot.spend, snapshot.budget(), p);
     render_rail_machines(f, sections[1], &snapshot.machines, p);
     spend_drill::render_panel(f, sections[2], detail, window, columns, p);
     let label_row = Rect {
@@ -496,10 +499,44 @@ fn five_hour_line(spend: &Spend, width: usize, p: &SlipstreamPalette) -> Line<'s
     }
 }
 
-/// Rows of the rail's SPEND section: the label, two bars, and two today lines when the feed
-/// carries `spend.today`.
-fn spend_height(spend: &Spend) -> u16 {
-    if spend.today.is_some() { 6 } else { 4 }
+/// Which form the rail's SPEND section takes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SpendForm {
+    /// A month budget is set: today against the average, the budget bar, and the meters that
+    /// have a limit.
+    Budget,
+    /// No budget and no limit on either meter.
+    NoLimit,
+    /// No budget and a meter limit: the two bars and the today lines.
+    Meters,
+}
+
+fn spend_form(spend: &Spend, budget: Option<&Budget>) -> SpendForm {
+    if budget.and_then(Budget::verdict).is_some() {
+        SpendForm::Budget
+    } else if spend.five_hour_source == "none" && spend.weekly_source == "none" {
+        SpendForm::NoLimit
+    } else {
+        SpendForm::Meters
+    }
+}
+
+/// Rows of the rail's SPEND section at `width`: the label, whichever form is drawn, and one
+/// blank row before MACHINES. The meters form is the label, two bars and, when the feed carries
+/// `spend.today`, two today lines.
+fn spend_height(spend: &Spend, budget: Option<&Budget>, width: u16) -> u16 {
+    let body = match spend_form(spend, budget) {
+        SpendForm::Budget => {
+            lines_height(width, Section::TodayAverage)
+                + lines_height(width, Section::Budget(budget))
+                + u16::from(spend.five_hour_source != "none")
+                + u16::from(spend.weekly_source != "none")
+        }
+        SpendForm::NoLimit => lines_height(width, Section::NoLimit),
+        SpendForm::Meters if spend.today.is_some() => 4,
+        SpendForm::Meters => 2,
+    };
+    2 + body
 }
 
 fn usd_or_dash(value: Option<f64>) -> String {
@@ -529,18 +566,44 @@ fn today_lines(today: &SpendToday, p: &SlipstreamPalette) -> Vec<Line<'static>> 
     ]
 }
 
-fn render_rail_spend(f: &mut Frame, rect: Rect, spend: &Spend, p: &SlipstreamPalette) {
-    render_label(f, rect, "SPEND", p);
+/// The lines of the SPEND section under its label, for the form `spend_form` picks.
+fn spend_lines(
+    spend: &Spend,
+    budget: Option<&Budget>,
+    width: u16,
+    p: &SlipstreamPalette,
+) -> Vec<Line<'static>> {
     // "5h " before the bar and " 16%" after it.
-    let width = usize::from(rect.width).saturating_sub(3 + 5);
-    let lines: Vec<Line<'static>> = [
-        five_hour_line(spend, width, p),
-        bar_line("wk", spend.weekly_fraction, width, p.accents[1], p),
-    ]
-    .into_iter()
-    .chain(spend.today.iter().flat_map(|t| today_lines(t, p)))
-    .collect();
-    f.render_widget(Paragraph::new(lines), below_first_row(rect));
+    let bar_width = usize::from(width).saturating_sub(3 + 5);
+    let five_hour = || five_hour_line(spend, bar_width, p);
+    let weekly = || bar_line("wk", spend.weekly_fraction, bar_width, p.accents[1], p);
+    match (spend_form(spend, budget), budget) {
+        (SpendForm::Budget, Some(b)) => today_average_lines(spend.today.as_ref(), budget, width, p)
+            .into_iter()
+            .chain(budget_lines(b, width, p))
+            .chain((spend.five_hour_source != "none").then(five_hour))
+            .chain((spend.weekly_source != "none").then(weekly))
+            .collect(),
+        (SpendForm::NoLimit, _) => no_limit_lines(spend.today.as_ref(), budget, width, p),
+        _ => [five_hour(), weekly()]
+            .into_iter()
+            .chain(spend.today.iter().flat_map(|t| today_lines(t, p)))
+            .collect(),
+    }
+}
+
+fn render_rail_spend(
+    f: &mut Frame,
+    rect: Rect,
+    spend: &Spend,
+    budget: Option<&Budget>,
+    p: &SlipstreamPalette,
+) {
+    render_label(f, rect, "SPEND", p);
+    f.render_widget(
+        Paragraph::new(spend_lines(spend, budget, rect.width, p)),
+        below_first_row(rect),
+    );
 }
 
 fn render_rail_machines(f: &mut Frame, rect: Rect, machines: &[Machine], p: &SlipstreamPalette) {
@@ -650,11 +713,26 @@ mod tests {
 
     const FIXTURE: &str = include_str!("../../tests/fixtures/dash_feed_v1.json");
 
-    fn app_from(json: &str, theme: ThemeId) -> App {
+    /// An app on `json` as given, budget block included.
+    fn app_with_budget(json: &str, theme: ThemeId) -> App {
         let snapshot = crate::feed::parse_snapshot(json.trim()).expect("fixture should parse");
         let mut app = App::new(AppPage::Slipstream, theme);
         app.apply_snapshot(snapshot);
         app
+    }
+
+    /// An app on `json` without its `budget` block. The meter-form tests and snapshots were
+    /// recorded for a feed with no budget, which the vendored fixture now carries.
+    fn app_from(json: &str, theme: ThemeId) -> App {
+        app_with_budget(&without_budget(json), theme)
+    }
+
+    fn without_budget(json: &str) -> String {
+        let mut feed: serde_json::Value = serde_json::from_str(json).expect("feed is json");
+        feed.as_object_mut()
+            .expect("feed is an object")
+            .remove("budget");
+        feed.to_string()
     }
 
     fn draw(app: &App, width: u16, height: u16) -> Terminal<TestBackend> {
@@ -1322,5 +1400,180 @@ mod tests {
     #[test]
     fn renders_slipstream_snapshot_at_160x46_in_the_harbor_light_theme() {
         insta::assert_snapshot!(snapshot_text(ThemeId::HarborLight, 160, 46));
+    }
+
+    /// The fixture with today's figures and the given meter sources. A source of `none` has no
+    /// limit.
+    fn with_sources(five_hour: &str, weekly: &str) -> String {
+        with_spend(Some(TODAY))
+            .replace(
+                r#""five_hour_source": "meter""#,
+                &format!(r#""five_hour_source": "{five_hour}""#),
+            )
+            .replace(
+                r#""weekly_source": "meter""#,
+                &format!(r#""weekly_source": "{weekly}""#),
+            )
+    }
+
+    /// `with_sources`, with the budget block the feed sends when no budget is set: period none,
+    /// a zero budget, and the rolling daily average still filled in.
+    fn with_no_budget_set(five_hour: &str, weekly: &str) -> String {
+        let json = with_sources(five_hour, weekly)
+            .replace(r#""period": "month""#, r#""period": "none""#)
+            .replace(r#""budget_usd": 400.0"#, r#""budget_usd": 0.0"#);
+        assert!(
+            json.contains(r#""period": "none""#),
+            "fixture budget changed"
+        );
+        json
+    }
+
+    /// The rail's SPEND rows at `width`: what lies between the SPEND and MACHINES labels, each
+    /// trimmed, with the rail's own columns only. The height is 46.
+    fn spend_rows(app: &App, width: u16) -> Vec<String> {
+        let rail = usize::from(rail_width(width));
+        let text = screen(&draw(app, width, 46));
+        let rows: Vec<String> = text
+            .lines()
+            .map(|l| {
+                // The backend prints each row inside a pair of quotes.
+                let row = l.strip_prefix('"').unwrap_or(l);
+                let cells: Vec<char> = row.strip_suffix('"').unwrap_or(row).chars().collect();
+                let from = cells.len().saturating_sub(rail);
+                cells[from..]
+                    .iter()
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string()
+            })
+            .collect();
+        let start = rows
+            .iter()
+            .position(|r| r.contains("S P E N D"))
+            .unwrap_or_else(|| panic!("no SPEND label in\n{text}"));
+        let end = rows
+            .iter()
+            .position(|r| r.contains("M A C H I N E S"))
+            .unwrap_or_else(|| panic!("no MACHINES label in\n{text}"));
+        rows[start + 1..end].to_vec()
+    }
+
+    /// The SPEND section's height as `render_rail` asks for it at `width`.
+    fn height_for(json: &str, width: u16) -> u16 {
+        let snapshot = crate::feed::parse_snapshot(json.trim()).expect("feed parses");
+        spend_height(&snapshot.spend, snapshot.budget(), rail_width(width))
+    }
+
+    fn has_meter_bar(row: &str) -> bool {
+        row.contains('\u{2588}') || row.contains('\u{2591}')
+    }
+
+    #[test]
+    fn a_budget_alone_draws_the_budget_view_and_no_meter_rows() {
+        let json = with_sources("none", "none");
+        for (width, projection, verdict) in [
+            (80, "proj $600.00  20d", "over pace"),
+            (
+                160,
+                "Projected $600.00 by month end  \u{b7}  20 days left",
+                "over pace \u{b7} $200.00 over by month end",
+            ),
+        ] {
+            let rows = spend_rows(&app_with_budget(&json, ThemeId::Regatta), width);
+            let marker = if width > 100 {
+                "\u{25bc} below avg"
+            } else {
+                "\u{25bc}"
+            };
+            assert_eq!(rows[0], format!("Today $4.50  avg $20.00/day  {marker}"));
+            assert!(
+                rows[1].contains("$190.00/$400.00") && has_meter_bar(&rows[1]),
+                "{rows:?}"
+            );
+            assert_eq!(rows[2], projection);
+            assert_eq!(rows[3], verdict);
+            assert_eq!(rows[4], "", "one blank row before MACHINES: {rows:?}");
+            assert_eq!(rows.len(), 5, "{rows:?}");
+            assert!(
+                rows.iter().all(|r| !r.contains("5h") && !r.contains("wk")),
+                "{rows:?}"
+            );
+            assert_eq!(usize::from(height_for(&json, width)), rows.len() + 1);
+        }
+    }
+
+    #[test]
+    fn a_budget_keeps_only_the_meter_rows_that_have_a_limit() {
+        let weekly_only = with_sources("none", "meter");
+        let both = with_sources("meter", "meter");
+        for width in [80, 160] {
+            let rows = spend_rows(&app_with_budget(&weekly_only, ThemeId::Regatta), width);
+            assert_eq!(rows.len(), 6, "{rows:?}");
+            assert!(
+                rows[4].starts_with("wk ") && has_meter_bar(&rows[4]),
+                "{rows:?}"
+            );
+            assert!(rows.iter().all(|r| !r.contains("5h")), "{rows:?}");
+            assert_eq!(usize::from(height_for(&weekly_only, width)), rows.len() + 1);
+
+            let rows = spend_rows(&app_with_budget(&both, ThemeId::Regatta), width);
+            assert_eq!(rows.len(), 7, "{rows:?}");
+            assert!(
+                rows[4].starts_with("5h ") && rows[5].starts_with("wk "),
+                "{rows:?}"
+            );
+            assert_eq!(usize::from(height_for(&both, width)), rows.len() + 1);
+        }
+    }
+
+    #[test]
+    fn no_budget_and_no_limit_draws_today_the_average_and_the_no_limit_words() {
+        let json = with_no_budget_set("none", "none");
+        for (width, today) in [
+            (80, "Today $4.50  avg $20.00/day  \u{25bc}"),
+            (160, "Today $4.50  avg $20.00/day  \u{25bc} below avg"),
+        ] {
+            let rows = spend_rows(&app_with_budget(&json, ThemeId::Regatta), width);
+            assert_eq!(rows, [today, "no limit configured", ""], "{rows:?}");
+            assert_eq!(usize::from(height_for(&json, width)), rows.len() + 1);
+        }
+    }
+
+    #[test]
+    fn a_meter_limit_without_a_budget_draws_the_meter_rows_as_before() {
+        let json = with_no_budget_set("meter", "meter");
+        let absent = without_budget(&with_sources("meter", "meter"));
+        for width in [80, 160] {
+            for feed in [&json, &absent] {
+                let rows = spend_rows(&app_with_budget(feed, ThemeId::Regatta), width);
+                assert_eq!(rows.len(), 5, "{rows:?}");
+                assert!(
+                    rows[0].starts_with("5h ") && rows[0].ends_with(" 16%"),
+                    "{rows:?}"
+                );
+                assert!(
+                    rows[1].starts_with("wk ") && rows[1].ends_with(" 35%"),
+                    "{rows:?}"
+                );
+                assert_eq!(rows[2], "today $4.50 for 3 landed");
+                assert_eq!(rows[3], "per landed $1.23  first-try 67%");
+                assert_eq!(usize::from(height_for(feed, width)), rows.len() + 1);
+            }
+        }
+    }
+
+    #[test]
+    fn the_machines_section_moves_with_the_spend_form() {
+        let machines_row = |json: &str| {
+            let text = screen(&draw(&app_with_budget(json, ThemeId::Regatta), 160, 46));
+            text.lines()
+                .position(|l| l.contains("M A C H I N E S"))
+                .expect("machines label")
+        };
+        let meters = machines_row(&with_no_budget_set("meter", "meter"));
+        let no_limit = machines_row(&with_no_budget_set("none", "none"));
+        let budget = machines_row(&with_sources("none", "none"));
+        assert_eq!((meters, no_limit, budget), (meters, meters - 2, meters));
     }
 }
