@@ -113,12 +113,15 @@ pub fn handle_key(app: &mut App, key: KeyCode) {
         app.form_key(KeyEvent::new(key, KeyModifiers::NONE));
         return;
     }
-    // An open inbox detail takes only Esc, `a` and `d`; `a` would otherwise be the accept action.
+    // An open inbox detail takes only Esc, `a`, `d`, `c` and `p`; `a` would otherwise be the
+    // accept action and `p` the run pause.
     if app.inbox_detail_entry().is_some() {
         match key {
             KeyCode::Esc => app.close_inbox_detail(),
             KeyCode::Char('a') => app.begin_inbox_ack(),
             KeyCode::Char('d') => app.begin_inbox_dismiss(),
+            KeyCode::Char('c') => app.copy_inbox_command(),
+            KeyCode::Char('p') => app.preview_inbox_command(),
             _ => {}
         }
         return;
@@ -1675,6 +1678,24 @@ mod tests {
             queued,
             Some(["cox", "courier", "ack", "t-1"].map(String::from).to_vec())
         );
+    }
+
+    #[test]
+    fn c_and_p_in_the_inbox_detail_reach_the_copy_and_preview_actions() {
+        let mut app = app_with_inbox_detail_open();
+        handle_key(&mut app, KeyCode::Char('c'));
+        assert_eq!(app.take_copy(), None);
+        assert_eq!(
+            app.status().map(|s| s.1.as_str()),
+            Some("no command to copy")
+        );
+        handle_key(&mut app, KeyCode::Char('p'));
+        assert!(app.modal().is_none());
+        assert_eq!(
+            app.status().map(|s| s.1.as_str()),
+            Some("no dry run for this entry")
+        );
+        assert!(app.inbox_detail_entry().is_some());
     }
 
     #[test]

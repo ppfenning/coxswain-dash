@@ -78,10 +78,21 @@ fn field<'a>(label: &str, value: Option<&str>, width: usize, theme: &Theme) -> V
 /// The key line: a stale entry leads with the one-step dismiss.
 fn key_line(stale: bool) -> &'static str {
     if stale {
-        "d dismiss  a acknowledge  Esc back"
+        "d dismiss  a acknowledge  c copy  p preview  Esc back"
     } else {
-        "a acknowledge  d dismiss  Esc back"
+        "a acknowledge  d dismiss  c copy  p preview  Esc back"
     }
+}
+
+/// The key line broken between keys, never inside one, into rows of at most `width` columns.
+fn key_rows(line: &str, width: usize) -> Vec<String> {
+    line.split("  ")
+        .fold(Vec::new(), |rows, key| match rows.split_last() {
+            Some((last, rest)) if last.chars().count() + 2 + key.chars().count() <= width => {
+                [rest.to_vec(), vec![format!("{last}  {key}")]].concat()
+            }
+            _ => [rows, vec![key.to_string()]].concat(),
+        })
 }
 
 /// The line above the full text of a stale entry, and a blank line after it. Empty when fresh.
@@ -126,10 +137,10 @@ pub fn render(f: &mut Frame, area: Rect, entry: &InboxEntry, stale: bool, theme:
         field("raised", entry.at.as_deref(), width, theme),
         field("run", entry.run.as_deref(), width, theme),
         vec![Line::from("")],
-        vec![Line::styled(
-            key_line(stale),
-            Style::default().fg(theme.dim),
-        )],
+        key_rows(key_line(stale), width)
+            .into_iter()
+            .map(|part| Line::styled(part, Style::default().fg(theme.dim)))
+            .collect(),
     ]
     .concat();
     f.render_widget(Paragraph::new(lines).style(base), inner);
@@ -221,13 +232,29 @@ mod tests {
         let text = rows(&draw(&e, false, &theme, 60, 20)).join("\n");
         assert!(text.contains("2026-11-03T04:12:00Z"));
         assert!(text.contains("run-0042"));
-        assert!(text.contains("a acknowledge  d dismiss  Esc back"));
+        assert!(text.contains("a acknowledge  d dismiss  c copy  p preview  Esc back"));
+    }
+
+    #[test]
+    fn key_rows_break_between_keys_and_never_inside_one() {
+        let line = key_line(false);
+        assert_eq!(key_rows(line, 60), vec![line.to_string()]);
+        assert_eq!(
+            key_rows(line, 48),
+            vec!["a acknowledge  d dismiss  c copy  p preview", "Esc back"]
+        );
     }
 
     #[test]
     fn key_line_leads_with_dismiss_only_when_stale() {
-        assert_eq!(key_line(true), "d dismiss  a acknowledge  Esc back");
-        assert_eq!(key_line(false), "a acknowledge  d dismiss  Esc back");
+        assert_eq!(
+            key_line(true),
+            "d dismiss  a acknowledge  c copy  p preview  Esc back"
+        );
+        assert_eq!(
+            key_line(false),
+            "a acknowledge  d dismiss  c copy  p preview  Esc back"
+        );
     }
 
     #[test]
@@ -237,7 +264,7 @@ mod tests {
         let text = rows(&draw(&e, false, &theme, 50, 18)).join("\n");
         assert!(!text.contains("stale"), "buffer was {text:?}");
         assert!(!text.contains("moved on"));
-        assert!(text.contains("a acknowledge  d dismiss  Esc back"));
+        assert!(text.contains("a acknowledge  d dismiss  c copy  p preview"));
     }
 
     #[test]
