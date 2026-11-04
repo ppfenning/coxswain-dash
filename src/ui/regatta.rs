@@ -29,7 +29,7 @@ use super::chair_card::{Freshness, TICK_INTERVAL_S, beat_freshness, short_age};
 use super::rows::{Body, queue_rows, runs_rows};
 use super::run_cost::{chart_bounds, dollar_labels, draw_spend_split, drawable, spend_split_lines};
 use super::status::{self, Status};
-use super::{CollapsedRun, collapse_runs, count_suffix, end_chip, local_time};
+use super::{CollapsedRun, collapse_runs, end_chip, local_time};
 
 /// Cells in a spend meter, and the least one shrinks to in a narrow frame.
 const METER_WIDTH: usize = 26;
@@ -1205,6 +1205,9 @@ const RUN_FIXED_WIDTH: usize =
     2 + RUN_COLUMNS[0] + 1 + RUN_COLUMNS[1] + 1 + STAGE_WIDTH + COST_WIDTH + 2;
 /// What the TRIES column and its separator add to `RUN_FIXED_WIDTH` while the frame keeps them.
 const TRIES_EXTRA: usize = TRIES_WIDTH + 1;
+/// The header words of the two columns after STATUS; each column is never narrower than its word.
+const RUNS_HEADER: &str = "RUNS";
+const LANDED_HEADER: &str = "LANDED";
 /// Status words a run row can fall back to when its feed sends no end kind.
 const STATUS_WORDS: [&str; 9] = [
     "running",
@@ -1392,22 +1395,71 @@ fn run_tail(tries: &str, tries_w: usize, cost: &str) -> String {
     format!("{tries_cell} {cost:>COST_WIDTH$} ")
 }
 
-/// A run's outcome so far, like `4/6 landed · 2 quarantined`. The quarantined part is left out at
-/// zero, the landed part when there is no task list to count against, and all of it without counts.
-fn run_outcome(r: &Run) -> String {
-    let landed = r
-        .landed
+/// A run's landed tasks against its task list, like `4/6`. None without a task list to count
+/// against, or without a landed count.
+fn landed_part(r: &Run) -> Option<String> {
+    r.landed
         .filter(|_| !r.tasks.is_empty())
-        .map(|n| format!("{n}/{} landed", r.tasks.len()));
-    let quarantined = r
-        .quarantined
-        .filter(|&q| q > 0)
-        .map(|q| format!("{q} quarantined"));
+        .map(|n| format!("{n}/{}", r.tasks.len()))
+}
+
+/// A run's quarantined count. None at zero or when the feed carries none.
+fn quarantined_count(r: &Run) -> Option<u32> {
+    r.quarantined.filter(|&q| q > 0)
+}
+
+/// The RUNS cell text: the collapsed run count as a bare number, blank for a lone run.
+fn runs_cell(count: usize) -> String {
+    if count > 1 {
+        count.to_string()
+    } else {
+        String::new()
+    }
+}
+
+/// The LANDED cell text: `n/m`, with a quarantined count after it like `4/6 · 2✗`, or `2✗` alone
+/// when there is no landed part. Blank when there is neither.
+fn landed_cell(landed: Option<String>, quarantined: Option<u32>) -> String {
+    let quarantined = quarantined.map(|q| format!("{q}\u{2717}"));
     [landed, quarantined]
         .into_iter()
         .flatten()
         .collect::<Vec<_>>()
         .join(" \u{b7} ")
+}
+
+/// The width of one column after STATUS: its widest cell, never under its header word.
+fn count_col_width(widest: usize, header: &str) -> usize {
+    widest.max(header.chars().count())
+}
+
+/// What a column after STATUS adds to the chip reserve: its width and one separator, or nothing
+/// when it is not drawn.
+fn count_col_reserve(width: usize) -> usize {
+    if width > 0 { width + 1 } else { 0 }
+}
+
+/// The RUNS and LANDED widths drawn in a runs frame `inner_width` wide, given their full widths
+/// and the widest end chip's `chip_w`. A column is drawn only while the fixed columns (STAGE whole),
+/// the chip and every column to its left still fit, so `stage_width` has not started to give up
+/// STAGE for the chip and STATUS is never cut beside a new column. As the frame narrows LANDED
+/// leaves first, then RUNS, and both are gone before STATUS is cut.
+fn count_col_widths(
+    inner_width: usize,
+    chip_w: usize,
+    runs_w: usize,
+    landed_w: usize,
+) -> (usize, usize) {
+    let status_whole = RUN_FIXED_WIDTH + chip_w;
+    let runs_only = status_whole + count_col_reserve(runs_w);
+    let both = runs_only + count_col_reserve(landed_w);
+    if inner_width >= both {
+        (runs_w, landed_w)
+    } else if inner_width >= runs_only {
+        (runs_w, 0)
+    } else {
+        (0, 0)
+    }
 }
 
 /// The PHASE cell and its separator, shared by the header and the rows; empty at width 0.
@@ -1418,19 +1470,33 @@ fn run_phase(phase: Option<Span<'static>>) -> Vec<Span<'static>> {
         .collect()
 }
 
-fn run_header(
-    project_w: usize,
-    phase_w: usize,
-    tries_w: usize,
-    stage_w: usize,
-    theme: &Theme,
-) -> Line<'static> {
-    let project = (project_w > 0).then(|| project_cell(Some("PROJECT"), project_w, theme));
-    let phase = (phase_w > 0).then(|| phase_cell("PHASE", phase_w, theme));
+/// What follows the end chip: the chip padded to the widest chip, then the RUNS and LANDED cells,
+/// each right-aligned in its column behind one space. Empty when RUNS is not drawn, since LANDED
+/// never draws without it. `chip_len` is the chars the chip already took.
+fn run_count_cells(chip_len: usize, runs: &str, landed: &str, cols: &RunCols) -> String {
+    if cols.runs == 0 {
+        return String::new();
+    }
+    let landed_cell = if cols.landed > 0 {
+        format!(" {landed:>w$}", w = cols.landed)
+    } else {
+        String::new()
+    };
+    format!(
+        "{} {runs:>w$}{landed_cell}",
+        " ".repeat(cols.chip.saturating_sub(chip_len)),
+        w = cols.runs
+    )
+}
+
+fn run_header(cols: &RunCols, theme: &Theme) -> Line<'static> {
+    let project = (cols.project > 0).then(|| project_cell(Some("PROJECT"), cols.project, theme));
+    let phase = (cols.phase > 0).then(|| phase_cell("PHASE", cols.phase, theme));
     let rest = format!(
-        "{}{}STATUS",
-        fit_cell("STEP", stage_w),
-        run_tail("TRIES", tries_w, "COST")
+        "{}{}STATUS{}",
+        fit_cell("STEP", cols.stage),
+        run_tail("TRIES", cols.tries, "COST"),
+        run_count_cells("STATUS".len(), RUNS_HEADER, LANDED_HEADER, cols)
     );
     let spans = run_lead("  ", "RUNS", project, "MACHINE")
         .into_iter()
@@ -1440,19 +1506,22 @@ fn run_header(
     Line::from(spans).style(Style::default().fg(theme.dim))
 }
 
-/// The column widths of one runs frame: `chip` is the width of the end chip and the `N runs` chip
-/// together, which the outcome text is padded past so it lines up across rows.
+/// The column widths of one runs frame: `chip` is the width of the widest end chip, which the
+/// RUNS cell is padded past so it lines up across rows. `runs` and `landed` are 0 when dropped.
 struct RunCols {
     project: usize,
     phase: usize,
     tries: usize,
     stage: usize,
     chip: usize,
+    runs: usize,
+    landed: usize,
 }
 
-/// One initiative's row: its newest run, the run's end chip, a dim `N runs` when the initiative
-/// had more than one run, and the run's dim outcome so far. The TRIES cell is blank. A selected
-/// row is prefixed `▶` and sits on `theme.selected_row`.
+/// One initiative's row: its newest run, the run's end chip, then the dim RUNS cell (the run count
+/// when the initiative had more than one run) and the dim LANDED cell (landed against tasks, and
+/// the quarantined count). The TRIES cell is blank. A selected row is prefixed `▶` and sits on
+/// `theme.selected_row`.
 fn run_row(row: &CollapsedRun, selected: bool, cols: &RunCols, theme: &Theme) -> Line<'static> {
     let r = row.run;
     let prefix = if selected { "\u{25b6} " } else { "  " };
@@ -1465,23 +1534,22 @@ fn run_row(row: &CollapsedRun, selected: bool, cols: &RunCols, theme: &Theme) ->
         Span::raw(run_tail("", cols.tries, &cost_text(r.cost))),
     ];
     let chip = end_chip(r.end.as_ref(), &r.status, theme).spans;
-    let count = count_suffix(row.count, theme);
-    let chips_w: usize = chip
-        .iter()
-        .chain(count.iter())
-        .map(|s| s.content.chars().count())
-        .sum();
-    let pad = " ".repeat(cols.chip.saturating_sub(chips_w));
-    let outcome = Some(run_outcome(r))
+    let chip_len: usize = chip.iter().map(|s| s.content.chars().count()).sum();
+    let counts = run_count_cells(
+        chip_len,
+        &runs_cell(row.count),
+        &landed_cell(landed_part(r), quarantined_count(r)),
+        cols,
+    );
+    let counts = Some(counts)
         .filter(|text| !text.is_empty())
-        .map(|text| Span::styled(format!("{pad}  {text}"), Style::default().fg(theme.dim)));
+        .map(|text| Span::styled(text, Style::default().fg(theme.dim)));
     let line = Line::from(
         lead.into_iter()
             .chain(run_phase(phase))
             .chain(stage)
             .chain(chip)
-            .chain(count)
-            .chain(outcome)
+            .chain(counts)
             .collect::<Vec<_>>(),
     );
     if selected {
@@ -1504,37 +1572,33 @@ fn render_runs(
     let block = numbered_block(5, FRAME_NAMES[4], theme, focused);
     let inner = block.inner(rect);
     let collapsed = collapse_runs(&snapshot.runs);
-    let count_w = collapsed
-        .iter()
-        .filter_map(|row| count_suffix(row.count, theme))
-        .map(|s| s.content.chars().count())
-        .max()
-        .unwrap_or(0);
-    // The outcome text follows the chips after two spaces, so the widest one is reserved too.
-    let outcome_w = collapsed
-        .iter()
-        .map(|row| run_outcome(row.run).chars().count())
-        .filter(|&n| n > 0)
-        .map(|n| n + 2)
-        .max()
-        .unwrap_or(0);
-    let chip = widest_end_chip(theme) + count_w;
-    let chip_reserve = chip + outcome_w;
+    let widest = |cell: &dyn Fn(&CollapsedRun) -> String| {
+        collapsed
+            .iter()
+            .map(|row| cell(row).chars().count())
+            .max()
+            .unwrap_or(0)
+    };
+    let runs_w = count_col_width(widest(&|row| runs_cell(row.count)), RUNS_HEADER);
+    let landed_w = count_col_width(
+        widest(&|row| landed_cell(landed_part(row.run), quarantined_count(row.run))),
+        LANDED_HEADER,
+    );
+    let chip = widest_end_chip(theme);
     let width = usize::from(inner.width);
+    let (runs, landed) = count_col_widths(width, chip, runs_w, landed_w);
+    // The end chip and the two count columns are reserved before STATUS can be cut.
+    let chip_reserve = chip + count_col_reserve(runs) + count_col_reserve(landed);
     let cols = RunCols {
         project: project_width(width, chip_reserve),
         phase: phase_width(width, chip_reserve),
         tries: tries_width(width, chip_reserve),
         stage: stage_width(width, chip_reserve),
         chip,
+        runs,
+        landed,
     };
-    let header = std::iter::once(run_header(
-        cols.project,
-        cols.phase,
-        cols.tries,
-        cols.stage,
-        theme,
-    ));
+    let header = std::iter::once(run_header(&cols, theme));
     let (body, at) = runs_rows(&snapshot.runs).visible(selected, usize::from(inner.height));
     let at = at.filter(|_| focused);
     let rows = body.iter().enumerate().filter_map(|(i, line)| match line {
@@ -3839,13 +3903,47 @@ mod tests {
         let hits: Vec<&String> = rows.iter().filter(|r| r.contains("x-")).collect();
         assert_eq!(hits.len(), 1, "rows: {rows:?}");
         assert!(hits[0].contains("x-3"), "row: {:?}", hits[0]);
-        assert!(hits[0].contains(" 3 runs"), "row: {:?}", hits[0]);
+        let y = 2 + rows.iter().position(|r| r.contains("x-")).expect("row") as u16;
+        assert_eq!(
+            count_cell(&terminal, y, RUNS_HEADER, 4),
+            "3",
+            "row: {:?}",
+            hits[0]
+        );
+        assert!(!hits[0].contains(" runs"), "row: {:?}", hits[0]);
     }
 
     #[test]
-    fn a_lone_run_draws_no_runs_chip() {
+    fn a_lone_run_draws_a_blank_runs_cell() {
         let terminal = draw_runs_frame(&[run_json("x-1", "running")], ThemeId::Regatta, 6);
         assert!(!row_text(&terminal, 2).contains(" runs"));
+        assert_eq!(count_cell(&terminal, 2, RUNS_HEADER, 4), "");
+    }
+
+    /// The column of the last `needle` on row `y`. The RUNS header is on the row twice, once as the
+    /// first column and once after STATUS.
+    fn last_col_of(terminal: &Terminal<TestBackend>, y: u16, needle: &str) -> u16 {
+        let row = row_text(terminal, y);
+        let byte = row
+            .rfind(needle)
+            .unwrap_or_else(|| panic!("{needle:?} is not on row {y}: {row:?}"));
+        row[..byte].chars().count() as u16
+    }
+
+    /// The column just past the last `header` word on the header row, where its column ends.
+    fn header_end(terminal: &Terminal<TestBackend>, header: &str) -> u16 {
+        last_col_of(terminal, 1, header) + header.chars().count() as u16
+    }
+
+    /// Row `y`'s cell in the `width`-wide column that ends under `header`, trimmed.
+    fn count_cell(terminal: &Terminal<TestBackend>, y: u16, header: &str, width: u16) -> String {
+        row_text(terminal, y)
+            .chars()
+            .skip(usize::from(header_end(terminal, header) - width))
+            .take(usize::from(width))
+            .collect::<String>()
+            .trim()
+            .to_string()
     }
 
     /// Feed JSON for a run with `tasks` tasks and the given counts, each left out when `None`.
@@ -3871,17 +3969,101 @@ mod tests {
     }
 
     #[test]
-    fn run_outcome_names_landed_and_quarantined_and_leaves_out_what_is_zero_or_missing() {
-        let outcome =
-            |tasks, landed, quarantined| run_outcome(&counted_run(tasks, landed, quarantined));
+    fn the_landed_part_and_quarantined_count_leave_out_what_is_zero_or_missing() {
+        let parts = |tasks, landed, quarantined| {
+            let run = counted_run(tasks, landed, quarantined);
+            (landed_part(&run), quarantined_count(&run))
+        };
         assert_eq!(
-            outcome(6, Some(4), Some(2)),
-            "4/6 landed \u{b7} 2 quarantined"
+            parts(6, Some(4), Some(2)),
+            (Some("4/6".to_string()), Some(2))
         );
-        assert_eq!(outcome(6, Some(4), Some(0)), "4/6 landed");
-        assert_eq!(outcome(6, Some(4), None), "4/6 landed");
-        assert_eq!(outcome(6, None, None), "");
-        assert_eq!(outcome(0, None, None), "");
+        assert_eq!(parts(6, Some(4), Some(0)), (Some("4/6".to_string()), None));
+        assert_eq!(parts(6, Some(4), None), (Some("4/6".to_string()), None));
+        assert_eq!(parts(6, None, Some(1)), (None, Some(1)));
+        assert_eq!(parts(6, None, None), (None, None));
+        assert_eq!(parts(0, Some(4), None), (None, None));
+    }
+
+    #[test]
+    fn the_runs_and_landed_cells_are_blank_when_they_have_nothing_to_say() {
+        assert_eq!(runs_cell(1), "");
+        assert_eq!(runs_cell(0), "");
+        assert_eq!(runs_cell(3), "3");
+        assert_eq!(runs_cell(12), "12");
+        assert_eq!(landed_cell(None, None), "");
+        assert_eq!(landed_cell(Some("4/6".to_string()), None), "4/6");
+        assert_eq!(
+            landed_cell(Some("4/6".to_string()), Some(2)),
+            "4/6 \u{b7} 2\u{2717}"
+        );
+        assert_eq!(landed_cell(None, Some(2)), "2\u{2717}");
+    }
+
+    #[test]
+    fn the_runs_and_landed_cells_end_in_one_column_under_their_headers() {
+        let theme = project_theme();
+        // Counts 1, 3 and 12, in an initiative each; landed 0/2, 4/6 and 10/12 with one quarantined.
+        let many = |prefix: &str, n: usize, tasks, landed, quarantined| -> Vec<String> {
+            (1..=n)
+                .map(|i| counted_run_json(&format!("{prefix}-{i}"), tasks, landed, quarantined))
+                .collect()
+        };
+        let runs = [
+            many("x", 1, 2, Some(0), None),
+            many("y", 3, 6, Some(4), None),
+            many("z", 12, 12, Some(10), Some(1)),
+        ]
+        .concat();
+        let terminal = draw_runs_frame(&runs, ThemeId::Regatta, 6);
+        let by_name = |name: &str| {
+            (2..5)
+                .find(|&y| row_text(&terminal, y).contains(name))
+                .unwrap_or_else(|| panic!("no row for {name}"))
+        };
+        let expected = [
+            ("x-", "", "0/2"),
+            ("y-", "3", "4/6"),
+            ("z-", "12", "10/12 \u{b7} 1\u{2717}"),
+        ];
+        let (runs_end, landed_end) = (
+            header_end(&terminal, RUNS_HEADER),
+            header_end(&terminal, LANDED_HEADER),
+        );
+        let header = row_text(&terminal, 1);
+        assert_eq!(header.matches(RUNS_HEADER).count(), 2, "{header:?}");
+        assert!(header.contains(LANDED_HEADER), "{header:?}");
+        for (name, runs_text, landed_text) in expected {
+            let y = by_name(name);
+            let chars: Vec<char> = row_text(&terminal, y).chars().collect();
+            for (end, text) in [(runs_end, runs_text), (landed_end, landed_text)] {
+                let end = usize::from(end);
+                let ends_here = text.chars().last().is_none_or(|c| chars[end - 1] == c);
+                assert!(ends_here, "{name}: {text:?} does not end at {end}");
+                let past = chars[end];
+                assert!(past == ' ' || past == '\u{2502}', "{name}: runs past {end}");
+            }
+            assert_eq!(
+                count_cell(&terminal, y, RUNS_HEADER, 4),
+                runs_text,
+                "{name}"
+            );
+            assert_eq!(
+                count_cell(&terminal, y, LANDED_HEADER, 10),
+                landed_text,
+                "{name}"
+            );
+            let (runs_x, landed_x) = (runs_end - 1, landed_end - 1);
+            for (x, text) in [(runs_x, runs_text), (landed_x, landed_text)] {
+                if !text.is_empty() {
+                    assert_eq!(cell(&terminal, x, y).fg, theme.dim, "{name}");
+                }
+            }
+        }
+        // The header words sit over the cells: right-aligned, in the dim header colour.
+        let header_x = last_col_of(&terminal, 1, RUNS_HEADER);
+        assert_eq!(cell(&terminal, header_x, 1).fg, theme.dim);
+        assert_eq!(runs_end - header_x, 4);
     }
 
     /// Three initiatives: 4 of 6 landed and 2 quarantined, 4 of 6 landed and none quarantined, and
@@ -3899,27 +4081,70 @@ mod tests {
         for width in [120, 100] {
             let terminal = draw_phase_runs_frame(&outcome_runs(), width);
             let rows: Vec<String> = (2..5).map(|y| row_text(&terminal, y)).collect();
+            let landed = |y| count_cell(&terminal, y, LANDED_HEADER, 8);
+            assert_eq!(landed(2), "4/6 \u{b7} 2\u{2717}", "{width}: {:?}", rows[0]);
+            assert_eq!(landed(3), "4/6", "{width}: {:?}", rows[1]);
+            assert_eq!(landed(4), "", "{width}: {:?}", rows[2]);
             assert!(
-                rows[0].contains("4/6 landed \u{b7} 2 quarantined"),
-                "{width}: {:?}",
-                rows[0]
-            );
-            assert!(
-                rows[1].contains("4/6 landed") && !rows[1].contains("quarantined"),
-                "{width}: {:?}",
-                rows[1]
-            );
-            assert!(!rows[2].contains("landed"), "{width}: {:?}", rows[2]);
-            assert_eq!(
-                col_of(&terminal, 2, "4/6"),
-                col_of(&terminal, 3, "4/6"),
-                "{width}"
+                rows.iter().all(|r| !r.contains("landed")),
+                "{width}: {rows:?}"
             );
             assert!(
                 rows.iter().all(|r| r.contains("$1.50")),
                 "{width}: {rows:?}"
             );
         }
+    }
+
+    #[test]
+    fn landed_drops_before_runs_and_both_drop_before_status_is_cut() {
+        let chip = 14;
+        let status_whole = RUN_FIXED_WIDTH + chip;
+        let widths = |inner| count_col_widths(inner, chip, 4, 6);
+        assert_eq!(widths(status_whole + 100), (4, 6));
+        assert_eq!(widths(status_whole + 12), (4, 6));
+        // LANDED leaves first: RUNS alone while its own column still fits.
+        assert_eq!(widths(status_whole + 11), (4, 0));
+        assert_eq!(widths(status_whole + 5), (4, 0));
+        // Then RUNS, before STATUS is cut.
+        assert_eq!(widths(status_whole + 4), (0, 0));
+        assert_eq!(widths(0), (0, 0));
+        assert_eq!(count_col_widths(status_whole + 16, chip, 4, 10), (4, 10));
+        assert_eq!(count_col_widths(status_whole + 15, chip, 4, 10), (4, 0));
+        // Wherever a column is drawn, the frame still holds STATUS whole after the narrowing.
+        for inner in 0..200 {
+            let (runs, landed) = widths(inner);
+            assert!(runs > 0 || landed == 0, "{inner}");
+            let reserve = chip + count_col_reserve(runs) + count_col_reserve(landed);
+            if runs > 0 {
+                assert!(inner >= RUN_FIXED_WIDTH + reserve, "{inner}");
+                assert_eq!(stage_width(inner, reserve), STAGE_WIDTH, "{inner}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_frame_that_draws_runs_or_landed_never_cuts_the_status_chip() {
+        let theme = project_theme();
+        let runs = [
+            run_json("a-1", "needs_person"),
+            run_json("a-2", "needs_person"),
+        ];
+        let app = feed_app(&runs.join(","), "", "");
+        let mut seen = (false, false);
+        for width in 40..=130 {
+            let terminal = draw_project_runs_frame(&app, &theme, width);
+            let header = row_text(&terminal, 1);
+            let runs_drawn = header.matches(RUNS_HEADER).count() == 2;
+            let landed_drawn = header.contains(LANDED_HEADER);
+            assert!(runs_drawn || !landed_drawn, "{width}: {header:?}");
+            if runs_drawn {
+                let row = row_text(&terminal, 2);
+                assert!(row.contains("\u{25cf} needs_person"), "{width}: {row:?}");
+            }
+            seen = (seen.0 || runs_drawn, seen.1 || landed_drawn);
+        }
+        assert_eq!(seen, (true, true));
     }
 
     #[test]
@@ -3996,6 +4221,14 @@ mod tests {
         assert_eq!(col_of(&short, 2, "plan"), stage_x);
     }
 
+    /// The chip reserve of a frame that draws the end chip and both count columns at their header
+    /// widths, which is what a frame of lone runs without task lists reserves.
+    fn full_chip_reserve(theme: &Theme) -> usize {
+        widest_end_chip(theme)
+            + count_col_reserve(RUNS_HEADER.chars().count())
+            + count_col_reserve(LANDED_HEADER.chars().count())
+    }
+
     #[test]
     fn a_narrow_frame_drops_phase_before_it_cuts_stage_or_the_end_chip() {
         let runs = [stage_run("run-a", "needs_person", "p1-build", "plan", 1.5)];
@@ -4003,7 +4236,7 @@ mod tests {
         let widest = draw_phase_runs_frame(&runs, 120);
         assert!(row_text(&widest, 1).contains("PHASE"));
         // The frame's border takes 2 columns. `floor_frame` is the narrowest that holds PHASE.
-        let chip_reserve = widest_end_chip(&project_theme());
+        let chip_reserve = full_chip_reserve(&project_theme());
         let floor_frame = (RUN_FIXED_WIDTH + chip_reserve + PHASE_FLOOR + 1 + 2) as u16;
         let kept = draw_phase_runs_frame(&runs, floor_frame);
         assert!(
@@ -4033,7 +4266,7 @@ mod tests {
     #[test]
     fn a_narrow_frame_drops_the_blank_tries_column_before_phase() {
         let runs = [stage_run("run-a", "needs_person", "p1-build", "plan", 1.5)];
-        let chip_reserve = widest_end_chip(&project_theme());
+        let chip_reserve = full_chip_reserve(&project_theme());
         // The narrowest frame that holds TRIES beside a whole PHASE; the border takes 2 columns.
         let with_tries =
             (RUN_FIXED_WIDTH + TRIES_EXTRA + chip_reserve + PHASE_WIDTH + 1 + 2) as u16;
@@ -5439,7 +5672,7 @@ mod tests {
         let app = feed_app(&runs.join(","), "", "");
         let chip = "\u{25cf} needs_person";
         let at = |width| draw_project_runs_frame(&app, &theme, width);
-        let (wide, hundred, narrowest) = (at(120), at(100), at(85));
+        let (wide, hundred, narrowest) = (at(120), at(114), at(85));
         for terminal in [&wide, &hundred, &narrowest] {
             assert!(row_text(terminal, 1).contains("STATUS"));
             assert!(row_text(terminal, 2).contains(chip));
@@ -5458,15 +5691,17 @@ mod tests {
     }
 
     #[test]
-    fn the_count_suffix_is_reserved_beside_the_longest_chip() {
+    fn the_runs_and_landed_columns_are_reserved_beside_the_longest_chip() {
         let theme = project_theme();
         let runs = [
             with_project(&run_json("alpha-1", "needs_person"), r#""example-repo""#),
             with_project(&run_json("alpha-2", "needs_person"), r#""example-repo""#),
         ];
         let app = feed_app(&runs.join(","), "", "");
-        let terminal = draw_project_runs_frame(&app, &theme, 108);
-        assert!(row_text(&terminal, 2).contains("\u{25cf} needs_person 2 runs"));
+        let terminal = draw_project_runs_frame(&app, &theme, 112);
+        assert!(row_text(&terminal, 2).contains("\u{25cf} needs_person"));
+        assert_eq!(count_cell(&terminal, 2, RUNS_HEADER, 4), "2");
+        assert!(row_text(&terminal, 1).contains(LANDED_HEADER));
         let (project, run) = header_widths(&terminal);
         assert!(project < PROJECT_WIDTH);
         assert_eq!(run, RUN_COLUMNS[0]);
@@ -5817,7 +6052,7 @@ mod tests {
         let app = feed_app(&runs.join(","), "", "");
         let terminal = draw_runs_at(&app, 0, true, 6);
         assert!(row_text(&terminal, 2).contains("\u{25b6} a-2"));
-        assert!(row_text(&terminal, 2).contains(" 2 runs"));
+        assert_eq!(count_cell(&terminal, 2, RUNS_HEADER, 4), "2");
         assert_eq!(cell(&terminal, 100, 2).bg, theme.selected_row);
         assert!(!any_selected_bg(&terminal, 1, 2));
         assert!(!any_selected_bg(&terminal, 3, 5));
