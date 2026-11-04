@@ -78,9 +78,9 @@ fn field<'a>(label: &str, value: Option<&str>, width: usize, theme: &Theme) -> V
 /// The key line: a stale entry leads with the one-step dismiss.
 fn key_line(stale: bool) -> &'static str {
     if stale {
-        "d dismiss  a acknowledge  c copy  p preview  Esc back"
+        "d dismiss  a acknowledge  c copy  p preview  o open target  Esc back"
     } else {
-        "a acknowledge  d dismiss  c copy  p preview  Esc back"
+        "a acknowledge  d dismiss  c copy  p preview  o open target  Esc back"
     }
 }
 
@@ -229,19 +229,24 @@ mod tests {
     fn a_full_entry_shows_when_it_was_raised_and_its_run() {
         let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
         let e = entry(Some("2026-11-03T04:12:00Z"), Some("run-0042"));
-        let text = rows(&draw(&e, false, &theme, 60, 20)).join("\n");
+        let text = rows(&draw(&e, false, &theme, 80, 20)).join("\n");
         assert!(text.contains("2026-11-03T04:12:00Z"));
         assert!(text.contains("run-0042"));
-        assert!(text.contains("a acknowledge  d dismiss  c copy  p preview  Esc back"));
+        assert!(
+            text.contains("a acknowledge  d dismiss  c copy  p preview  o open target  Esc back")
+        );
     }
 
     #[test]
     fn key_rows_break_between_keys_and_never_inside_one() {
         let line = key_line(false);
-        assert_eq!(key_rows(line, 60), vec![line.to_string()]);
+        assert_eq!(key_rows(line, 70), vec![line.to_string()]);
         assert_eq!(
             key_rows(line, 48),
-            vec!["a acknowledge  d dismiss  c copy  p preview", "Esc back"]
+            vec![
+                "a acknowledge  d dismiss  c copy  p preview",
+                "o open target  Esc back"
+            ]
         );
     }
 
@@ -249,11 +254,11 @@ mod tests {
     fn key_line_leads_with_dismiss_only_when_stale() {
         assert_eq!(
             key_line(true),
-            "d dismiss  a acknowledge  c copy  p preview  Esc back"
+            "d dismiss  a acknowledge  c copy  p preview  o open target  Esc back"
         );
         assert_eq!(
             key_line(false),
-            "a acknowledge  d dismiss  c copy  p preview  Esc back"
+            "a acknowledge  d dismiss  c copy  p preview  o open target  Esc back"
         );
     }
 

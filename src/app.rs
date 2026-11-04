@@ -782,10 +782,7 @@ impl App {
     }
 
     fn page_index(&self) -> usize {
-        match self.page {
-            AppPage::Regatta => 0,
-            AppPage::Slipstream => 1,
-        }
+        page_slot(self.page)
     }
 
     fn focus_index(&self) -> usize {
@@ -1026,6 +1023,36 @@ impl App {
 
     pub fn close_inbox_detail(&mut self) {
         self.inbox_detail = None;
+    }
+
+    /// Closes the open inbox detail and moves focus to the frame holding its target, showing the
+    /// frame first when it is hidden. With no listed target the detail stays open and the status
+    /// line says so. A no-op when no detail is open. The selection is written for the Regatta
+    /// page, which is where the inbox detail opens.
+    pub fn open_inbox_target(&mut self) {
+        let Some(entry) = self.inbox_detail_entry() else {
+            return;
+        };
+        let found = self
+            .snapshot
+            .as_ref()
+            .and_then(|snap| inbox_target_row(entry, snap));
+        match found {
+            Some((focus, idx)) => {
+                let slot = if focus == Focus::Runs {
+                    RUNS_FRAME_SLOT
+                } else {
+                    QUEUE_FRAME_SLOT
+                };
+                self.regatta_frames_visible[slot] = true;
+                self.inbox_detail = None;
+                self.focus = focus;
+                self.selected[page_slot(AppPage::Regatta)][focus_slot(focus)] = idx;
+            }
+            None => {
+                self.status = Some((StatusLevel::Failed, "target not listed".to_string()));
+            }
+        }
     }
 
     /// Opens the acknowledge confirm for the open inbox entry; a no-op when none is open.
@@ -1535,6 +1562,39 @@ impl App {
                 }
             }
         }
+    }
+}
+
+/// The slots of the runs and queue frames in `regatta_frames_visible`, as the layout reads them.
+const RUNS_FRAME_SLOT: usize = 4;
+const QUEUE_FRAME_SLOT: usize = 5;
+
+/// The frame and feed-list index an inbox entry's target names. The runs list is tried first,
+/// by the entry's run field then its target, then the queue, by its initiative field then its
+/// target. `None` when the snapshot lists neither.
+fn inbox_target_row(entry: &InboxEntry, snap: &FeedSnapshot) -> Option<(Focus, usize)> {
+    let names = |first: &Option<String>| -> [Option<String>; 2] {
+        [first.clone(), Some(entry.target.clone())]
+    };
+    let in_runs = names(&entry.run)
+        .into_iter()
+        .flatten()
+        .find_map(|name| snap.runs.iter().position(|r| r.run == name))
+        .map(|i| (Focus::Runs, i));
+    in_runs.or_else(|| {
+        names(&entry.initiative)
+            .into_iter()
+            .flatten()
+            .find_map(|name| snap.queue.iter().position(|q| q.initiative == name))
+            .map(|i| (Focus::Queue, i))
+    })
+}
+
+/// The slot of `page` in the per-page selection array.
+fn page_slot(page: AppPage) -> usize {
+    match page {
+        AppPage::Regatta => 0,
+        AppPage::Slipstream => 1,
     }
 }
 
@@ -2745,6 +2805,97 @@ mod tests {
             app.status().map(|s| s.1.as_str()),
             Some("no dry run for this entry")
         );
+    }
+
+    /// An app on the inbox, its detail open on one entry built from `entry`, over a snapshot of
+    /// runs r1 and r2 and queue initiatives q0 and q1.
+    fn app_with_target_detail(entry: serde_json::Value) -> App {
+        let snap = snapshot_with_runs_and_queue(&["r1", "r2"], &[("q0", None), ("q1", None)]);
+        let mut app = app_on_inbox(Some(FeedSnapshot {
+            inbox: vec![serde_json::from_value(entry).expect("literal entry parses")],
+            ..snap
+        }));
+        app.open_inbox_detail();
+        app
+    }
+
+    #[test]
+    fn o_on_a_run_target_moves_focus_to_runs_on_that_row() {
+        let mut app = app_with_target_detail(
+            serde_json::json!({"kind": "needs_chair", "target": "t-1", "reason": "r", "run": "r2"}),
+        );
+        app.open_inbox_target();
+        assert_eq!(app.focus(), Focus::Runs);
+        assert_eq!(app.selected(), 1);
+        assert!(app.inbox_detail_entry().is_none());
+        assert_eq!(app.status(), None);
+    }
+
+    #[test]
+    fn o_on_a_target_that_names_a_run_moves_focus_to_runs() {
+        let mut app = app_with_target_detail(
+            serde_json::json!({"kind": "needs_chair", "target": "r2", "reason": "r"}),
+        );
+        app.open_inbox_target();
+        assert_eq!(app.focus(), Focus::Runs);
+        assert_eq!(app.selected(), 1);
+    }
+
+    #[test]
+    fn o_on_an_initiative_target_moves_focus_to_the_queue_on_that_row() {
+        let mut app = app_with_target_detail(serde_json::json!({
+            "kind": "needs_chair", "target": "t-1", "reason": "r", "initiative": "q1"
+        }));
+        app.open_inbox_target();
+        assert_eq!(app.focus(), Focus::Queue);
+        assert_eq!(app.selected(), 1);
+        assert!(app.inbox_detail_entry().is_none());
+    }
+
+    #[test]
+    fn o_on_an_unknown_target_leaves_the_detail_open_and_says_so() {
+        let mut app = app_with_target_detail(serde_json::json!({
+            "kind": "needs_chair", "target": "t-1", "reason": "r", "run": "gone", "initiative": "nope"
+        }));
+        app.open_inbox_target();
+        assert_eq!(app.focus(), Focus::Inbox);
+        assert!(app.inbox_detail_entry().is_some());
+        assert_eq!(
+            app.status(),
+            Some(&(StatusLevel::Failed, "target not listed".to_string()))
+        );
+    }
+
+    #[test]
+    fn o_shows_a_hidden_runs_frame_before_focusing_it() {
+        let mut app = app_with_target_detail(
+            serde_json::json!({"kind": "needs_chair", "target": "t-1", "reason": "r", "run": "r1"}),
+        );
+        app.toggle_regatta_frame(RUNS_FRAME_SLOT + 1);
+        assert!(!app.regatta_frames_visible()[RUNS_FRAME_SLOT]);
+        app.open_inbox_target();
+        assert!(app.regatta_frames_visible()[RUNS_FRAME_SLOT]);
+        assert_eq!(app.focus(), Focus::Runs);
+        assert_eq!(app.selected(), 0);
+    }
+
+    #[test]
+    fn o_shows_a_hidden_queue_frame_before_focusing_it() {
+        let mut app = app_with_target_detail(serde_json::json!({
+            "kind": "needs_chair", "target": "q0", "reason": "r"
+        }));
+        app.toggle_regatta_frame(QUEUE_FRAME_SLOT + 1);
+        app.open_inbox_target();
+        assert!(app.regatta_frames_visible()[QUEUE_FRAME_SLOT]);
+        assert_eq!(app.focus(), Focus::Queue);
+    }
+
+    #[test]
+    fn o_with_no_detail_open_does_nothing() {
+        let mut app = app_on_inbox(Some(snapshot_with_inbox(&["r1"])));
+        app.open_inbox_target();
+        assert_eq!(app.focus(), Focus::Inbox);
+        assert_eq!(app.status(), None);
     }
 
     #[test]
