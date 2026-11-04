@@ -9,6 +9,7 @@
 // flag them as dead code.
 #![allow(dead_code)]
 
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use chrono::{DateTime, FixedOffset};
@@ -202,6 +203,9 @@ pub struct App {
     spend_split_visible: bool,
     /// Whether the queue is shown grouped by project. Session-only: never written to config.
     queue_grouped: bool,
+    /// Ids of the runs the runs frame shows expanded. Session-only. A feed refresh keeps it; an id
+    /// that has left the feed is never queried, so it needs no pruning.
+    expanded_runs: BTreeSet<String>,
     regatta_layout_preset: usize,
     lanes_history: Vec<(String, u32)>,
     utc_offset: FixedOffset,
@@ -296,6 +300,7 @@ impl Default for App {
             chair_agents_visible: false,
             spend_split_visible: false,
             queue_grouped: false,
+            expanded_runs: BTreeSet::new(),
             regatta_layout_preset: 0,
             lanes_history: Vec::new(),
             utc_offset: FixedOffset::east_opt(0).expect("zero is a valid UTC offset"),
@@ -765,6 +770,24 @@ impl App {
 
     pub fn queue_grouped(&self) -> bool {
         self.queue_grouped
+    }
+
+    /// Expands the selected run if collapsed and collapses it if expanded. Does nothing unless the
+    /// runs frame has focus and a run is selected. Selection and focus do not move.
+    pub fn toggle_run_expanded(&mut self) {
+        if self.focus() != Focus::Runs {
+            return;
+        }
+        if let Some((DetailKind::Run, id)) = self.selected_entity() {
+            if !self.expanded_runs.remove(&id) {
+                self.expanded_runs.insert(id);
+            }
+        }
+    }
+
+    /// Whether the run `run_id` is expanded.
+    pub fn run_expanded(&self, run_id: &str) -> bool {
+        self.expanded_runs.contains(run_id)
     }
 
     pub fn cycle_regatta_layout_preset(&mut self) {
@@ -1729,6 +1752,40 @@ mod tests {
         assert!(!app.queue_grouped());
         app.toggle_queue_grouped();
         assert!(app.queue_grouped());
+    }
+
+    #[test]
+    fn toggle_run_expanded_expands_then_collapses_the_selected_run() {
+        let mut app = App::default();
+        app.apply_snapshot(make_rich_snapshot());
+        app.toggle_run_expanded();
+        assert!(app.run_expanded("r0"));
+        assert!(!app.run_expanded("r1"));
+        assert_eq!(app.selected(), 0);
+        app.toggle_run_expanded();
+        assert!(!app.run_expanded("r0"));
+    }
+
+    #[test]
+    fn the_expanded_set_survives_a_new_feed_snapshot() {
+        let mut app = App::default();
+        app.apply_snapshot(make_rich_snapshot());
+        app.toggle_run_expanded();
+        app.apply_snapshot(make_rich_snapshot());
+        assert!(app.run_expanded("r0"));
+        app.apply_snapshot(make_snapshot("2026-09-29T00:01:00Z", 0));
+        assert!(app.run_expanded("r0"));
+    }
+
+    #[test]
+    fn toggle_run_expanded_does_nothing_off_the_runs_frame() {
+        let mut app = App::default();
+        app.apply_snapshot(make_rich_snapshot());
+        app.cycle_focus_next();
+        assert_eq!(app.focus(), Focus::Queue);
+        app.toggle_run_expanded();
+        assert!(!app.run_expanded("r0"));
+        assert!(!app.run_expanded("i0"));
     }
 
     /// Builds a literal `FeedSnapshot` with the given timestamp and total lanes-in-use,
