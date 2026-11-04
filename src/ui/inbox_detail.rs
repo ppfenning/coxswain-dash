@@ -75,9 +75,33 @@ fn field<'a>(label: &str, value: Option<&str>, width: usize, theme: &Theme) -> V
     }
 }
 
-/// Draws `entry` in `area`: kind, target, the whole reason, when it was raised and its run,
-/// then the keys that act on it.
-pub fn render(f: &mut Frame, area: Rect, entry: &InboxEntry, theme: &Theme) {
+/// The key line: a stale entry leads with the one-step dismiss.
+fn key_line(stale: bool) -> &'static str {
+    if stale {
+        "d dismiss  a acknowledge  Esc back"
+    } else {
+        "a acknowledge  d dismiss  Esc back"
+    }
+}
+
+/// The line above the full text of a stale entry, and a blank line after it. Empty when fresh.
+fn stale_lines<'a>(stale: bool, theme: &Theme) -> Vec<Line<'a>> {
+    if stale {
+        vec![
+            Line::styled(
+                "stale: the target has moved on",
+                Style::default().fg(theme.dim),
+            ),
+            Line::from(""),
+        ]
+    } else {
+        Vec::new()
+    }
+}
+
+/// Draws `entry` in `area`: a stale line when `stale`, kind, target, the whole reason, when it
+/// was raised and its run, then the keys that act on it.
+pub fn render(f: &mut Frame, area: Rect, entry: &InboxEntry, stale: bool, theme: &Theme) {
     let base = Style::default().fg(theme.fg).bg(theme.bg);
     let block = Block::default()
         .title("Inbox")
@@ -92,6 +116,7 @@ pub fn render(f: &mut Frame, area: Rect, entry: &InboxEntry, theme: &Theme) {
         .map(Line::from)
         .collect::<Vec<_>>();
     let lines: Vec<Line> = [
+        stale_lines(stale, theme),
         field("kind", Some(&entry.kind), width, theme),
         field("target", Some(&entry.target), width, theme),
         vec![Line::from("")],
@@ -102,7 +127,7 @@ pub fn render(f: &mut Frame, area: Rect, entry: &InboxEntry, theme: &Theme) {
         field("run", entry.run.as_deref(), width, theme),
         vec![Line::from("")],
         vec![Line::styled(
-            "a acknowledge  d dismiss  Esc back",
+            key_line(stale),
             Style::default().fg(theme.dim),
         )],
     ]
@@ -131,10 +156,16 @@ mod tests {
         }
     }
 
-    fn draw(entry: &InboxEntry, theme: &Theme, w: u16, h: u16) -> Terminal<TestBackend> {
+    fn draw(
+        entry: &InboxEntry,
+        stale: bool,
+        theme: &Theme,
+        w: u16,
+        h: u16,
+    ) -> Terminal<TestBackend> {
         let mut terminal = Terminal::new(TestBackend::new(w, h)).expect("terminal");
         terminal
-            .draw(|f| render(f, f.area(), entry, theme))
+            .draw(|f| render(f, f.area(), entry, stale, theme))
             .expect("draw should not fail");
         terminal
     }
@@ -160,7 +191,7 @@ mod tests {
     fn a_narrow_render_keeps_the_whole_land_command() {
         let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
         let e = entry(Some("2026-11-03T04:12:00Z"), Some("run-0042"));
-        let drawn: String = rows(&draw(&e, &theme, 40, 24)).concat();
+        let drawn: String = rows(&draw(&e, false, &theme, 40, 24)).concat();
         let bare: String = drawn
             .chars()
             .filter(|c| !c.is_whitespace() && *c != '\u{2502}')
@@ -173,7 +204,7 @@ mod tests {
     #[test]
     fn an_entry_with_no_at_or_run_shows_two_dim_dashes() {
         let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
-        let terminal = draw(&entry(None, None), &theme, 60, 20);
+        let terminal = draw(&entry(None, None), false, &theme, 60, 20);
         let buffer = terminal.backend().buffer();
         let dashes: Vec<_> = (0..buffer.area.height)
             .flat_map(|y| (0..buffer.area.width).map(move |x| (x, y)))
@@ -187,23 +218,76 @@ mod tests {
     fn a_full_entry_shows_when_it_was_raised_and_its_run() {
         let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
         let e = entry(Some("2026-11-03T04:12:00Z"), Some("run-0042"));
-        let text = rows(&draw(&e, &theme, 60, 20)).join("\n");
+        let text = rows(&draw(&e, false, &theme, 60, 20)).join("\n");
         assert!(text.contains("2026-11-03T04:12:00Z"));
         assert!(text.contains("run-0042"));
         assert!(text.contains("a acknowledge  d dismiss  Esc back"));
     }
 
     #[test]
+    fn key_line_leads_with_dismiss_only_when_stale() {
+        assert_eq!(key_line(true), "d dismiss  a acknowledge  Esc back");
+        assert_eq!(key_line(false), "a acknowledge  d dismiss  Esc back");
+    }
+
+    #[test]
+    fn a_fresh_entry_has_no_stale_line() {
+        let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
+        let e = entry(Some("2026-11-03T04:12:00Z"), Some("run-0042"));
+        let text = rows(&draw(&e, false, &theme, 50, 18)).join("\n");
+        assert!(!text.contains("stale"), "buffer was {text:?}");
+        assert!(!text.contains("moved on"));
+        assert!(text.contains("a acknowledge  d dismiss  Esc back"));
+    }
+
+    #[test]
+    fn a_stale_entry_shows_a_dim_stale_line_above_the_text_and_leads_with_dismiss() {
+        let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
+        let e = entry(Some("2026-11-03T04:12:00Z"), Some("run-0042"));
+        let terminal = draw(&e, true, &theme, 50, 18);
+        let lines = rows(&terminal);
+        let stale_row = lines
+            .iter()
+            .position(|r| r.contains("the target has moved on"))
+            .expect("stale line is drawn");
+        let kind_row = lines.iter().position(|r| r.contains("kind")).expect("kind");
+        assert!(stale_row < kind_row);
+        assert_eq!(
+            terminal.backend().buffer()[(1, stale_row as u16)].fg,
+            theme.dim
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|r| r.contains("\u{2502}d dismiss  a acknowledge"))
+        );
+    }
+
+    #[test]
     fn renders_inbox_detail_snapshot_in_the_regatta_theme() {
         let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
         let e = entry(Some("2026-11-03T04:12:00Z"), Some("run-0042"));
-        insta::assert_snapshot!(draw(&e, &theme, 50, 18).backend().to_string());
+        insta::assert_snapshot!(draw(&e, false, &theme, 50, 18).backend().to_string());
     }
 
     #[test]
     fn renders_inbox_detail_snapshot_in_the_harbor_light_theme() {
         let theme = crate::theme::resolve_for(ThemeId::HarborLight, Some("truecolor"));
         let e = entry(Some("2026-11-03T04:12:00Z"), Some("run-0042"));
-        insta::assert_snapshot!(draw(&e, &theme, 50, 18).backend().to_string());
+        insta::assert_snapshot!(draw(&e, false, &theme, 50, 18).backend().to_string());
+    }
+
+    #[test]
+    fn renders_a_stale_inbox_detail_in_the_regatta_theme() {
+        let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
+        let e = entry(Some("2026-11-03T04:12:00Z"), Some("run-0042"));
+        insta::assert_snapshot!(draw(&e, true, &theme, 50, 18).backend().to_string());
+    }
+
+    #[test]
+    fn renders_a_stale_inbox_detail_in_the_harbor_light_theme() {
+        let theme = crate::theme::resolve_for(ThemeId::HarborLight, Some("truecolor"));
+        let e = entry(Some("2026-11-03T04:12:00Z"), Some("run-0042"));
+        insta::assert_snapshot!(draw(&e, true, &theme, 50, 18).backend().to_string());
     }
 }

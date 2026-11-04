@@ -174,7 +174,10 @@ fn render_base(f: &mut Frame, app: &App, theme: &Theme) {
         // Like a detail view, it takes the page's share of the width beside the chair panel.
         let (body, side) = split_page(f.area(), app);
         if body.width > 0 {
-            inbox_detail::render(f, body, entry, theme);
+            let stale = app
+                .snapshot()
+                .is_some_and(|snapshot| crate::feed::is_stale(entry, snapshot));
+            inbox_detail::render(f, body, entry, stale, theme);
         }
         if let Some(side) = side {
             render_panel(f, side, app, theme);

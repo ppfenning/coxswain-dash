@@ -19,7 +19,7 @@ use crate::actions::{Target, bindings};
 use crate::app::{App, Focus};
 use crate::feed::{
     Chair, CurrentAction, FeedSnapshot, HistoryRow, HistoryToday, InboxEntry, Machine, Outcome,
-    QueueEntry, Run, RunEnd,
+    QueueEntry, Run, RunEnd, grouped_inbox, is_stale,
 };
 use crate::form::{KEY_ADD_MACHINE, KEY_EDIT, KEY_NEW, KEY_REMOVE};
 use crate::theme::Theme;
@@ -2135,11 +2135,91 @@ fn render_queue(
 /// Inbox items drawn before the rest fold into `+ N more`.
 const INBOX_ITEMS: usize = 3;
 
-fn inbox_line(i: &InboxEntry, theme: &Theme) -> Line<'static> {
+fn inbox_line(i: &InboxEntry, stale: bool, theme: &Theme) -> Line<'static> {
+    let dim = Style::default().fg(theme.dim);
     Line::from(vec![
         Span::raw(format!("{} {} ", i.kind, i.target)),
-        Span::styled(i.reason.clone(), Style::default().fg(theme.dim)),
+        Span::styled(i.reason.clone(), dim),
     ])
+    .spans
+    .into_iter()
+    .chain(stale.then(|| Span::styled(" stale", dim)))
+    .collect()
+}
+
+/// One drawn line of the inbox frame. `Entry` holds the index into `FeedSnapshot::inbox`.
+#[derive(Debug, PartialEq, Eq)]
+enum InboxRow {
+    Header {
+        kind: String,
+        initiative: Option<String>,
+        count: usize,
+    },
+    Entry(usize),
+    More(usize),
+}
+
+/// The lines of the inbox frame, top to bottom. A header row opens each kind and initiative group,
+/// but only when there is more than one group. At most `max_items` entries and `rows` lines are
+/// drawn, headers counted. The rest fold into one closing `More` row, which costs a line, and a
+/// header is never left without an entry beneath it.
+fn inbox_rows(snapshot: &FeedSnapshot, max_items: usize, rows: usize) -> Vec<InboxRow> {
+    let groups = grouped_inbox(snapshot);
+    let headed = groups.len() > 1;
+    let flat: Vec<InboxRow> = groups
+        .into_iter()
+        .flat_map(|g| {
+            let header = headed.then_some(InboxRow::Header {
+                kind: g.kind,
+                initiative: g.initiative,
+                count: g.count,
+            });
+            header.into_iter().chain(
+                g.entries
+                    .into_iter()
+                    .map(|(index, _)| InboxRow::Entry(index)),
+            )
+        })
+        .collect();
+    let total = snapshot.inbox.len();
+    if total <= max_items && flat.len() <= rows {
+        return flat;
+    }
+    let budget = rows.saturating_sub(1);
+    let fits = flat
+        .iter()
+        .scan(0, |entries, row| {
+            *entries += usize::from(matches!(row, InboxRow::Entry(_)));
+            Some(*entries)
+        })
+        .enumerate()
+        .take_while(|(i, entries)| *i < budget && *entries <= max_items)
+        .count();
+    let kept = match fits.checked_sub(1).map(|last| &flat[last]) {
+        Some(InboxRow::Header { .. }) => fits - 1,
+        _ => fits,
+    };
+    let shown = flat[..kept]
+        .iter()
+        .filter(|row| matches!(row, InboxRow::Entry(_)))
+        .count();
+    flat.into_iter()
+        .take(kept)
+        .chain(std::iter::once(InboxRow::More(total - shown)))
+        .collect()
+}
+
+fn inbox_header_line(
+    kind: &str,
+    initiative: Option<&str>,
+    count: usize,
+    theme: &Theme,
+) -> Line<'static> {
+    let initiative = initiative.map_or_else(String::new, |i| format!(" {i}"));
+    Line::styled(
+        format!("{kind}{initiative} ({count})"),
+        Style::default().fg(theme.dim),
+    )
 }
 
 fn render_inbox(
@@ -2152,24 +2232,33 @@ fn render_inbox(
     let block = numbered_block(9, "inbox", theme, false);
     let inner = block.inner(rect);
     let rows = usize::from(inner.height);
-    let (shown, more) = overflow_split(snapshot.inbox.len(), INBOX_ITEMS, rows);
+    let drawn = inbox_rows(snapshot, INBOX_ITEMS, rows);
     let lines: Vec<Line> = if snapshot.inbox.is_empty() {
         vec![Line::styled(
             "\u{2713} nothing waiting on you",
             Style::default().fg(theme.landed),
         )]
     } else {
-        snapshot
-            .inbox
+        drawn
             .iter()
-            .take(shown)
-            .map(|i| inbox_line(i, theme))
-            .chain((more > 0).then(|| more_line(more, theme)))
+            .map(|row| match row {
+                InboxRow::Header {
+                    kind,
+                    initiative,
+                    count,
+                } => inbox_header_line(kind, initiative.as_deref(), *count, theme),
+                InboxRow::Entry(index) => {
+                    let entry = &snapshot.inbox[*index];
+                    inbox_line(entry, is_stale(entry, snapshot), theme)
+                }
+                InboxRow::More(more) => more_line(*more, theme),
+            })
             .collect()
     };
+    let selected_row = selected.and_then(|i| drawn.iter().position(|r| *r == InboxRow::Entry(i)));
     let paragraph = Paragraph::new(lines).block(block).style(base_style(theme));
     f.render_widget(paragraph, rect);
-    paint_selected_row(f, inner, selected.filter(|i| *i < shown), theme);
+    paint_selected_row(f, inner, selected_row, theme);
 }
 
 /// The frame's number key and title: it follows history (7) as the eighth frame.
@@ -2287,6 +2376,9 @@ const KEY_BAR: [(&str, &str); 9] = [
 /// The view keys, after the palette. Fixed by the initiative, not read from the keymap.
 const KEY_VIEWS: [(&str, &str); 3] = [("w", "watch"), ("$", "spend"), ("h", "health")];
 
+/// Opens the focused inbox entry's detail. Drawn after the inbox's action keys; `input.rs` binds it.
+const KEY_OPEN_DETAIL: char = '\u{23ce}';
+
 /// The action keys of the list in `focus`, from `actions::bindings`. History has no actions.
 /// The placeholder id is never read: `bindings` keys on the kind of target alone.
 pub(super) fn action_hints(focus: Focus) -> Vec<(char, &'static str)> {
@@ -2378,6 +2470,7 @@ fn key_bar_keys(focus: Focus, width: u16, theme: &Theme) -> Line<'static> {
                 .into_iter()
                 .flatten(),
         )
+        .chain((focus == Focus::Inbox).then_some((KEY_OPEN_DETAIL, "open")))
         .map(|(k, l)| pair(k.to_string(), l).to_vec())
         .collect();
     let tail_for = |n: usize| -> Vec<Span<'static>> {
@@ -4484,7 +4577,7 @@ mod tests {
             Focus::Queue,
             "] priority up  [ priority down  n new  e edit  x remove",
         ),
-        (Focus::Inbox, "a accept  x deny"),
+        (Focus::Inbox, "a accept  x deny  \u{23ce} open"),
     ];
 
     const VIEW_KEYS: &str = "w watch  $ spend  h health";
@@ -4616,6 +4709,145 @@ mod tests {
     #[test]
     fn the_key_bar_snapshot_with_inbox_focus() {
         insta::assert_snapshot!(key_bar_row(Focus::Inbox, 120));
+    }
+
+    /// Four inbox entries in two groups, `needs_chair init-a` and `review init-b`, interleaved in
+    /// feed order. Entry 1 is stale by flag and entry 3 carries an explicit `stale: false`.
+    const GROUPED_INBOX: &str = r#"
+{"kind":"review","target":"pr-1","reason":"needs eyes","initiative":"init-b"},
+{"kind":"needs_chair","target":"task-0","reason":"budget stop","initiative":"init-a","stale":true},
+{"kind":"review","target":"pr-2","reason":"ready","initiative":"init-b"},
+{"kind":"needs_chair","target":"task-1","reason":"budget stop","initiative":"init-a","stale":false}"#;
+
+    fn grouped_inbox_app(selected: usize) -> App {
+        use crossterm::event::KeyCode;
+        let mut app = feed_app("", "", GROUPED_INBOX);
+        while app.focus() != Focus::Inbox {
+            crate::input::handle_key(&mut app, KeyCode::Right);
+        }
+        (0..selected).for_each(|_| crate::input::handle_key(&mut app, KeyCode::Down));
+        app
+    }
+
+    /// The text inside the inbox frame's border, one string per inner row, trailing space cut.
+    fn inbox_text(terminal: &Terminal<TestBackend>, app: &App) -> Vec<String> {
+        let rect = inbox_rect(app);
+        let buffer = terminal.backend().buffer();
+        (rect.y + 1..rect.y + rect.height - 1)
+            .map(|y| {
+                (rect.x + 1..rect.x + rect.width - 1)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_grouped_inbox_draws_a_header_per_group_in_both_themes() {
+        for (id, name) in BOTH_THEMES {
+            let app = grouped_inbox_app(0);
+            let terminal = draw_page(&app, id, 120, 40);
+            let rows = inbox_text(&terminal, &app);
+            insta::assert_snapshot!(format!("grouped_inbox_{name}"), rows.join("\n"));
+        }
+    }
+
+    #[test]
+    fn a_single_group_draws_no_header() {
+        let app = feed_app("", "", &inbox_json(2));
+        let terminal = draw_page(&app, ThemeId::Regatta, 120, 40);
+        let rows = inbox_text(&terminal, &app);
+        assert!(rows[0].contains("needs_chair task-0"), "{rows:?}");
+        assert!(rows[1].contains("needs_chair task-1"), "{rows:?}");
+    }
+
+    #[test]
+    fn a_stale_entry_ends_with_a_dim_stale_marker_and_a_fresh_one_does_not() {
+        let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
+        let app = grouped_inbox_app(0);
+        let terminal = draw_page(&app, ThemeId::Regatta, 120, 40);
+        let rows = inbox_text(&terminal, &app);
+        let stale_row = rows
+            .iter()
+            .position(|r| r.contains("task-0"))
+            .expect("task-0");
+        let y = inbox_rect(&app).y + 1 + u16::try_from(stale_row).expect("row fits");
+        assert!(rows[stale_row].ends_with("budget stop stale"), "{rows:?}");
+        assert_eq!(fg_at(&terminal, y, "stale"), Some(theme.dim));
+        let fresh_row = rows
+            .iter()
+            .position(|r| r.contains("task-1"))
+            .expect("task-1");
+        assert!(!rows[fresh_row].contains("stale"), "{rows:?}");
+    }
+
+    #[test]
+    fn the_highlight_sits_on_the_entry_under_its_own_header() {
+        let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
+        // Feed entry 0 is `pr-1`, drawn fifth: after both needs_chair rows and the review header.
+        let app = grouped_inbox_app(0);
+        assert_eq!(app.selected(), 0);
+        let terminal = draw_page(&app, ThemeId::Regatta, 120, 40);
+        let rows = inbox_text(&terminal, &app);
+        assert!(rows[3].starts_with("review init-b (2)"), "{rows:?}");
+        assert!(rows[4].contains("pr-1"), "{rows:?}");
+        assert_eq!(bg_at_inbox_row(&terminal, &app, 4), theme.selected_row);
+        (0..4)
+            .for_each(|row| assert_ne!(bg_at_inbox_row(&terminal, &app, row), theme.selected_row));
+    }
+
+    #[test]
+    fn an_entry_folded_into_the_more_line_is_not_highlighted() {
+        let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
+        let app = grouped_inbox_app(2);
+        let terminal = draw_page(&app, ThemeId::Regatta, 120, 40);
+        let rows = inbox_text(&terminal, &app);
+        assert_eq!(rows[5], "+ 1 more");
+        (0..6)
+            .for_each(|row| assert_ne!(bg_at_inbox_row(&terminal, &app, row), theme.selected_row));
+    }
+
+    fn rows_for(inbox: &str, max_items: usize, rows: usize) -> Vec<InboxRow> {
+        let app = feed_app("", "", inbox);
+        inbox_rows(app.snapshot().expect("snapshot"), max_items, rows)
+    }
+
+    #[test]
+    fn a_header_counts_against_the_height_and_the_fold_names_what_is_left() {
+        let header = |kind: &str, count| InboxRow::Header {
+            kind: kind.to_string(),
+            initiative: Some(if kind == "review" { "init-b" } else { "init-a" }.to_string()),
+            count,
+        };
+        // Six lines hold both headers and all four entries.
+        assert_eq!(
+            rows_for(GROUPED_INBOX, 9, 6),
+            [
+                header("needs_chair", 2),
+                InboxRow::Entry(1),
+                InboxRow::Entry(3),
+                header("review", 2),
+                InboxRow::Entry(0),
+                InboxRow::Entry(2),
+            ]
+        );
+        // Five lines: one is the fold, so the review header would dangle and is dropped.
+        assert_eq!(
+            rows_for(GROUPED_INBOX, 9, 5),
+            [
+                header("needs_chair", 2),
+                InboxRow::Entry(1),
+                InboxRow::Entry(3),
+                InboxRow::More(2),
+            ]
+        );
+        // The entry cap still applies: three entries and the second header, then the fold.
+        assert_eq!(
+            rows_for(GROUPED_INBOX, 3, 12).last(),
+            Some(&InboxRow::More(1))
+        );
     }
 
     fn bg_at_inbox_row(terminal: &Terminal<TestBackend>, app: &App, row: u16) -> Color {
