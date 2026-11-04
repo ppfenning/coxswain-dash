@@ -16,7 +16,7 @@ use super::chrome::{
     bar_parts, base_style, below_first_row, card_block, clip, dim_style, first_row, render_label,
 };
 use crate::detail::{DayCost, Meter, MeterPoint, SpendDetail};
-use crate::feed::{NodeSpend, SpendWindow};
+use crate::feed::{Budget, NodeSpend, SpendWindow, Verdict};
 use crate::theme::{SlipstreamPalette, Theme};
 
 /// A meter turns `meter_mid` from 60% full and `meter_high` from 90%.
@@ -231,6 +231,45 @@ fn daily_lines(
     rows: usize,
     p: &SlipstreamPalette,
 ) -> Vec<Line<'static>> {
+    budget_daily_lines(daily, None, width, rows, p)
+}
+
+/// One bar's cells: `filled` then `empty`. With a `marker` column inside the bar, that one cell
+/// is drawn as `│`, over either the fill or the empty track.
+fn bar_spans(
+    filled: usize,
+    empty: usize,
+    marker: Option<usize>,
+    p: &SlipstreamPalette,
+) -> Vec<Span<'static>> {
+    let fill = fg(p.accents[0]);
+    let track = fg(p.card_border);
+    let Some(col) = marker.filter(|&c| c < filled + empty) else {
+        return vec![
+            Span::styled("█".repeat(filled), fill),
+            Span::styled("░".repeat(empty), track),
+        ];
+    };
+    let left_filled = filled.min(col);
+    let right_filled = filled.saturating_sub(col + 1);
+    vec![
+        Span::styled("█".repeat(left_filled), fill),
+        Span::styled("░".repeat(col - left_filled), track),
+        Span::styled("│", fg(p.text)),
+        Span::styled("█".repeat(right_filled), fill),
+        Span::styled("░".repeat(filled + empty - col - 1 - right_filled), track),
+    ]
+}
+
+/// Like `daily_lines`, with a `│` on every bar at `average` dollars on the bars' scale. The
+/// scale is the largest day, so an average of zero or none draws the bars alone.
+pub fn budget_daily_lines(
+    daily: &[DayCost],
+    average: Option<f64>,
+    width: usize,
+    rows: usize,
+    p: &SlipstreamPalette,
+) -> Vec<Line<'static>> {
     if daily.is_empty() {
         return vec![Line::styled("no daily cost yet", dim_style(p))];
     }
@@ -238,18 +277,24 @@ fn daily_lines(
     let total: f64 = daily.iter().map(|d| d.cost).sum();
     let bar = width.saturating_sub(DAY_WIDTH + 2 + COST_WIDTH);
     let shown = &daily[daily.len().saturating_sub(rows.saturating_sub(1))..];
+    let marker = average
+        .filter(|a| *a > 0.0 && largest > 0.0 && bar > 0)
+        .map(|a| bar_parts(a / largest, bar).0.min(bar - 1));
     let day_line = |d: &DayCost| {
         let fraction = if largest > 0.0 { d.cost / largest } else { 0.0 };
         let (filled, empty) = bar_parts(fraction, bar);
-        Line::from(vec![
-            Span::styled(format!("{:<DAY_WIDTH$} ", day_label(&d.day)), dim_style(p)),
-            Span::styled("█".repeat(filled), fg(p.accents[0])),
-            Span::styled("░".repeat(empty), fg(p.card_border)),
-            Span::styled(
+        Line::from(
+            std::iter::once(Span::styled(
+                format!("{:<DAY_WIDTH$} ", day_label(&d.day)),
+                dim_style(p),
+            ))
+            .chain(bar_spans(filled, empty, marker, p))
+            .chain(std::iter::once(Span::styled(
                 format!(" {:>COST_WIDTH$}", format!("${:.2}", d.cost)),
                 fg(p.text),
-            ),
-        ])
+            )))
+            .collect::<Vec<_>>(),
+        )
     };
     let left = clip(
         &format!("Total · {} days", daily.len()),
@@ -431,6 +476,43 @@ fn where_lines(
         .chain(legend)
         .chain(nodes)
         .chain(cpl_line)
+        .collect()
+}
+
+/// `where_lines`, led by `this month $spent of $budget · verdict` when `budget` is a month
+/// budget. The leading line takes one of `rows`.
+pub fn budget_where_lines(
+    w: &SpendWindow,
+    budget: Option<&Budget>,
+    width: usize,
+    rows: usize,
+    p: &SlipstreamPalette,
+) -> Vec<Line<'static>> {
+    let led = budget
+        .filter(|_| rows > 0)
+        .and_then(|b| b.verdict().map(|v| (b, v)));
+    let Some((b, verdict)) = led else {
+        return where_lines(w, width, rows, p);
+    };
+    let (word, color) = match verdict {
+        Verdict::OnTrack => ("on track", p.done_chip),
+        Verdict::OverPace => ("over pace", p.pending_chip),
+        Verdict::OverBudget => ("over budget", p.failed_chip),
+    };
+    let head = clip(
+        &format!("this month ${:.2} of ${:.2}", b.spent_usd, b.budget_usd),
+        width,
+    );
+    let sep = clip(" · ", width.saturating_sub(head.chars().count()));
+    let room = width.saturating_sub(head.chars().count() + sep.chars().count());
+    let lead = Line::from(vec![
+        Span::styled(head, fg(p.text)),
+        Span::styled(sep, dim_style(p)),
+        Span::styled(clip(word, room), fg(color)),
+    ]);
+    std::iter::once(lead)
+        .chain(where_lines(w, width, rows - 1, p))
+        .take(rows)
         .collect()
 }
 
@@ -907,6 +989,112 @@ mod tests {
         assert!(lines[2].to_string().starts_with("Wed 14"), "{}", lines[2]);
         let total: f64 = d.daily.iter().map(|d| d.cost).sum();
         assert!(lines[3].to_string().ends_with(&format!("${total:.2}")));
+    }
+
+    fn text_of(lines: &[Line]) -> Vec<String> {
+        lines.iter().map(|l| l.to_string()).collect()
+    }
+
+    fn day(day: &str, cost: f64) -> DayCost {
+        serde_json::from_str(&format!(r#"{{"day": "{day}", "cost": {cost}}}"#)).expect("day parses")
+    }
+
+    fn budget(period: &str, spent: f64, budget: f64, projected: f64) -> Budget {
+        serde_json::from_str(&format!(
+            r#"{{"period": "{period}", "spent_usd": {spent}, "budget_usd": {budget},
+            "projected_usd": {projected}}}"#
+        ))
+        .expect("budget parses")
+    }
+
+    #[test]
+    fn bar_spans_put_the_marker_over_fill_or_track() {
+        let p = for_colorterm(ThemeId::Regatta, Some("truecolor"));
+        let text = |spans: Vec<Span>| {
+            spans
+                .iter()
+                .map(|s| s.content.to_string())
+                .collect::<String>()
+        };
+        assert_eq!(text(bar_spans(3, 5, Some(4), &p)), "███░│░░░");
+        assert_eq!(text(bar_spans(6, 2, Some(1), &p)), "█│████░░");
+        assert_eq!(text(bar_spans(3, 5, None, &p)), "███░░░░░");
+        assert_eq!(text(bar_spans(3, 5, Some(8), &p)), "███░░░░░");
+    }
+
+    #[test]
+    fn the_average_marker_sits_at_its_scaled_column_on_every_day_row() {
+        let p = for_colorterm(ThemeId::Regatta, Some("truecolor"));
+        let days = [day("2026-10-01", 10.0), day("2026-10-02", 20.0)];
+        // Width 27 leaves a 10-cell bar after the 7-column day label. An average of $10 on a
+        // $20 scale is cell 5.
+        let lines = text_of(&budget_daily_lines(&days, Some(10.0), 27, 3, &p));
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[0], "Thu 01 █████│░░░░ ".to_string() + "   $10.00");
+        assert_eq!(lines[1], "Fri 02 █████│████ ".to_string() + "   $20.00");
+        assert!(!lines[2].contains('│'), "{}", lines[2]);
+    }
+
+    #[test]
+    fn a_none_average_draws_what_daily_lines_draws() {
+        let p = for_colorterm(ThemeId::Regatta, Some("truecolor"));
+        let d = detail();
+        let plain = daily_lines(&d.daily, 60, 20, &p);
+        let none = budget_daily_lines(&d.daily, None, 60, 20, &p);
+        assert_eq!(text_of(&none), text_of(&plain));
+        assert_eq!(none, plain);
+        assert!(!text_of(&none).iter().any(|l| l.contains('│')));
+    }
+
+    #[test]
+    fn a_short_rows_limit_keeps_the_newest_days_and_the_leading_budget_line() {
+        let p = for_colorterm(ThemeId::Regatta, Some("truecolor"));
+        let d = detail();
+        let lines = budget_daily_lines(&d.daily, Some(30.0), 60, 3, &p);
+        assert_eq!(lines.len(), 3);
+        assert!(lines[0].to_string().starts_with("Tue 13"), "{}", lines[0]);
+        assert!(lines[1].to_string().starts_with("Wed 14"), "{}", lines[1]);
+        assert!(lines[2].to_string().starts_with("Total · 14 days"));
+        let w = window(true);
+        let month = budget("month", 120.0, 300.0, 250.0);
+        let short = budget_where_lines(&w, Some(&month), 60, 2, &p);
+        assert_eq!(short.len(), 2);
+        assert!(short[0].to_string().starts_with("this month"));
+        let one = budget_where_lines(&w, Some(&month), 60, 1, &p);
+        assert_eq!(
+            text_of(&one),
+            vec!["this month $120.00 of $300.00 · on track"]
+        );
+        assert!(budget_where_lines(&w, Some(&month), 20, 1, &p)[0].width() <= 20);
+    }
+
+    #[test]
+    fn a_month_budget_leads_the_where_lines_with_spend_and_a_verdict_word() {
+        let p = for_colorterm(ThemeId::Regatta, Some("truecolor"));
+        let w = window(true);
+        let cases = [
+            (budget("month", 120.0, 300.0, 250.0), "on track"),
+            (budget("month", 120.0, 300.0, 400.0), "over pace"),
+            (budget("month", 320.0, 300.0, 400.0), "over budget"),
+        ];
+        for (b, word) in cases {
+            let lines = budget_where_lines(&w, Some(&b), 60, 10, &p);
+            let expect = format!("this month ${:.2} of $300.00 · {word}", b.spent_usd);
+            assert_eq!(lines[0].to_string(), expect);
+            assert_eq!(&lines[1..], &where_lines(&w, 60, 9, &p)[..]);
+        }
+    }
+
+    #[test]
+    fn no_budget_or_no_month_budget_draws_exactly_the_where_lines() {
+        let p = for_colorterm(ThemeId::Regatta, Some("truecolor"));
+        let w = window(true);
+        let expect = where_lines(&w, 60, 10, &p);
+        let none = budget("none", 0.0, 0.0, 0.0);
+        let zero = budget("month", 50.0, 0.0, 80.0);
+        assert_eq!(budget_where_lines(&w, None, 60, 10, &p), expect);
+        assert_eq!(budget_where_lines(&w, Some(&none), 60, 10, &p), expect);
+        assert_eq!(budget_where_lines(&w, Some(&zero), 60, 10, &p), expect);
     }
 
     fn bar_fg(terminal: &Terminal<TestBackend>, label: &str) -> Color {
