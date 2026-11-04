@@ -83,8 +83,21 @@ fn invoked_name(arg0: &str) -> &str {
         .unwrap_or(arg0)
 }
 
+/// The bare version on a release tag or without a known commit, else `<version>+<commit>`.
+fn stamped_version(version: &str, commit: Option<&str>, on_release_tag: bool) -> String {
+    match commit {
+        Some(commit) if !on_release_tag && !commit.is_empty() => format!("{version}+{commit}"),
+        _ => version.to_string(),
+    }
+}
+
 fn version_line() -> String {
-    format!("towpath {}", env!("CARGO_PKG_VERSION"))
+    let stamped = stamped_version(
+        env!("CARGO_PKG_VERSION"),
+        option_env!("COX_GIT_COMMIT"),
+        option_env!("COX_HEAD_ON_RELEASE_TAG") == Some("1"),
+    );
+    format!("towpath {stamped}")
 }
 
 const USAGE: &str = "Usage: towpath [--version | -V | --help]\n\nThe Coxswain fleet dashboard. Run it with no arguments to open the interface.";
@@ -822,6 +835,27 @@ mod tests {
     #[test]
     fn the_version_line_names_the_binary() {
         assert!(version_line().starts_with("towpath "));
+    }
+
+    #[test]
+    fn a_release_tag_gives_the_bare_version() {
+        assert_eq!(
+            stamped_version("2026.11.1", Some("14df4b9"), true),
+            "2026.11.1"
+        );
+    }
+
+    #[test]
+    fn a_development_build_appends_the_commit() {
+        assert_eq!(
+            stamped_version("2026.11.1", Some("14df4b9"), false),
+            "2026.11.1+14df4b9"
+        );
+    }
+
+    #[test]
+    fn an_unknown_commit_gives_the_bare_version() {
+        assert_eq!(stamped_version("2026.11.1", None, false), "2026.11.1");
     }
 
     #[test]
