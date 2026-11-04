@@ -34,6 +34,16 @@ pub struct FeedSnapshot {
     pub chair_agents: Vec<ChairAgent>,
     #[serde(default)]
     pub spend_split: Option<SpendSplit>,
+    /// Month budget and pace. Read it through `budget()`. Crate-visible so the
+    /// `..snap` struct updates in other modules still compile.
+    #[serde(default, deserialize_with = "lenient_budget")]
+    pub(crate) budget: Option<Budget>,
+}
+
+impl FeedSnapshot {
+    pub fn budget(&self) -> Option<&Budget> {
+        self.budget.as_ref()
+    }
 }
 
 /// Where a chair background agent stands. A value this build does not know parses as `Unknown`.
@@ -286,6 +296,59 @@ pub struct Spend {
 fn lenient_today<'de, D: Deserializer<'de>>(d: D) -> Result<Option<SpendToday>, D::Error> {
     let value = serde_json::Value::deserialize(d)?;
     Ok(serde_json::from_value(value).ok())
+}
+
+/// A `budget` block that fails to parse is None, so it never drops the whole feed line.
+fn lenient_budget<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Budget>, D::Error> {
+    let value = serde_json::Value::deserialize(d)?;
+    Ok(serde_json::from_value(value).ok())
+}
+
+/// The month budget and its pace. `period` is "month" when a budget is set, else "none" with
+/// `budget_usd` and `fraction` at 0.
+#[derive(Debug, Deserialize)]
+pub struct Budget {
+    #[serde(default)]
+    pub period: String,
+    #[serde(default)]
+    pub spent_usd: f64,
+    #[serde(default)]
+    pub budget_usd: f64,
+    #[serde(default)]
+    pub fraction: f64,
+    #[serde(default)]
+    pub daily_avg_usd: f64,
+    #[serde(default)]
+    pub projected_usd: f64,
+    #[serde(default)]
+    pub days_left: u32,
+    #[serde(default)]
+    pub daily_avg_7d_usd: f64,
+    #[serde(default)]
+    pub daily_avg_14d_usd: f64,
+}
+
+/// How a month is going against its budget. The feed sends none; `Budget::verdict` derives it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Verdict {
+    OnTrack,
+    OverPace,
+    OverBudget,
+}
+
+impl Budget {
+    /// None without a month budget. Else over budget once spent reaches it, over pace once projected exceeds it.
+    pub fn verdict(&self) -> Option<Verdict> {
+        if self.period != "month" || self.budget_usd == 0.0 {
+            None
+        } else if self.spent_usd >= self.budget_usd {
+            Some(Verdict::OverBudget)
+        } else if self.projected_usd > self.budget_usd {
+            Some(Verdict::OverPace)
+        } else {
+            Some(Verdict::OnTrack)
+        }
+    }
 }
 
 /// Reads `measured` as a count of measured tasks. An older feed sent a bool: true is 1, false is 0.
@@ -1033,6 +1096,73 @@ mod tests {
         );
         let today = snapshot.spend.today.expect("today parses");
         assert_eq!((today.landed, today.measured), (Some(4), Some(3)));
+    }
+
+    fn with_budget(budget: &str) -> FeedSnapshot {
+        parse_snapshot(&format!(
+            r#"{{"schema":1,"at":"2026-09-29T00:00:00Z","chair":{{"holder":"h","host":"x","epoch":1,"liveness":"live","beat_age_s":1}},"spend":{{"five_hour_fraction":0.1,"five_hour_source":"meter","weekly_fraction":0.1,"weekly_source":"meter","hard_stop_fraction":0.9,"five_hour_resets_at":"2026-09-29T02:00:00Z","weekly_resets_at":"2026-10-04T04:00:00Z"}}{budget},"machines":[],"runs":[],"queue":[],"inbox":[],"watch":[]}}"#
+        ))
+        .expect("literal snapshot should parse")
+    }
+
+    #[test]
+    fn the_fixture_budget_reads_all_nine_fields() {
+        let snapshot = parse_snapshot(FIXTURE).expect("fixture parses");
+        let budget = snapshot.budget().expect("budget parses");
+        assert_eq!(budget.period, "month");
+        assert_eq!(budget.spent_usd, 190.0);
+        assert_eq!(budget.budget_usd, 400.0);
+        assert_eq!(budget.fraction, 0.475);
+        assert_eq!(budget.daily_avg_usd, 20.0);
+        assert_eq!(budget.projected_usd, 600.0);
+        assert_eq!(budget.days_left, 20);
+        assert_eq!(budget.daily_avg_7d_usd, 21.5);
+        assert_eq!(budget.daily_avg_14d_usd, 19.25);
+    }
+
+    #[test]
+    fn a_feed_without_budget_has_none() {
+        assert!(with_budget("").budget().is_none());
+    }
+
+    #[test]
+    fn a_malformed_budget_is_none_and_the_frame_survives() {
+        let snapshot = with_budget(r#","budget":{"period":5,"days_left":"x"}"#);
+        assert!(snapshot.budget().is_none());
+        assert_eq!(snapshot.schema, 1);
+        assert!(snapshot.machines.is_empty());
+    }
+
+    fn budget_of(period: &str, spent: f64, budget: f64, projected: f64) -> Budget {
+        Budget {
+            period: period.to_string(),
+            spent_usd: spent,
+            budget_usd: budget,
+            fraction: 0.0,
+            daily_avg_usd: 0.0,
+            projected_usd: projected,
+            days_left: 10,
+            daily_avg_7d_usd: 0.0,
+            daily_avg_14d_usd: 0.0,
+        }
+    }
+
+    #[test]
+    fn verdict_gives_each_of_the_four_outcomes() {
+        assert_eq!(budget_of("none", 10.0, 0.0, 20.0).verdict(), None);
+        assert_eq!(budget_of("month", 10.0, 0.0, 20.0).verdict(), None);
+        assert_eq!(
+            budget_of("month", 190.0, 400.0, 350.0).verdict(),
+            Some(Verdict::OnTrack)
+        );
+        assert_eq!(
+            budget_of("month", 190.0, 400.0, 600.0).verdict(),
+            Some(Verdict::OverPace)
+        );
+        assert_eq!(
+            budget_of("month", 400.0, 400.0, 600.0).verdict(),
+            Some(Verdict::OverBudget)
+        );
     }
 
     #[test]
