@@ -1,0 +1,23 @@
+---
+source: src/ui/inbox_detail.rs
+assertion_line: 207
+expression: "draw(&e, &theme, 50, 18).backend().to_string()"
+---
+"┌Inbox───────────────────────────────────────────┐"
+"│kind     approved                               │"
+"│target   demo-task                              │"
+"│                                                │"
+"│reason                                          │"
+"│approved but not landed: cox land --run run-0042│"
+"│--task demo-task --repo                         │"
+"│/home/user/repos/demo/services/gateway/internal/│"
+"│adapters/handlers --apply                       │"
+"│                                                │"
+"│raised   2026-11-03T04:12:00Z                   │"
+"│run      run-0042                               │"
+"│                                                │"
+"│a acknowledge  d dismiss  Esc back              │"
+"│                                                │"
+"│                                                │"
+"│                                                │"
+"└────────────────────────────────────────────────┘"
