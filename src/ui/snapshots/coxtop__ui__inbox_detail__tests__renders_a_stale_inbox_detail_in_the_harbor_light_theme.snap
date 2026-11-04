@@ -1,6 +1,6 @@
 ---
 source: src/ui/inbox_detail.rs
-assertion_line: 318
+assertion_line: 323
 expression: "draw(&e, true, &theme, 50, 18).backend().to_string()"
 ---
 "┌Inbox───────────────────────────────────────────┐"
@@ -19,5 +19,5 @@ expression: "draw(&e, true, &theme, 50, 18).backend().to_string()"
 "│run      run-0042                               │"
 "│                                                │"
 "│d dismiss  a acknowledge  c copy  p preview     │"
-"│Esc back                                        │"
+"│o open target  Esc back                         │"
 "└────────────────────────────────────────────────┘"

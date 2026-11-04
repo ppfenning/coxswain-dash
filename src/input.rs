@@ -113,7 +113,7 @@ pub fn handle_key(app: &mut App, key: KeyCode) {
         app.form_key(KeyEvent::new(key, KeyModifiers::NONE));
         return;
     }
-    // An open inbox detail takes only Esc, `a`, `d`, `c` and `p`; `a` would otherwise be the
+    // An open inbox detail takes only Esc, `a`, `d`, `c`, `p` and `o`; `a` would otherwise be the
     // accept action and `p` the run pause.
     if app.inbox_detail_entry().is_some() {
         match key {
@@ -122,6 +122,7 @@ pub fn handle_key(app: &mut App, key: KeyCode) {
             KeyCode::Char('d') => app.begin_inbox_dismiss(),
             KeyCode::Char('c') => app.copy_inbox_command(),
             KeyCode::Char('p') => app.preview_inbox_command(),
+            KeyCode::Char('o') => app.open_inbox_target(),
             _ => {}
         }
         return;
@@ -1696,6 +1697,33 @@ mod tests {
             Some("no dry run for this entry")
         );
         assert!(app.inbox_detail_entry().is_some());
+    }
+
+    #[test]
+    fn o_in_the_inbox_detail_opens_a_listed_target_and_keeps_an_unlisted_one_open() {
+        let mut app = app_with_inbox_detail_open();
+        handle_key(&mut app, KeyCode::Char('o'));
+        assert!(app.inbox_detail_entry().is_some());
+        assert_eq!(
+            app.status().map(|s| s.1.as_str()),
+            Some("target not listed")
+        );
+
+        let snap = snapshot_with_queue();
+        let entry = serde_json::json!({
+            "kind": "needs_chair", "target": "t-1", "reason": "r", "initiative": "q1"
+        });
+        let mut app = App::new(AppPage::Regatta, ThemeId::Regatta);
+        app.apply_snapshot(crate::feed::FeedSnapshot {
+            inbox: vec![serde_json::from_value(entry).expect("literal entry parses")],
+            ..snap
+        });
+        (0..4).for_each(|_| handle_key(&mut app, KeyCode::Right));
+        handle_key(&mut app, KeyCode::Enter);
+        handle_key(&mut app, KeyCode::Char('o'));
+        assert!(app.inbox_detail_entry().is_none());
+        assert_eq!(app.focus(), Focus::Queue);
+        assert_eq!(app.selected(), 1);
     }
 
     #[test]
