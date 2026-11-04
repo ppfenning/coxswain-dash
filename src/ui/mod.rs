@@ -1,6 +1,8 @@
 //! Dispatches rendering to the current page's module. No layout logic lives here; each page
 //! module owns its own `render`.
 
+#[allow(dead_code)]
+mod budget_panel;
 mod chair_agents;
 mod chair_card;
 mod chrome;
