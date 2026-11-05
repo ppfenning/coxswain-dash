@@ -2075,11 +2075,14 @@ fn is_run_of(run: &str, initiative: &str) -> bool {
 
 /// The index of the phase a live run is building for `q`, or `None`. The feed names no task or
 /// phase index per run, so a running run of this initiative on `current_phase` is taken to build
-/// the phase after the `phases_landed` landed ones.
+/// the phase after the `phases_landed` landed ones. Phase names match ignoring case and
+/// surrounding blanks, since the run and queue sides of the feed spell them independently.
 fn building_phase(q: &QueueEntry, runs: &[Run]) -> Option<usize> {
     runs.iter()
         .any(|r| {
-            r.status == "running" && r.phase == q.current_phase && is_run_of(&r.run, &q.initiative)
+            r.status == "running"
+                && r.phase.trim().eq_ignore_ascii_case(q.current_phase.trim())
+                && is_run_of(&r.run, &q.initiative)
         })
         .then_some(q.phases_landed as usize)
 }
@@ -5045,6 +5048,145 @@ mod tests {
             run_json("other-1", "running"),
         ]);
         assert_eq!(squares(&other)[3..5], [waiting, waiting]);
+    }
+
+    /// The foreground of each square on queue row 1, grouped by phase: a blank cell splits phases.
+    fn queue_phase_squares(theme_id: ThemeId, runs: &str, queue: &str) -> Vec<Vec<Color>> {
+        let terminal = queue_terminal_with_runs(runs, queue, theme_id);
+        let width = terminal.backend().buffer().area.width;
+        let first = col_of(&terminal, 1, "\u{25a0}");
+        let last = (first..width)
+            .rev()
+            .find(|x| cell(&terminal, *x, 1).symbol() == "\u{25a0}")
+            .expect("a square is drawn");
+        (first..=last).fold(vec![vec![]], |acc, x| {
+            let at = cell(&terminal, x, 1);
+            let (head, tail) = acc.split_at(acc.len() - 1);
+            if at.symbol() == " " {
+                [head, tail, &[vec![]]].concat()
+            } else {
+                [head, &[[tail[0].clone(), vec![at.fg]].concat()]].concat()
+            }
+        })
+    }
+
+    fn running_run(phase: &str) -> String {
+        run_json("build-3", "running").replace(r#""phase":"p""#, &format!(r#""phase":"{phase}""#))
+    }
+
+    #[test]
+    fn a_phase_of_running_tasks_is_blue_in_the_queue_frame() {
+        for theme_id in THEMES {
+            let theme = crate::theme::resolve_for(theme_id, Some("truecolor"));
+            let phases =
+                queue_phase_squares(theme_id, "", &phased_row("build", 1, &["LL", "RR", "YY"]));
+            let landed = status::color(&theme, Status::Landed);
+            let ready = status::color(&theme, Status::Ready);
+            assert_eq!(
+                phases,
+                [
+                    vec![landed; 2],
+                    vec![theme.status_running; 2],
+                    vec![ready; 2]
+                ]
+            );
+        }
+    }
+
+    #[test]
+    fn ready_tasks_in_the_phase_a_live_run_builds_are_blue_in_the_queue_frame() {
+        for theme_id in THEMES {
+            let theme = crate::theme::resolve_for(theme_id, Some("truecolor"));
+            let ready = status::color(&theme, Status::Ready);
+            let run = run_json("build-3", "running");
+            let all_ready = queue_phase_squares(
+                theme_id,
+                &run,
+                &phased_row("build", 1, &["LL", "YYY", "YY"]),
+            );
+            assert_eq!(all_ready[1], vec![theme.status_running; 3]);
+            assert_eq!(all_ready[2], vec![ready; 2]);
+            let mixed =
+                queue_phase_squares(theme_id, &run, &phased_row("build", 1, &["LL", "RY", "YY"]));
+            assert_eq!(mixed[1], vec![theme.status_running; 2]);
+        }
+    }
+
+    #[test]
+    fn a_live_run_names_its_phase_in_the_spelling_the_queue_row_uses() {
+        for theme_id in THEMES {
+            let theme = crate::theme::resolve_for(theme_id, Some("truecolor"));
+            let ready = status::color(&theme, Status::Ready);
+            let queue = phased_row("build", 1, &["LL", "YYY", "YY"]);
+            [
+                ("p", theme.status_running),
+                ("P", theme.status_running),
+                (" p ", theme.status_running),
+                ("p-1", ready),
+            ]
+            .into_iter()
+            .for_each(|(phase, expected)| {
+                let phases = queue_phase_squares(theme_id, &running_run(phase), &queue);
+                assert_eq!(phases[1], vec![expected; 3], "run phase {phase:?}");
+            });
+        }
+    }
+
+    #[test]
+    fn a_running_phase_stays_blue_when_the_bar_folds() {
+        for theme_id in THEMES {
+            let theme = crate::theme::resolve_for(theme_id, Some("truecolor"));
+            let run = run_json("build-3", "running");
+            let squeezed = queue_phase_squares(
+                theme_id,
+                &run,
+                &phased_row("build", 1, &["LLLLLL", "YYYYYY", "YYYY"]),
+            );
+            assert!(
+                squeezed[1].iter().all(|c| *c == theme.status_running),
+                "{squeezed:?}"
+            );
+            let per_phase = queue_phase_squares(
+                theme_id,
+                &run_json("build-3", "running"),
+                &phased_row(
+                    "build",
+                    0,
+                    &[
+                        "RY", "L", "L", "L", "L", "L", "L", "L", "L", "L", "L", "L", "L",
+                    ],
+                ),
+            );
+            assert_eq!(per_phase[0][0], theme.status_running);
+            let terminal = queue_terminal(&phased_row("x", 0, &["R"; 14]), theme_id);
+            let (from, plus) = (col_of(&terminal, 1, "\u{25a0}"), col_of(&terminal, 1, "+"));
+            (from..=plus + 1).for_each(|x| {
+                assert_eq!(cell(&terminal, x, 1).fg, theme.status_running, "col {x}");
+            });
+        }
+    }
+
+    #[test]
+    fn landed_approved_quarantined_failed_and_ready_squares_keep_their_colors_beside_running() {
+        for theme_id in THEMES {
+            let theme = crate::theme::resolve_for(theme_id, Some("truecolor"));
+            let phases = queue_phase_squares(theme_id, "", &phased_row("x", 1, &["LAQ", "RYF"]));
+            assert_eq!(
+                phases,
+                [
+                    vec![
+                        status::color(&theme, Status::Landed),
+                        status::color(&theme, Status::Approved),
+                        theme.quarantined,
+                    ],
+                    vec![
+                        theme.status_running,
+                        status::color(&theme, Status::Ready),
+                        theme.status_failed,
+                    ],
+                ]
+            );
+        }
     }
 
     #[test]
