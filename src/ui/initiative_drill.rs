@@ -182,6 +182,7 @@ mod tests {
         let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
         let of = |w: &str| status::color(&theme, status::from_word(w));
         assert_eq!(of("landed"), theme.landed);
+        assert_eq!(of("done"), theme.landed);
         assert_eq!(of("running"), theme.status_running);
         assert_eq!(of("ready"), theme.status_waiting);
         assert_eq!(of("approved"), theme.approved);

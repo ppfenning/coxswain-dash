@@ -4806,6 +4806,7 @@ mod tests {
             ("running", Status::Running),
             ("approved", Status::Approved),
             ("landed", Status::Landed),
+            ("done", Status::Landed),
             ("quarantined", Status::Quarantined),
         ]
         .into_iter()
@@ -4816,6 +4817,7 @@ mod tests {
     fn state_word(c: char) -> &'static str {
         match c {
             'L' => "landed",
+            'N' => "done",
             'A' => "approved",
             'R' => "running",
             'Y' => "ready",
@@ -4897,6 +4899,61 @@ mod tests {
             phased_row("quarantined", 1, &["LLA", "QYY"]),
         ];
         snapshot_queue_in_both_themes("states", &rows.join(","));
+    }
+
+    #[test]
+    fn the_task_bar_draws_done_phases_and_tasks_in_the_landed_green() {
+        let rows = [
+            phased_row("done-phase", 1, &["NNN", "NYA"]),
+            phased_row("done-and-landed", 1, &["LNLN", "YY"]),
+        ];
+        let queue = rows.join(",");
+        snapshot_queue_in_both_themes("done", &queue);
+        let expected = [
+            (
+                "done-phase",
+                vec![
+                    Status::Landed,
+                    Status::Landed,
+                    Status::Landed,
+                    Status::Landed,
+                    Status::Approved,
+                    Status::Ready,
+                ],
+            ),
+            (
+                "done-and-landed",
+                vec![
+                    Status::Landed,
+                    Status::Landed,
+                    Status::Landed,
+                    Status::Landed,
+                    Status::Ready,
+                    Status::Ready,
+                ],
+            ),
+        ];
+        for theme_id in THEMES {
+            let theme = crate::theme::resolve_for(theme_id, Some("truecolor"));
+            let terminal = queue_terminal(&queue, theme_id);
+            for (name, statuses) in &expected {
+                let y = (0..8)
+                    .find(|&y| row_text(&terminal, y).contains(name))
+                    .unwrap_or_else(|| panic!("{name} is not drawn"));
+                let squares: Vec<_> = (0..60)
+                    .map(|x| cell(&terminal, x, y))
+                    .filter(|c| c.symbol() == "\u{25a0}")
+                    .collect();
+                assert_eq!(squares.len(), statuses.len(), "{name}");
+                statuses
+                    .iter()
+                    .zip(&squares)
+                    .enumerate()
+                    .for_each(|(i, (s, at))| {
+                        assert_eq!(at.fg, status::color(&theme, *s), "{name} square {i}");
+                    });
+            }
+        }
     }
 
     #[test]

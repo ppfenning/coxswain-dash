@@ -1,0 +1,13 @@
+---
+source: src/ui/regatta.rs
+assertion_line: 4885
+expression: "queue_terminal(queue, theme_id).backend().to_string()"
+---
+"╭ 6 queue ─────────────────────────────────────────────────╮"
+"│  done-phase                            ■■■ ■■■ 1/2 phases│"
+"│  done-and-landed                       ■■■■ ■■ 1/2 phases│"
+"│                                                          │"
+"│                                                          │"
+"│                                                          │"
+"│                                                          │"
+"╰──────────────────────────────────────────────────────────╯"
