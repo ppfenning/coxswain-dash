@@ -194,6 +194,18 @@ mod tests {
     }
 
     #[test]
+    fn done_word_looks_like_landed_in_both_themes() {
+        for id in [ThemeId::Regatta, ThemeId::HarborLight] {
+            let theme = crate::theme::resolve_for(id, Some("truecolor"));
+            assert_eq!(
+                style(&theme, from_word("done")),
+                style(&theme, from_word("landed")),
+                "done in {id:?}"
+            );
+        }
+    }
+
+    #[test]
     fn history_colours_are_the_run_end_reference() {
         for id in [ThemeId::Regatta, ThemeId::HarborLight] {
             let t = crate::theme::resolve_for(id, Some("truecolor"));
@@ -213,6 +225,7 @@ mod tests {
         assert_eq!(from_word("approved"), Status::Approved);
         assert_eq!(from_word("quarantined"), Status::Quarantined);
         assert_eq!(from_word("merged"), Status::Landed);
+        assert_eq!(from_word("done"), Status::Landed);
         assert_eq!(from_word("closed"), Status::Dropped);
         assert_eq!(from_word("nonsense"), Status::Ready);
         assert_eq!(from_word("in_progress"), Status::Running);

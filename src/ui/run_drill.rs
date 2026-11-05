@@ -326,6 +326,28 @@ mod tests {
     }
 
     #[test]
+    fn done_task_and_done_step_are_drawn_in_the_landed_colour() {
+        let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
+        let mut detail = run_detail_from_fixture();
+        detail.steps[1].status = "done".to_string();
+        let steps = detail.steps.len() as u16;
+        let tasks = [HistoryTask {
+            id: "t1".to_string(),
+            state: "done".to_string(),
+            pr: None,
+        }];
+        let offset = chrono::FixedOffset::east_opt(0).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).expect("terminal");
+        terminal
+            .draw(|f| render(f, f.area(), &detail, None, &tasks, &theme, offset))
+            .expect("draw should not fail");
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(1, 3)].fg, theme.landed);
+        let x = 1 + "task ".len() as u16 + 14 + 1;
+        assert_eq!(buffer[(x, 2 + steps)].fg, theme.landed);
+    }
+
+    #[test]
     fn renders_run_drill_snapshot_in_the_regatta_theme() {
         let terminal = draw_with_theme(ThemeId::Regatta);
         insta::assert_snapshot!(terminal.backend().to_string());
