@@ -4820,6 +4820,7 @@ mod tests {
             'N' => "done",
             'A' => "approved",
             'R' => "running",
+            'G' => "building",
             'Y' => "ready",
             'B' => "blocked",
             'Q' => "quarantined",
@@ -5009,6 +5010,29 @@ mod tests {
                     }
                     None => assert_eq!(at.symbol(), " ", "cell {i}"),
                 }
+            });
+        }
+    }
+
+    #[test]
+    fn a_building_task_cell_is_drawn_in_the_running_blue() {
+        for theme_id in THEMES {
+            let theme = crate::theme::resolve_for(theme_id, Some("truecolor"));
+            let terminal = queue_terminal(&phased_row("build", 0, &["LAGYQ"]), theme_id);
+            let x = col_of(&terminal, 1, "\u{25a0}");
+            [
+                Status::Landed,
+                Status::Approved,
+                Status::Running,
+                Status::Ready,
+                Status::Quarantined,
+            ]
+            .into_iter()
+            .enumerate()
+            .for_each(|(i, s)| {
+                let at = cell(&terminal, x + i as u16, 1);
+                assert_eq!(at.symbol(), "\u{25a0}", "cell {i}");
+                assert_eq!(at.fg, status::color(&theme, s), "cell {i} in {theme_id:?}");
             });
         }
     }
