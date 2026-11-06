@@ -326,6 +326,31 @@ mod tests {
     }
 
     #[test]
+    fn a_building_task_state_is_drawn_in_the_running_blue() {
+        let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
+        let task = |id: &str, state: &str| HistoryTask {
+            id: id.to_string(),
+            state: state.to_string(),
+            pr: None,
+        };
+        let tasks = [
+            task("t1", "landed"),
+            task("t2", "approved"),
+            task("t3", "building"),
+            task("t4", "ready"),
+        ];
+        let terminal = draw_with_tasks(&theme, None, &tasks);
+        let steps = run_detail_from_fixture().steps.len() as u16;
+        let y = 1 + 1 + steps;
+        let x = 1 + "task ".len() as u16 + 14 + 1;
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(x, y)].fg, theme.landed);
+        assert_eq!(buffer[(x, y + 1)].fg, theme.approved);
+        assert_eq!(buffer[(x, y + 2)].fg, theme.status_running);
+        assert_eq!(buffer[(x, y + 3)].fg, theme.status_waiting);
+    }
+
+    #[test]
     fn done_task_and_done_step_are_drawn_in_the_landed_colour() {
         let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
         let mut detail = run_detail_from_fixture();
