@@ -57,6 +57,16 @@ pub enum AgentState {
     Unknown,
 }
 
+/// How the chair machine runs its work. A value this build does not know parses as `Unknown`.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum OrchestrationMode {
+    Orchestrating,
+    Building,
+    #[serde(other)]
+    Unknown,
+}
+
 /// One background agent the chair launched. Times are RFC 3339 UTC, kept as sent.
 #[derive(Debug, Deserialize)]
 pub struct ChairAgent {
@@ -249,6 +259,23 @@ pub struct Chair {
     /// Seconds since the chair's last housekeeping run.
     #[serde(default)]
     pub housekeeping_age_s: Option<u64>,
+    /// Key names are owned by the coxswain initiative chair-machine-orchestrates-by-default-and-lane.
+    #[serde(default)]
+    pub orchestration_mode: Option<OrchestrationMode>,
+    #[serde(default)]
+    pub orchestration_toggle_available: Option<bool>,
+}
+
+impl Chair {
+    /// The mode label and whether the toggle is available (false when absent); `None` for an absent or unknown mode.
+    pub fn orchestration(&self) -> Option<(&'static str, bool)> {
+        let toggle = self.orchestration_toggle_available.unwrap_or(false);
+        match self.orchestration_mode {
+            Some(OrchestrationMode::Orchestrating) => Some(("orchestrating", toggle)),
+            Some(OrchestrationMode::Building) => Some(("building", toggle)),
+            Some(OrchestrationMode::Unknown) | None => None,
+        }
+    }
 }
 
 /// What the chair is doing now. `since` is RFC 3339 UTC.
@@ -844,6 +871,70 @@ mod tests {
     use super::*;
 
     const FIXTURE: &str = include_str!("../tests/fixtures/dash_feed_v1.json");
+
+    fn chair_with(extra: &str) -> Chair {
+        let json = format!(
+            r#"{{"holder":"h","host":"x","epoch":1,"liveness":"live","beat_age_s":1{extra}}}"#
+        );
+        serde_json::from_str(&json).expect("chair parses")
+    }
+
+    #[test]
+    fn orchestrating_mode_with_the_toggle_available_parses() {
+        let chair = chair_with(
+            r#","orchestration_mode":"orchestrating","orchestration_toggle_available":true"#,
+        );
+        assert_eq!(
+            chair.orchestration_mode,
+            Some(OrchestrationMode::Orchestrating)
+        );
+        assert_eq!(chair.orchestration_toggle_available, Some(true));
+        assert_eq!(chair.orchestration(), Some(("orchestrating", true)));
+    }
+
+    #[test]
+    fn building_mode_without_the_toggle_parses() {
+        let chair = chair_with(
+            r#","orchestration_mode":"building","orchestration_toggle_available":false"#,
+        );
+        assert_eq!(chair.orchestration_mode, Some(OrchestrationMode::Building));
+        assert_eq!(chair.orchestration(), Some(("building", false)));
+    }
+
+    #[test]
+    fn absent_orchestration_keys_parse_to_none() {
+        let chair = chair_with("");
+        assert_eq!(
+            (
+                chair.orchestration_mode,
+                chair.orchestration_toggle_available
+            ),
+            (None, None)
+        );
+        assert_eq!(chair.orchestration(), None);
+    }
+
+    #[test]
+    fn null_orchestration_keys_parse_to_none() {
+        let chair =
+            chair_with(r#","orchestration_mode":null,"orchestration_toggle_available":null"#);
+        assert_eq!(
+            (
+                chair.orchestration_mode,
+                chair.orchestration_toggle_available
+            ),
+            (None, None)
+        );
+        assert_eq!(chair.orchestration(), None);
+    }
+
+    #[test]
+    fn an_unknown_orchestration_mode_parses_as_unknown_and_has_no_label() {
+        let chair =
+            chair_with(r#","orchestration_mode":"mystery","orchestration_toggle_available":true"#);
+        assert_eq!(chair.orchestration_mode, Some(OrchestrationMode::Unknown));
+        assert_eq!(chair.orchestration(), None);
+    }
 
     #[test]
     fn parse_snapshot_reads_the_v1_fixture() {
