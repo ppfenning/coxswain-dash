@@ -59,8 +59,9 @@ use exec::{CmdRunner, ExecResult};
 
 const ALIAS_NOTICE: &str = "coxtop is now towpath; this alias goes away in 0.37";
 
-/// The feed's `--interval`, and the unit its staleness is judged in.
-const FEED_INTERVAL_SECS: u64 = 2;
+/// The `--interval` the feed child is started with. The rail retry, the redraw deadline and the
+/// stale threshold given to `render_at` are all measured in this unit.
+const FEED_INTERVAL_SECS: u64 = 5;
 
 /// How long the loop waits before it redraws a board nothing has changed, so a feed that has
 /// gone quiet still gets its age re-evaluated.
@@ -801,6 +802,21 @@ mod tests {
             apply_feed_message(&mut app, message, chrono::FixedOffset::east_opt(0).unwrap());
         }
         app
+    }
+
+    #[test]
+    fn the_feed_child_is_started_at_the_five_second_interval() {
+        let command = feed::feed_command(Some(FEED_INTERVAL_SECS));
+        let args: Vec<String> = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        let at = args
+            .iter()
+            .position(|arg| arg == "--interval")
+            .expect("the command should carry --interval");
+        assert_eq!(args.get(at + 1).map(String::as_str), Some("5"));
+        assert!(!args.iter().any(|arg| arg == "2"), "got: {args:?}");
     }
 
     #[test]
