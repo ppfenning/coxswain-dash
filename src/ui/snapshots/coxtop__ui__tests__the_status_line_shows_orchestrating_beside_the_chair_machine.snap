@@ -1,0 +1,5 @@
+---
+source: src/ui/mod.rs
+expression: "rows(&buffer)[39..40].join(\"\\n\")"
+---
+1-9 frames · ←→ focus · ↑↓ select · ⏎ drill down · t theme · v layout · g group queue · ` chair · q quit │ p pause  k kill  m move · : palette  w watch  $ spend  h health · █▓▒░✕             host-b orchestrating [toggle]
