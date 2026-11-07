@@ -92,6 +92,58 @@ fn render_status(
         render_health_line(f, page_row, &text, failed, theme);
     } else if let Some(text) = chair_panel::release_hint(app.chair_focused()) {
         draw_status(f, page_row, theme, &(StatusLevel::Ok, text.to_string()));
+    } else if let Some(text) = app
+        .snapshot()
+        .and_then(|s| orchestration_text(&s.chair.host, s.chair.orchestration()))
+    {
+        render_orchestration(f, page_row, &text, theme);
+    }
+}
+
+/// The chair host and its mode label, with a marker when the toggle is available. `None` when
+/// the feed carries no known mode. An empty host leaves the label alone, with no leading space.
+fn orchestration_text(host: &str, orchestration: Option<(&str, bool)>) -> Option<String> {
+    orchestration.map(|(label, toggle)| {
+        let marker = if toggle { " [toggle]" } else { "" };
+        match host.trim() {
+            "" => format!("{label}{marker}"),
+            host => format!("{host} {label}{marker}"),
+        }
+    })
+}
+
+/// Blank columns kept between the row's content and the mode text.
+const ORCHESTRATION_GAP: u16 = 2;
+
+/// The mode text's slot at the right end of `row`, when `used_end` is the column after the row's
+/// last drawn cell and the text is `width` columns. `None` unless the whole text fits after the
+/// gap, so the row's content is never cleared and the text is never cut mid-word.
+fn orchestration_slot(row: Rect, used_end: u16, width: u16) -> Option<Rect> {
+    let spare = row.right().saturating_sub(used_end.max(row.x));
+    (row.height > 0 && width > 0 && spare >= width.saturating_add(ORCHESTRATION_GAP)).then(|| {
+        Rect {
+            x: row.right() - width,
+            y: row.y,
+            width,
+            height: 1,
+        }
+    })
+}
+
+/// `text` in the blank end of `row`, drawn over the page without clearing what the page drew.
+/// The page's key bar keeps the row; the mode shows only when the row has room for it.
+fn render_orchestration(f: &mut Frame, row: Rect, text: &str, theme: &Theme) {
+    if row.height == 0 {
+        return;
+    }
+    let buffer = f.buffer_mut();
+    let used_end = (row.x..row.right())
+        .rev()
+        .find(|&x| !buffer[(x, row.y)].symbol().trim().is_empty())
+        .map_or(row.x, |x| x + 1);
+    let width = u16::try_from(text.chars().count()).unwrap_or(u16::MAX);
+    if let Some(slot) = orchestration_slot(row, used_end, width) {
+        render_health_line(f, slot, text, false, theme);
     }
 }
 
@@ -1676,6 +1728,153 @@ mod tests {
             footer(&buffer),
             "feed error: boom  1 bad line: bad  feed 42s old"
         );
+    }
+
+    #[test]
+    fn orchestration_text_joins_host_label_and_the_toggle_marker() {
+        assert_eq!(
+            orchestration_text("host-b", Some(("orchestrating", true))).as_deref(),
+            Some("host-b orchestrating [toggle]")
+        );
+        assert_eq!(
+            orchestration_text("host-b", Some(("building", false))).as_deref(),
+            Some("host-b building")
+        );
+        assert_eq!(orchestration_text("host-b", None), None);
+        assert_eq!(
+            orchestration_text(" ", Some(("building", false))).as_deref(),
+            Some("building")
+        );
+    }
+
+    #[test]
+    fn the_slot_is_the_row_end_and_needs_the_text_plus_a_gap_after_the_content() {
+        let row = Rect::new(0, 39, 100, 1);
+        assert_eq!(
+            orchestration_slot(row, 60, 10),
+            Some(Rect::new(90, 39, 10, 1))
+        );
+        assert!(orchestration_slot(row, 88, 10).is_some());
+        assert_eq!(orchestration_slot(row, 89, 10), None);
+        assert_eq!(orchestration_slot(row, 100, 10), None);
+        assert_eq!(orchestration_slot(Rect::new(0, 39, 0, 1), 0, 10), None);
+    }
+
+    /// The fixture feed with `fields` merged into its chair object.
+    fn app_with_chair_fields(fields: serde_json::Value) -> App {
+        let mut value: serde_json::Value =
+            serde_json::from_str(FEED_FIXTURE).expect("fixture is json");
+        let chair = value["chair"].as_object_mut().expect("chair is an object");
+        chair.extend(fields.as_object().expect("fields are an object").clone());
+        let snapshot = crate::feed::parse_snapshot(&value.to_string()).expect("feed parses");
+        let mut app = App::new(AppPage::Regatta, ThemeId::Regatta);
+        app.apply_snapshot(snapshot);
+        app
+    }
+
+    fn orchestrating() -> serde_json::Value {
+        serde_json::json!({
+            "host": "host-b",
+            "orchestration_mode": "orchestrating",
+            "orchestration_toggle_available": true,
+        })
+    }
+
+    fn draw_wide(app: &App, width: u16) -> ratatui::buffer::Buffer {
+        let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
+        let mut terminal = Terminal::new(TestBackend::new(width, 40)).expect("terminal");
+        terminal
+            .draw(|f| render(f, app, &theme))
+            .expect("draw should not fail");
+        terminal.backend().buffer().clone()
+    }
+
+    /// Every cell where `with` differs from `plain` was blank in `plain`: the mode never
+    /// overwrote what the page drew.
+    fn only_blank_cells_differ(plain: &ratatui::buffer::Buffer, with: &ratatui::buffer::Buffer) {
+        let area = plain.area;
+        for y in 0..area.height {
+            for x in 0..area.width {
+                if plain[(x, y)] != with[(x, y)] {
+                    assert_eq!(
+                        plain[(x, y)].symbol(),
+                        " ",
+                        "cell ({x}, {y}) was overwritten"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_status_line_shows_orchestrating_beside_the_chair_machine() {
+        let buffer = draw_wide(&app_with_chair_fields(orchestrating()), 220);
+        let footer = footer(&buffer);
+        assert!(footer.starts_with("1-9 frames"), "{footer}");
+        assert!(
+            footer.ends_with("host-b orchestrating [toggle]"),
+            "{footer}"
+        );
+        only_blank_cells_differ(&draw_wide(&app_with_feed(), 220), &buffer);
+        insta::assert_snapshot!(rows(&buffer)[39..40].join("\n"));
+    }
+
+    #[test]
+    fn absent_or_unknown_orchestration_fields_draw_exactly_what_was_drawn_before() {
+        let plain = draw_wide(&app_with_feed(), 220);
+        assert!(!footer(&plain).contains("orchestrating"));
+        let unknown = app_with_chair_fields(serde_json::json!({"orchestration_mode": "mystery"}));
+        assert_eq!(draw_wide(&unknown, 220), plain);
+    }
+
+    #[test]
+    fn a_row_too_narrow_for_the_mode_keeps_its_key_bar_whole() {
+        let app = app_with_chair_fields(orchestrating());
+        let narrow = draw_wide(&app, 120);
+        assert_eq!(narrow, draw_wide(&app_with_feed(), 120));
+        assert!(!footer(&narrow).contains("host-b"));
+    }
+
+    #[test]
+    fn the_mode_gives_way_to_a_status_a_feed_error_and_the_release_hint() {
+        let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
+        let mut with_status = app_with_chair_fields(orchestrating());
+        let mut without_status = app_with_feed();
+        for app in [&mut with_status, &mut without_status] {
+            app.apply_exec_result(stop_result(Some(0), "stopped\n"), Origin::Action);
+        }
+        assert_eq!(
+            draw_wide(&with_status, 220),
+            draw_wide(&without_status, 220)
+        );
+
+        let mut with_error = app_with_chair_fields(orchestrating());
+        let mut without_error = app_with_feed();
+        for app in [&mut with_error, &mut without_error] {
+            app.apply_feed_error("boom".to_owned());
+        }
+        assert_eq!(
+            draw_health(&with_error, 10).0,
+            draw_health(&without_error, 10).0
+        );
+
+        let plain = panel_app(AppPage::Regatta, ThemeId::Regatta, true, false);
+        let mut moded = panel_app(AppPage::Regatta, ThemeId::Regatta, true, false);
+        let mut snapshot = panel_snapshot(false);
+        snapshot.chair.orchestration_mode = Some(crate::feed::OrchestrationMode::Orchestrating);
+        moded.apply_snapshot(snapshot);
+        assert!(moded.chair_focused());
+        assert!(
+            moded
+                .snapshot()
+                .expect("snapshot")
+                .chair
+                .orchestration()
+                .is_some()
+        );
+        let hint = chair_panel::release_hint(true).expect("a focused panel shows its hint");
+        assert!(screen(&draw(&moded, &theme)).contains(hint));
+        assert_eq!(draw(&moded, &theme), draw(&plain, &theme));
     }
 
     #[test]
