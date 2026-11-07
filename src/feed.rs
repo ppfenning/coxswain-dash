@@ -33,6 +33,8 @@ pub struct FeedSnapshot {
     #[serde(default)]
     pub chair_agents: Vec<ChairAgent>,
     #[serde(default)]
+    pub intake: Vec<IntakeEntry>,
+    #[serde(default)]
     pub spend_split: Option<SpendSplit>,
     /// Month budget and pace. Read it through `budget()`. Crate-visible so the
     /// `..snap` struct updates in other modules still compile.
@@ -44,6 +46,21 @@ impl FeedSnapshot {
     pub fn budget(&self) -> Option<&Budget> {
         self.budget.as_ref()
     }
+}
+
+/// One queued intake. `stage` is the word `draft` or `ready`.
+#[derive(Debug, Deserialize)]
+pub struct IntakeEntry {
+    pub id: String,
+    pub title: String,
+    pub stage: String,
+    pub repo: String,
+    #[serde(default)]
+    pub epic: Option<String>,
+    pub priority: i64,
+    #[serde(default)]
+    pub target_release: Option<String>,
+    pub deferred: bool,
 }
 
 /// Where a chair background agent stands. A value this build does not know parses as `Unknown`.
@@ -1512,6 +1529,48 @@ mod tests {
         assert_eq!(snapshot.runs[0].project, None);
         assert_eq!(snapshot.queue[0].project, None);
         assert!(snapshot.history.iter().all(|row| row.project.is_none()));
+    }
+
+    const INTAKE_FIXTURE: &str = r#"{"intake":[
+        {"id":"in-1","title":"Ship the queue view","stage":"ready","repo":"coxswain-dash","epic":"towpath","priority":2,"target_release":"2026.11","deferred":false},
+        {"id":"in-2","title":"No epic yet","stage":"ready","repo":"coxswain-tools","epic":null,"priority":5,"target_release":null,"deferred":false},
+        {"id":"in-3","title":"Parked for later","stage":"ready","repo":"coxswain-dash","epic":"towpath","priority":9,"target_release":"2027.01","deferred":true},
+        {"id":"in-4","title":"Still a draft","stage":"draft","repo":"coxswain-tools","epic":null,"priority":7,"target_release":null,"deferred":false}
+    ]}"#;
+
+    /// The v1 snapshot skeleton with the fixture's keys spliced in after `watch`.
+    fn with_intake(fixture: &str) -> String {
+        let keys = fixture.trim().trim_matches(['{', '}']);
+        with_chair(&format!("{OLD_CHAIR}}}"))
+            .replace(r#""watch":[]"#, &format!(r#""watch":[],{keys}"#))
+    }
+
+    #[test]
+    fn parse_snapshot_reads_the_intake_fixture() {
+        let snapshot = parse_snapshot(&with_intake(INTAKE_FIXTURE)).expect("intake should parse");
+        let intake = &snapshot.intake;
+        assert_eq!(
+            intake.iter().map(|e| e.id.as_str()).collect::<Vec<_>>(),
+            ["in-1", "in-2", "in-3", "in-4"]
+        );
+        assert_eq!(intake[0].title, "Ship the queue view");
+        assert_eq!(intake[0].repo, "coxswain-dash");
+        assert_eq!(intake[0].epic.as_deref(), Some("towpath"));
+        assert_eq!(intake[0].priority, 2);
+        assert_eq!(intake[0].target_release.as_deref(), Some("2026.11"));
+        assert!(!intake[0].deferred);
+        assert_eq!(intake[1].epic, None);
+        assert_eq!(intake[1].target_release, None);
+        assert!(intake[2].deferred);
+        assert_eq!(intake[2].stage, "ready");
+        assert_eq!(intake[3].stage, "draft");
+    }
+
+    #[test]
+    fn parse_snapshot_defaults_intake_to_empty_when_the_key_is_absent() {
+        let snapshot = parse_snapshot(&with_chair(&format!("{OLD_CHAIR}}}")))
+            .expect("snapshot without intake should parse");
+        assert!(snapshot.intake.is_empty());
     }
 
     #[test]
