@@ -1,0 +1,5 @@
+{
+  "schema": 1,
+  "at": "2026-11-07T00:00:00Z",
+  "cost": {"cpu_ms": 6.5, "wall_ms": 12.0, "recomputed": ["live"], "reused": ["chair", "spend", "machines", "runs", "queue", "inbox", "history", "board", "epics"]}
+}
