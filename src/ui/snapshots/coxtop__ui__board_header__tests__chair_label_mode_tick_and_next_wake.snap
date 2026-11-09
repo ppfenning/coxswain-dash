@@ -1,0 +1,6 @@
+---
+source: src/ui/board_header.rs
+assertion_line: 177
+expression: row(&buffer).trim_end()
+---
+chair host-b · orchestrating · last tick 09-28 19:59 EDT · 15s ago · next ~45s
