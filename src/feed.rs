@@ -48,6 +48,9 @@ pub struct FeedSnapshot {
     pub board: Board,
     #[serde(default)]
     pub live: Live,
+    /// The scheduler's plan. None when the key is absent or does not parse.
+    #[serde(default, deserialize_with = "lenient_schedule")]
+    pub schedule: Option<Schedule>,
 }
 
 impl FeedSnapshot {
@@ -393,6 +396,79 @@ fn lenient_today<'de, D: Deserializer<'de>>(d: D) -> Result<Option<SpendToday>, 
 fn lenient_budget<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Budget>, D::Error> {
     let value = serde_json::Value::deserialize(d)?;
     Ok(serde_json::from_value(value).ok())
+}
+
+/// A `schedule` block that fails to parse is None, so it never drops the whole feed line.
+fn lenient_schedule<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Schedule>, D::Error> {
+    let value = serde_json::Value::deserialize(d)?;
+    Ok(serde_json::from_value(value).ok())
+}
+
+/// The scheduler's plan. Times are ISO UTC strings, kept as sent.
+#[derive(Debug, Deserialize)]
+pub struct Schedule {
+    pub lanes: Vec<ScheduleLane>,
+    pub initiatives: Vec<ScheduleInitiative>,
+    pub release: ScheduleRelease,
+    pub critical_path: Vec<CriticalStep>,
+    pub advice: Vec<ScheduleAdvice>,
+}
+
+/// One host lane. `next` is ordered by `start`.
+#[derive(Debug, Deserialize)]
+pub struct ScheduleLane {
+    pub host: String,
+    pub lane: u32,
+    pub next: Vec<ScheduledPhase>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ScheduledPhase {
+    pub initiative: String,
+    pub phase: String,
+    pub start: String,
+    pub finish: String,
+    pub critical: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ScheduleInitiative {
+    pub initiative: String,
+    pub priority: i64,
+    pub projected_finish: String,
+    pub on_critical_path: bool,
+}
+
+/// `target` is null when no release date is set.
+#[derive(Debug, Deserialize)]
+pub struct ScheduleRelease {
+    pub target: Option<String>,
+    pub projected_finish: String,
+    pub misses_target: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CriticalStep {
+    pub initiative: String,
+    pub phase: String,
+}
+
+/// What the scheduler is advising. A value this build does not know parses as `Unknown`.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum AdviceKind {
+    Tie,
+    Reorder,
+    Miss,
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ScheduleAdvice {
+    pub kind: AdviceKind,
+    pub text: String,
+    pub at: String,
 }
 
 /// The month budget and its pace. `period` is "month" when a budget is set, else "none" with
@@ -2378,6 +2454,80 @@ mod tests {
     }
 
     const TASKS_FIXTURE: &str = include_str!("../tests/fixtures/dash_feed_tasks_v1.json");
+
+    const SCHEDULE_FIXTURE: &str = include_str!("../tests/fixtures/dash_feed_schedule_v1.json");
+
+    fn fixture_schedule(form: &str) -> Schedule {
+        let doc: serde_json::Value = serde_json::from_str(SCHEDULE_FIXTURE).expect("valid json");
+        serde_json::from_value(doc[form]["schedule"].clone()).expect("schedule parses")
+    }
+
+    #[test]
+    fn the_schedule_fixture_feed_form_reads_lanes_next_release_and_advice() {
+        let schedule = fixture_schedule("feed");
+        let hosts: Vec<&str> = schedule.lanes.iter().map(|l| l.host.as_str()).collect();
+        assert_eq!(hosts, ["host-a", "host-b"]);
+        let next: Vec<(&str, &str, bool)> = schedule.lanes[0]
+            .next
+            .iter()
+            .map(|p| (p.phase.as_str(), p.start.as_str(), p.critical))
+            .collect();
+        assert_eq!(
+            next,
+            [
+                ("p5-live", "2026-11-09T12:00:00Z", true),
+                ("p6-timeline", "2026-11-09T15:30:00Z", true),
+            ]
+        );
+        assert_eq!(schedule.initiatives.len(), 3);
+        assert_eq!(schedule.release.target, None);
+        assert!(!schedule.release.misses_target);
+        assert_eq!(schedule.critical_path.len(), 2);
+        let kinds: Vec<AdviceKind> = schedule.advice.iter().map(|a| a.kind).collect();
+        assert_eq!(kinds, [AdviceKind::Tie]);
+    }
+
+    #[test]
+    fn the_schedule_fixture_action_form_carries_the_same_schedule() {
+        let doc: serde_json::Value = serde_json::from_str(SCHEDULE_FIXTURE).expect("valid json");
+        assert_eq!(doc["action"]["kind"], "schedule_updated");
+        assert_eq!(doc["action"]["schedule"], doc["feed"]["schedule"]);
+        assert_eq!(fixture_schedule("action").lanes.len(), 2);
+    }
+
+    #[test]
+    fn a_feed_line_carrying_the_fixture_schedule_parses_it() {
+        let doc: serde_json::Value = serde_json::from_str(SCHEDULE_FIXTURE).expect("valid json");
+        let schedule = doc["feed"]["schedule"].to_string();
+        let snapshot = with_schedule(&format!(r#","schedule":{schedule}"#));
+        let parsed = snapshot.schedule.expect("schedule present");
+        assert_eq!(parsed.lanes[1].next[0].initiative, "cox-cache");
+    }
+
+    fn with_schedule(extra: &str) -> FeedSnapshot {
+        parse_snapshot(&format!(
+            r#"{{"schema":1,"at":"2026-09-29T00:00:00Z","chair":{{"holder":"h","host":"x","epoch":1,"liveness":"live","beat_age_s":1}},"spend":{{"five_hour_fraction":0.1,"five_hour_source":"meter","weekly_fraction":0.1,"weekly_source":"meter","hard_stop_fraction":0.9,"five_hour_resets_at":"2026-09-29T02:00:00Z","weekly_resets_at":"2026-10-04T04:00:00Z"}},"machines":[],"runs":[],"queue":[],"inbox":[],"watch":[]{extra}}}"#
+        ))
+        .expect("literal snapshot should parse")
+    }
+
+    #[test]
+    fn a_feed_line_without_a_schedule_key_gives_none() {
+        assert!(with_schedule("").schedule.is_none());
+        assert!(
+            parse_snapshot(FIXTURE)
+                .expect("fixture parses")
+                .schedule
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn a_malformed_schedule_gives_none_and_keeps_the_feed_line() {
+        let snapshot = with_schedule(r#","schedule":{"lanes":"nope"}"#);
+        assert!(snapshot.schedule.is_none());
+        assert_eq!(snapshot.chair.host, "x");
+    }
 
     #[test]
     fn run_tasks_parse_from_the_tasks_fixture() {
