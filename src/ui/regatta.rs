@@ -18,8 +18,8 @@ use ratatui::{
 use crate::actions::{Target, bindings};
 use crate::app::{App, Focus};
 use crate::feed::{
-    Chair, CurrentAction, FeedSnapshot, HistoryRow, HistoryToday, InboxEntry, IntakeEntry, Machine,
-    Outcome, QueueEntry, Run, RunEnd, grouped_inbox, is_stale,
+    Chair, CurrentAction, FeedCost, FeedSnapshot, HistoryRow, HistoryToday, InboxEntry,
+    IntakeEntry, Machine, Outcome, QueueEntry, Run, RunEnd, grouped_inbox, is_stale,
 };
 use crate::form::{KEY_ADD_MACHINE, KEY_EDIT, KEY_NEW, KEY_REMOVE};
 use crate::theme::Theme;
@@ -54,6 +54,18 @@ const FRAME_NAMES: [&str; 6] = [
 ];
 
 pub fn render(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
+    render_at(f, area, app, theme, None);
+}
+
+/// `render` with the feed's age on the page's top row. `health` is the `(now, interval)` the caller
+/// read at the edge; `None` draws no age, as `render` always did.
+pub fn render_at(
+    f: &mut Frame,
+    area: Rect,
+    app: &App,
+    theme: &Theme,
+    health: Option<(DateTime<FixedOffset>, chrono::Duration)>,
+) {
     let Some(snapshot) = app.snapshot() else {
         render_waiting(f, area, theme);
         return;
@@ -106,6 +118,16 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
         );
     }
     render_key_bar(f, split_key_bar(area).1, app.focus(), theme);
+    let age = health.and_then(|(now, interval)| {
+        Some(feed_age_span(
+            app.feed_age_secs(now)?,
+            interval.num_seconds(),
+            theme,
+        ))
+    });
+    if let Some(age) = age {
+        draw_header_age(f.buffer_mut(), area, &age);
+    }
 }
 
 /// The rects frames 1-6 render into (`None` for a hidden frame) on a screen of `area`. The page
@@ -1067,9 +1089,16 @@ fn render_machines(
             machine_line(m, accent, selected == Some(i), theme)
         })
         .collect();
-    let paragraph = Paragraph::new(lines)
-        .block(numbered_block(3, FRAME_NAMES[2], theme, selected.is_some()))
-        .style(base_style(theme));
+    let block = numbered_block(3, FRAME_NAMES[2], theme, selected.is_some());
+    let block = match snapshot.cost.as_ref() {
+        Some(cost) => block.title_top(Line::from(vec![
+            Span::styled("\u{b7} ", Style::default().fg(theme.dim)),
+            feed_cost_span(cost, theme),
+            Span::raw(" "),
+        ])),
+        None => block,
+    };
+    let paragraph = Paragraph::new(lines).block(block).style(base_style(theme));
     f.render_widget(paragraph, rect);
 }
 
@@ -2799,6 +2828,36 @@ fn render_key_bar(f: &mut Frame, rect: Rect, focus: Focus, theme: &Theme) {
     );
 }
 
+/// `age` on the page's top row, padded by a space each side and ending two cells short of the
+/// right edge so the corner stays. Nothing is drawn when the row cannot hold it.
+fn draw_header_age(buf: &mut ratatui::buffer::Buffer, area: Rect, age: &Span<'static>) {
+    let width = u16::try_from(age.width() + 2).unwrap_or(u16::MAX);
+    if area.height == 0 || area.width < width.saturating_add(4) {
+        return;
+    }
+    let padded = Span::styled(format!(" {} ", age.content), age.style);
+    buf.set_span(area.right() - 2 - width, area.y, &padded, width);
+}
+
+/// `feed Ns`, in `meter_high` once the whole-second `age_secs` exceeds three times
+/// `interval_secs` and in `dim` otherwise.
+fn feed_age_span(age_secs: i64, interval_secs: i64, theme: &Theme) -> Span<'static> {
+    let color = if age_secs > 3 * interval_secs {
+        theme.meter_high
+    } else {
+        theme.dim
+    };
+    Span::styled(format!("feed {age_secs}s"), Style::default().fg(color))
+}
+
+/// `feed 3.2 ms`: the producer's CPU time for the snapshot, one decimal, in `dim`.
+fn feed_cost_span(cost: &FeedCost, theme: &Theme) -> Span<'static> {
+    Span::styled(
+        format!("feed {:.1} ms", cost.cpu_ms),
+        Style::default().fg(theme.dim),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3674,6 +3733,101 @@ mod tests {
     fn fg_at(terminal: &Terminal<TestBackend>, y: u16, needle: &str) -> Option<Color> {
         let x = col_of(terminal, y, needle);
         terminal.backend().buffer()[(x, y)].style().fg
+    }
+
+    fn draw_machines_with_cost(cpu_ms: Option<f64>) -> Terminal<TestBackend> {
+        let mut snapshot = crate::feed::parse_snapshot(FIXTURE.trim()).expect("feed parses");
+        snapshot.cost = cpu_ms.map(|cpu_ms| FeedCost {
+            cpu_ms,
+            wall_ms: 12.0,
+            recomputed: vec![],
+            reused: vec![],
+        });
+        let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
+        let mut terminal = Terminal::new(TestBackend::new(60, 4)).expect("terminal");
+        terminal
+            .draw(|f| render_machines(f, f.area(), &snapshot, None, &theme))
+            .expect("draw should not fail");
+        terminal
+    }
+
+    #[test]
+    fn machines_frame_shows_feed_cost() {
+        let terminal = draw_machines_with_cost(Some(3.24));
+        assert!(row_text(&terminal, 0).contains("feed 3.2 ms"));
+        insta::assert_snapshot!(terminal.backend().to_string());
+    }
+
+    #[test]
+    fn machines_frame_without_cost_draws_no_feed_text() {
+        let terminal = draw_machines_with_cost(None);
+        assert!(!all_text(&terminal).contains("feed"));
+        assert!(row_text(&terminal, 0).contains("3 machines"));
+    }
+
+    /// The Regatta page at 120x40 with the fixture's feed (at 2026-09-29T00:00:00Z) read
+    /// `age_secs` later against a 10 s interval.
+    fn draw_page_aged(age_secs: Option<i64>, id: ThemeId) -> Terminal<TestBackend> {
+        let app = app_with_fixture();
+        let theme = crate::theme::resolve_for(id, Some("truecolor"));
+        let health = age_secs.map(|secs| {
+            (
+                DateTime::parse_from_rfc3339("2026-09-29T00:00:00Z").expect("literal")
+                    + chrono::Duration::seconds(secs),
+                chrono::Duration::seconds(10),
+            )
+        });
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).expect("terminal");
+        terminal
+            .draw(|f| render_at(f, f.area(), &app, &theme, health))
+            .expect("draw should not fail");
+        terminal
+    }
+
+    #[test]
+    fn the_feed_age_is_drawn_dim_on_the_top_row_while_fresh() {
+        for (id, name) in BOTH_THEMES {
+            let theme = crate::theme::resolve_for(id, Some("truecolor"));
+            let terminal = draw_page_aged(Some(12), id);
+            assert!(
+                row_text(&terminal, 0).contains(" feed 12s \u{2500}\u{256e}"),
+                "{name}"
+            );
+            assert_eq!(fg_of(&terminal, 0, "feed 12s"), theme.dim, "{name}");
+        }
+    }
+
+    #[test]
+    fn a_feed_older_than_three_intervals_is_drawn_in_the_warning_color() {
+        for (id, name) in BOTH_THEMES {
+            let theme = crate::theme::resolve_for(id, Some("truecolor"));
+            let terminal = draw_page_aged(Some(31), id);
+            assert_eq!(fg_of(&terminal, 0, "feed 31s"), theme.meter_high, "{name}");
+        }
+    }
+
+    #[test]
+    fn no_age_is_drawn_without_health_and_the_page_is_as_render_draws_it() {
+        let terminal = draw_page_aged(None, ThemeId::Regatta);
+        assert!(!row_text(&terminal, 0).contains("feed "));
+        let app = app_with_fixture();
+        let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
+        let mut plain = Terminal::new(TestBackend::new(120, 40)).expect("terminal");
+        plain
+            .draw(|f| render(f, f.area(), &app, &theme))
+            .expect("draw should not fail");
+        assert_eq!(terminal.backend().buffer(), plain.backend().buffer());
+    }
+
+    #[test]
+    fn the_age_turns_to_a_warning_only_past_three_intervals() {
+        let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
+        assert_ne!(theme.dim, theme.meter_high);
+        assert_eq!(feed_age_span(30, 10, &theme).style.fg, Some(theme.dim));
+        assert_eq!(
+            feed_age_span(31, 10, &theme).style.fg,
+            Some(theme.meter_high)
+        );
     }
 
     #[test]
