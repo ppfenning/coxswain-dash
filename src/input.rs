@@ -186,6 +186,10 @@ pub fn handle_key(app: &mut App, key: KeyCode) {
         KeyCode::Enter => app.open_detail(),
         // Space is bound in no action table and no other arm, so it expands the selected run.
         KeyCode::Char(' ') if app.focus() == Focus::Runs => app.toggle_run_expanded(),
+        // On the Board page the same key folds the selected tree row, or opens a landed row.
+        KeyCode::Char(' ') if app.page() == AppPage::Board && app.focus() == Focus::BoardTree => {
+            app.toggle_board_node()
+        }
         KeyCode::Esc => app.close_detail(),
         KeyCode::Char(c) if c == KEY_ADD_MACHINE && app.focus() == Focus::Machines => {
             app.open_add_machine()
@@ -913,14 +917,15 @@ mod tests {
     fn back_tab_goes_to_the_previous_page() {
         let mut app = App::new(AppPage::Regatta, ThemeId::Regatta);
         handle_key(&mut app, KeyCode::BackTab);
-        assert_eq!(app.page(), AppPage::Slipstream);
+        assert_eq!(app.page(), AppPage::Board);
     }
 
     #[test]
-    fn tab_twice_from_regatta_wraps_back_to_regatta() {
+    fn tab_three_times_from_regatta_wraps_back_to_regatta() {
         let mut app = App::new(AppPage::Regatta, ThemeId::Regatta);
-        handle_key(&mut app, KeyCode::Tab);
-        handle_key(&mut app, KeyCode::Tab);
+        for _ in 0..3 {
+            handle_key(&mut app, KeyCode::Tab);
+        }
         assert_eq!(app.page(), AppPage::Regatta);
     }
 
@@ -1340,6 +1345,27 @@ mod tests {
         handle_key(&mut app, KeyCode::Char(' '));
         assert!(!app.run_expanded("r0"));
         assert!(app.detail().is_none());
+    }
+
+    #[test]
+    fn space_on_the_board_tree_collapses_the_selected_initiative_and_enter_opens_a_task_run() {
+        let json = include_str!("../tests/fixtures/dash_feed_board_v1.json");
+        let mut app = App::new(AppPage::Board, ThemeId::Regatta);
+        app.apply_snapshot(crate::feed::parse_snapshot(json).expect("board fixture parses"));
+        let full = app.board_rows().len();
+        handle_key(&mut app, KeyCode::Down);
+        handle_key(&mut app, KeyCode::Char(' '));
+        assert!(app.board_rows().len() < full);
+        handle_key(&mut app, KeyCode::Char(' '));
+        assert_eq!(app.board_rows().len(), full);
+        for _ in 0..2 {
+            handle_key(&mut app, KeyCode::Down);
+        }
+        handle_key(&mut app, KeyCode::Enter);
+        assert_eq!(
+            app.detail().map(|(k, id, _)| (*k, id.as_str())),
+            Some((crate::app::DetailKind::Run, "board-1"))
+        );
     }
 
     #[test]
