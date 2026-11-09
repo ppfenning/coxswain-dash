@@ -60,7 +60,7 @@ pub fn render_at(
     theme: &Theme,
     health: Option<(DateTime<FixedOffset>, chrono::Duration)>,
 ) {
-    render_base(f, app, theme);
+    render_base(f, app, theme, health);
     render_form(f, app, theme);
     render_status(f, app, theme, health);
     render_modal(f, app, theme);
@@ -220,7 +220,12 @@ fn render_modal(f: &mut Frame, app: &App, theme: &Theme) {
 }
 
 /// An open settings screen takes the page body in place of the page or detail view.
-fn render_base(f: &mut Frame, app: &App, theme: &Theme) {
+fn render_base(
+    f: &mut Frame,
+    app: &App,
+    theme: &Theme,
+    health: Option<(DateTime<FixedOffset>, chrono::Duration)>,
+) {
     if let Some(screen) = app.settings() {
         return settings_frame::render(f, f.area(), theme, screen);
     }
@@ -239,7 +244,7 @@ fn render_base(f: &mut Frame, app: &App, theme: &Theme) {
         return;
     }
     if app.detail().is_none() {
-        return render_page(f, app, theme);
+        return render_page(f, app, theme, health);
     }
     // A detail view takes the page's share of the width, so the chair panel stays up beside it.
     let (body, side) = split_page(f.area(), app);
@@ -292,10 +297,15 @@ fn render_detail(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
 
 /// The page and, when the chair panel is open, the panel on its right. The page gets the width
 /// the panel leaves; a panel at full width leaves it none.
-fn render_page(f: &mut Frame, app: &App, theme: &Theme) {
+fn render_page(
+    f: &mut Frame,
+    app: &App,
+    theme: &Theme,
+    health: Option<(DateTime<FixedOffset>, chrono::Duration)>,
+) {
     let (page, side) = split_page(f.area(), app);
     if page.width > 0 {
-        render_page_in(f, page, app, theme);
+        render_page_in(f, page, app, theme, health);
     }
     if let Some(side) = side {
         render_panel(f, side, app, theme);
@@ -374,12 +384,18 @@ fn render_panel(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
 
 /// The page behind any detail view. A feed error with no snapshot yet replaces the waiting
 /// text; an error beside a held snapshot is drawn over the finished page.
-fn render_page_in(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
+fn render_page_in(
+    f: &mut Frame,
+    area: Rect,
+    app: &App,
+    theme: &Theme,
+    health: Option<(DateTime<FixedOffset>, chrono::Duration)>,
+) {
     match (app.snapshot(), app.feed_error()) {
         (None, Some(err)) => render_feed_failed(f, area, app, err, theme),
         (_, err) => match app.page() {
             AppPage::Regatta => {
-                regatta::render(f, area, app, theme);
+                regatta::render_with_health(f, area, app, theme, health);
                 if let Some(err) = err {
                     render_error_line(f, last_row(chair_inner(area, app)), err, theme);
                 }
@@ -1680,11 +1696,30 @@ mod tests {
     }
 
     #[test]
-    fn a_healthy_feed_draws_exactly_what_render_draws() {
+    fn a_healthy_feed_adds_only_its_age_to_what_render_draws() {
         let app = app_with_feed();
         let (healthy, theme) = draw_health(&app, 10);
-        assert_eq!(healthy, draw(&app, &theme));
-        insta::assert_snapshot!(rows(&healthy)[38..40].join("\n"));
+        // A healthy feed adds no health line. Its age is the one thing that differs: `feed 10s`
+        // on the machines frame's top border, which keeps its title.
+        let plain = rows(&draw(&app, &theme));
+        let differing: Vec<_> = rows(&healthy)
+            .into_iter()
+            .zip(plain)
+            .filter(|(with_age, without)| with_age != without)
+            .collect();
+        assert_eq!(differing.len(), 1);
+        let (with_age, without) = &differing[0];
+        // Taking the padded age back out leaves the plain border: nothing else on the row moved.
+        assert_eq!(
+            with_age.replace(" feed 10s ", &"\u{2500}".repeat(10)),
+            *without
+        );
+        assert!(without.contains(" 3 machines "));
+        // The footer snapshot keeps the name it had before this test was renamed.
+        insta::assert_snapshot!(
+            "a_healthy_feed_draws_exactly_what_render_draws",
+            rows(&healthy)[38..40].join("\n")
+        );
     }
 
     #[test]

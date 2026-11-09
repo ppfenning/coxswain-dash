@@ -1,0 +1,8 @@
+---
+source: src/ui/regatta.rs
+expression: terminal.backend().to_string()
+---
+"╭ 3 machines ────────────────────── feed 12s · feed 3.2 ms ╮"
+"│  host-b ■■■ 2/3 ● login ok 12s                           │"
+"│                                                          │"
+"╰──────────────────────────────────────────────────────────╯"
