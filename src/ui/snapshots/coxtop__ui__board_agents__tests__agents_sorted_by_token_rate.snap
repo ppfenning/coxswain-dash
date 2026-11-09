@@ -1,0 +1,12 @@
+---
+source: src/ui/board_agents.rs
+assertion_line: 183
+expression: "text(&drawn(&agents, None, 7))"
+---
+┌agents──────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│kind   model                     host     serves                                cost   elapsed tok/m  ctx   │
+│build  claude-sonnet-5-5         host-b   board-view-load                        $0.25    2:05   4200 ██░░░░│
+│build  claude-sonnet-5-5         host-b   -                                      $0.25    2:05   3100 █████░│
+│build  claude-sonnet-5-5         host-b   board-view-keys                        $0.25    2:05    900 █░░░░░│
+│                                                                                                            │
+└────────────────────────────────────────────────────────────────────────────────────────────────────────────┘

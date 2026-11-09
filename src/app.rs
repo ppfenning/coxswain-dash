@@ -26,7 +26,8 @@ use crate::decision_card::DecisionCard;
 use crate::detail::{DetailSnapshot, InitiativeDetail, SpendDetail};
 use crate::exec::{ExecResult, StatusLevel, frame_lines, status_summary};
 use crate::feed::{
-    Chair, FeedSnapshot, InboxEntry, QueueEntry, grouped_inbox, is_stale, queue_repos,
+    Chair, FeedSnapshot, InboxEntry, LiveAgent, QueueEntry, agents_by_rate, grouped_inbox,
+    is_stale, queue_repos,
 };
 use crate::form::{Form, FormAnswer, shell_join};
 use crate::form_initiative::{self, Prefill};
@@ -846,7 +847,9 @@ impl App {
     pub fn selected(&self) -> usize {
         let idx = self.selected[self.page_index()][self.focus_index()];
         match self.focus() {
-            Focus::History | Focus::Inbox | Focus::BoardTree => self.clamp_to_list(idx),
+            Focus::History | Focus::Inbox | Focus::BoardTree | Focus::BoardAgents => {
+                self.clamp_to_list(idx)
+            }
             _ => idx,
         }
     }
@@ -978,7 +981,7 @@ impl App {
         };
         match self.focus() {
             Focus::BoardTree => self.board_rows().len(),
-            Focus::BoardAgents => 0,
+            Focus::BoardAgents => snap.live.agents.len(),
             Focus::Runs => snap.runs.len(),
             Focus::Queue => snap.queue.len(),
             Focus::Machines => snap.machines.len(),
@@ -1023,7 +1026,9 @@ impl App {
         let current = self.selected();
         self.selected[p][f] = match (len, self.focus()) {
             (0, _) => 0,
-            (_, Focus::History | Focus::BoardTree) => (current + 1).min(len - 1),
+            (_, Focus::History | Focus::BoardTree | Focus::BoardAgents) => {
+                (current + 1).min(len - 1)
+            }
             _ => (current + 1) % len,
         };
     }
@@ -1039,7 +1044,9 @@ impl App {
         let current = self.selected();
         self.selected[p][f] = match (len, self.focus()) {
             (0, _) => 0,
-            (_, Focus::History | Focus::BoardTree) => current.saturating_sub(1),
+            (_, Focus::History | Focus::BoardTree | Focus::BoardAgents) => {
+                current.saturating_sub(1)
+            }
             _ => (current + len - 1) % len,
         };
     }
@@ -1071,8 +1078,12 @@ impl App {
                 .get(idx)
                 .map(|h| (DetailKind::Run, h.run.clone())),
             // Inbox rows have no drill-down.
-            Focus::Inbox | Focus::ChairAgents | Focus::SpendSplit | Focus::BoardAgents => None,
+            Focus::Inbox | Focus::ChairAgents | Focus::SpendSplit => None,
             Focus::BoardTree => board_target(snap, &self.board_rows(), idx),
+            // The index runs over the rate-sorted order the panel draws, not the feed order.
+            Focus::BoardAgents => agents_by_rate(&snap.live.agents)
+                .get(idx)
+                .and_then(|agent| agent_target(snap, agent)),
         }
     }
 
@@ -1730,6 +1741,30 @@ fn board_target(
     }
 }
 
+/// The drill an agent opens. A task it serves names that task's run, or the task's initiative when
+/// the task has no run. An initiative it serves names that initiative. An agent serving nothing
+/// names its host's machine, and one serving something the tree does not hold names nothing.
+fn agent_target(snap: &FeedSnapshot, agent: &LiveAgent) -> Option<(DetailKind, String)> {
+    let initiatives = || snap.board.epics.iter().flat_map(|e| &e.initiatives);
+    if agent.serves.is_empty() {
+        return (!agent.host.is_empty()).then(|| (DetailKind::Machine, agent.host.clone()));
+    }
+    let task = initiatives().find_map(|i| {
+        i.phases
+            .iter()
+            .flat_map(|p| &p.tasks)
+            .find(|t| t.id == agent.serves)
+            .map(|t| (i, t))
+    });
+    match task {
+        Some((_, t)) if !t.run.is_empty() => Some((DetailKind::Run, t.run.clone())),
+        Some((i, _)) => Some((DetailKind::Initiative, i.id.clone())),
+        None => initiatives()
+            .find(|i| i.id == agent.serves)
+            .map(|i| (DetailKind::Initiative, i.id.clone())),
+    }
+}
+
 /// The slot of `focus` in the per-page selection array.
 fn focus_slot(focus: Focus) -> usize {
     match focus {
@@ -2017,6 +2052,110 @@ mod tests {
             board_target_at(&mut app, 10),
             Some((DetailKind::Initiative, "stray-fix".to_string()))
         );
+    }
+
+    /// The board fixture with its live agents replaced by `(id, host, serves, tokens_per_min)`
+    /// rows in the order given, focused on the board's agents list.
+    fn agents_app(agents: &[(&str, &str, &str, u64)]) -> App {
+        let mut feed: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/fixtures/dash_feed_board_v1.json"))
+                .expect("board fixture is json");
+        feed["live"]["agents"] = agents
+            .iter()
+            .map(|(id, host, serves, rate)| {
+                serde_json::json!({"id": id, "host": host, "serves": serves, "tokens_per_min": rate})
+            })
+            .collect();
+        let mut app = App::new(AppPage::Board, ThemeId::Regatta);
+        app.apply_snapshot(
+            crate::feed::parse_snapshot(&feed.to_string()).expect("edited fixture parses"),
+        );
+        app.cycle_focus_next();
+        assert_eq!(app.focus(), Focus::BoardAgents);
+        app
+    }
+
+    fn agent_target_of(serves: &str, host: &str) -> Option<(DetailKind, String)> {
+        agents_app(&[("a", host, serves, 1)]).selected_entity()
+    }
+
+    #[test]
+    fn an_agent_serving_a_task_with_a_run_names_that_run() {
+        assert_eq!(
+            agent_target_of("board-view-load", "host-b"),
+            Some((DetailKind::Run, "board-1".to_string()))
+        );
+    }
+
+    #[test]
+    fn an_agent_serving_a_task_without_a_run_names_the_tasks_initiative() {
+        assert_eq!(
+            agent_target_of("board-view-keys", "host-b"),
+            Some((DetailKind::Initiative, "board-view".to_string()))
+        );
+    }
+
+    #[test]
+    fn an_agent_serving_an_initiative_names_that_initiative() {
+        assert_eq!(
+            agent_target_of("stray-fix", "host-b"),
+            Some((DetailKind::Initiative, "stray-fix".to_string()))
+        );
+    }
+
+    #[test]
+    fn an_agent_serving_nothing_names_its_host_machine() {
+        assert_eq!(
+            agent_target_of("", "host-b"),
+            Some((DetailKind::Machine, "host-b".to_string()))
+        );
+    }
+
+    #[test]
+    fn an_agent_with_no_serves_and_no_host_names_nothing() {
+        assert_eq!(agent_target_of("", ""), None);
+    }
+
+    #[test]
+    fn an_agent_serving_something_off_the_tree_names_nothing() {
+        assert_eq!(agent_target_of("not-in-the-tree", "host-b"), None);
+    }
+
+    #[test]
+    fn agent_selection_indexes_the_rate_sorted_order() {
+        let mut app = agents_app(&[
+            ("slow", "host-b", "board-view-load", 10),
+            ("fast", "host-b", "stray-fix", 900),
+        ]);
+        assert_eq!(
+            app.selected_entity(),
+            Some((DetailKind::Initiative, "stray-fix".to_string()))
+        );
+        app.select_next();
+        assert_eq!(
+            app.selected_entity(),
+            Some((DetailKind::Run, "board-1".to_string()))
+        );
+    }
+
+    #[test]
+    fn agent_selection_stops_at_both_ends() {
+        let mut app = agents_app(&[("a", "host-b", "", 3), ("b", "host-b", "", 2)]);
+        app.select_prev();
+        assert_eq!(app.selected(), 0);
+        app.select_next();
+        app.select_next();
+        assert_eq!(app.selected(), 1);
+        app.select_at(usize::MAX);
+        assert_eq!(app.selected(), 1);
+    }
+
+    #[test]
+    fn agent_selection_with_no_agents_stays_at_zero_and_names_nothing() {
+        let mut app = agents_app(&[]);
+        app.select_next();
+        assert_eq!(app.selected(), 0);
+        assert_eq!(app.selected_entity(), None);
     }
 
     #[test]

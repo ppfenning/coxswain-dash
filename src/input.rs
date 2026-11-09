@@ -1601,6 +1601,42 @@ mod tests {
         app.form().is_none() && app.modal().is_none() && app.take_detail_request().is_none()
     }
 
+    fn board_app_on_agents() -> App {
+        let json = include_str!("../tests/fixtures/dash_feed_board_v1.json");
+        let mut app = App::new(AppPage::Board, ThemeId::Regatta);
+        app.apply_snapshot(crate::feed::parse_snapshot(json).expect("board fixture parses"));
+        handle_key(&mut app, KeyCode::Right);
+        app
+    }
+
+    #[test]
+    fn enter_on_a_board_agent_opens_the_run_it_serves() {
+        let mut app = board_app_on_agents();
+        assert_eq!(app.focus(), Focus::BoardAgents);
+        handle_key(&mut app, KeyCode::Enter);
+        assert_eq!(
+            app.detail().map(|(kind, id, _)| (*kind, id.as_str())),
+            Some((crate::app::DetailKind::Run, "board-1"))
+        );
+    }
+
+    #[test]
+    fn down_and_up_move_the_board_agent_selection_and_stop_at_the_ends() {
+        let mut app = board_app_on_agents();
+        handle_key(&mut app, KeyCode::Down);
+        handle_key(&mut app, KeyCode::Down);
+        assert_eq!(app.selected(), 1);
+        handle_key(&mut app, KeyCode::Enter);
+        assert_eq!(
+            app.detail().map(|(kind, id, _)| (*kind, id.as_str())),
+            Some((crate::app::DetailKind::Run, "stray-1"))
+        );
+        handle_key(&mut app, KeyCode::Esc);
+        handle_key(&mut app, KeyCode::Up);
+        handle_key(&mut app, KeyCode::Up);
+        assert_eq!(app.selected(), 0);
+    }
+
     #[test]
     fn the_new_key_on_the_queue_frame_opens_the_new_form() {
         let mut app = app_on_queue();
