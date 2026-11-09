@@ -1,6 +1,7 @@
 //! Dispatches rendering to the current page's module. No layout logic lives here; each page
 //! module owns its own `render`.
 
+mod board;
 #[allow(dead_code)]
 mod budget_panel;
 mod chair_agents;
@@ -402,6 +403,7 @@ fn render_page_in(
             }
             // Slipstream draws its own error line, in its own palette.
             AppPage::Slipstream => slipstream::render(f, area, app),
+            AppPage::Board => board::render(f, area, app),
         },
     }
 }

@@ -2673,7 +2673,11 @@ pub(super) fn action_hints(focus: Focus) -> Vec<(char, &'static str)> {
         Focus::Machines => Target::Machine(String::new()),
         Focus::Queue => Target::Initiative(String::new()),
         Focus::Inbox => Target::InboxItem(String::new()),
-        Focus::History | Focus::ChairAgents | Focus::SpendSplit => return Vec::new(),
+        Focus::History
+        | Focus::ChairAgents
+        | Focus::SpendSplit
+        | Focus::BoardTree
+        | Focus::BoardAgents => return Vec::new(),
     };
     bindings(&target)
         .into_iter()
