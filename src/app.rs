@@ -9,7 +9,7 @@
 // flag them as dead code.
 #![allow(dead_code)]
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 use std::path::PathBuf;
 
 use chrono::{DateTime, FixedOffset};
@@ -19,6 +19,7 @@ use ratatui::layout::Rect;
 use crate::actions::{
     Action, Target, action_for, command_in_reason, dry_run_argv, move_prefill, osc52_copy,
 };
+use crate::board_rows::{self, Row as BoardRow};
 use crate::chair_panel::{ChairPanel, CloseOutcome};
 use crate::confirm::{ConfirmAnswer, ConfirmState};
 use crate::decision_card::DecisionCard;
@@ -52,6 +53,7 @@ const LANES_HISTORY_MAX_AGE_HOURS: i64 = 24;
 pub enum AppPage {
     Regatta,
     Slipstream,
+    Board,
 }
 
 /// The window the spend pane reads its figures over.
@@ -82,6 +84,10 @@ pub enum Focus {
     /// The optional chair agents and spend split frames hold no rows, so no selection lands on them.
     ChairAgents,
     SpendSplit,
+    /// The Board page's epic, initiative, phase and task tree.
+    BoardTree,
+    /// The Board page's agents pane. It holds no rows yet.
+    BoardAgents,
 }
 
 /// Which kind of entity an open detail request names, matching the id field the detail
@@ -206,15 +212,20 @@ pub struct App {
     /// Ids of the runs the runs frame shows expanded. Session-only. A feed refresh keeps it; an id
     /// that has left the feed is never queried, so it needs no pruning.
     expanded_runs: BTreeSet<String>,
+    /// Ids of the Board nodes folded shut. Session-only; a feed refresh keeps it.
+    board_collapsed: HashSet<String>,
+    /// Ids of the phases whose landed tasks the Board lists. Session-only; a feed refresh keeps it.
+    board_opened_landed: HashSet<String>,
+    /// The Board page's focus, apart from the Regatta page's.
+    board_focus: Focus,
     regatta_layout_preset: usize,
     lanes_history: Vec<(String, u32)>,
     utc_offset: FixedOffset,
     focus: Focus,
     spend_window: SpendWindow,
-    /// Selection index per page (`Regatta`, `Slipstream`, then `Spend`) and per focus
-    /// (`Focus::Runs`, `Focus::Queue`, `Focus::Machines`, `Focus::History`, `Focus::Inbox` in
-    /// that order).
-    selected: [[usize; 7]; 3],
+    /// Selection index per page (`Regatta`, `Slipstream`, `Board`) and per focus, in the order
+    /// `focus_slot` gives.
+    selected: [[usize; 9]; 3],
     detail: Option<(DetailKind, String, Option<DetailSnapshot>)>,
     rail_spend: Option<SpendDetail>,
     chair_panel: ChairPanel<Box<dyn PtySession>>,
@@ -301,12 +312,15 @@ impl Default for App {
             spend_split_visible: false,
             queue_grouped: false,
             expanded_runs: BTreeSet::new(),
+            board_collapsed: HashSet::new(),
+            board_opened_landed: HashSet::new(),
+            board_focus: Focus::BoardTree,
             regatta_layout_preset: 0,
             lanes_history: Vec::new(),
             utc_offset: FixedOffset::east_opt(0).expect("zero is a valid UTC offset"),
             focus: Focus::Runs,
             spend_window: SpendWindow::FiveHour,
-            selected: [[0; 7]; 3],
+            selected: [[0; 9]; 3],
             detail: None,
             rail_spend: None,
             chair_panel: ChairPanel::new(Box::new(RealPty::new())),
@@ -686,16 +700,19 @@ impl App {
         self.detail_error = Some(line);
     }
 
+    /// Tab: Board, Regatta, Slipstream, and back to Board.
     pub fn next_page(&mut self) {
         self.page = match self.page {
+            AppPage::Board => AppPage::Regatta,
             AppPage::Regatta => AppPage::Slipstream,
-            AppPage::Slipstream => AppPage::Regatta,
+            AppPage::Slipstream => AppPage::Board,
         };
     }
 
     pub fn prev_page(&mut self) {
         self.page = match self.page {
-            AppPage::Regatta => AppPage::Slipstream,
+            AppPage::Board => AppPage::Slipstream,
+            AppPage::Regatta => AppPage::Board,
             AppPage::Slipstream => AppPage::Regatta,
         };
     }
@@ -801,6 +818,7 @@ impl App {
         match self.page {
             AppPage::Regatta => self.focus,
             AppPage::Slipstream => Focus::Runs,
+            AppPage::Board => self.board_focus,
         }
     }
 
@@ -823,7 +841,7 @@ impl App {
     pub fn selected(&self) -> usize {
         let idx = self.selected[self.page_index()][self.focus_index()];
         match self.focus() {
-            Focus::History | Focus::Inbox => self.clamp_to_list(idx),
+            Focus::History | Focus::Inbox | Focus::BoardTree => self.clamp_to_list(idx),
             _ => idx,
         }
     }
@@ -841,6 +859,9 @@ impl App {
     /// page; a no-op on the Slipstream page, which only ever has a runs list to focus.
     /// Inbox follows History, not Machines, because History already sits after Machines.
     pub fn cycle_focus_next(&mut self) {
+        if self.page == AppPage::Board {
+            self.flip_board_focus();
+        }
         if self.page == AppPage::Regatta {
             self.focus = match self.focus {
                 Focus::Runs => Focus::Queue,
@@ -849,7 +870,7 @@ impl App {
                 Focus::History => self.stop_after(Focus::History),
                 Focus::Inbox => self.stop_after(Focus::Inbox),
                 Focus::ChairAgents => self.stop_after(Focus::ChairAgents),
-                Focus::SpendSplit => Focus::Runs,
+                Focus::SpendSplit | Focus::BoardTree | Focus::BoardAgents => Focus::Runs,
             };
         }
     }
@@ -893,6 +914,9 @@ impl App {
 
     /// Left cycles focus the other way around the same five stops; a no-op on Slipstream.
     pub fn cycle_focus_prev(&mut self) {
+        if self.page == AppPage::Board {
+            self.flip_board_focus();
+        }
         if self.page == AppPage::Regatta {
             self.focus = match self.focus {
                 Focus::Queue => Focus::Runs,
@@ -901,7 +925,44 @@ impl App {
                 Focus::Runs | Focus::Inbox | Focus::ChairAgents | Focus::SpendSplit => {
                     self.stop_before(self.focus)
                 }
+                Focus::BoardTree | Focus::BoardAgents => Focus::Runs,
             };
+        }
+    }
+
+    /// The Board page has two stops, so either direction flips between them.
+    fn flip_board_focus(&mut self) {
+        self.board_focus = match self.board_focus {
+            Focus::BoardTree => Focus::BoardAgents,
+            _ => Focus::BoardTree,
+        };
+    }
+
+    /// The Board tree's rows for the held snapshot, folded by the session's collapsed and opened
+    /// sets. Empty before the first snapshot.
+    pub fn board_rows(&self) -> Vec<BoardRow> {
+        self.snapshot.as_ref().map_or_else(Vec::new, |snap| {
+            board_rows::flatten(snap, &self.board_collapsed, &self.board_opened_landed)
+        })
+    }
+
+    /// Closes or opens the selected epic, initiative or phase row, and opens the selected landed
+    /// row. A landed row only opens. Does nothing on a task row or off the Board tree.
+    pub fn toggle_board_node(&mut self) {
+        if self.focus() != Focus::BoardTree {
+            return;
+        }
+        match self.board_rows().get(self.selected()) {
+            Some(BoardRow::Epic(n) | BoardRow::Phase(n) | BoardRow::Initiative { node: n, .. }) => {
+                let id = n.id.clone();
+                if !self.board_collapsed.remove(&id) {
+                    self.board_collapsed.insert(id);
+                }
+            }
+            Some(BoardRow::Landed { id, .. }) => {
+                self.board_opened_landed.insert(id.clone());
+            }
+            Some(BoardRow::Task { .. }) | None => {}
         }
     }
 
@@ -911,6 +972,8 @@ impl App {
             return 0;
         };
         match self.focus() {
+            Focus::BoardTree => self.board_rows().len(),
+            Focus::BoardAgents => 0,
             Focus::Runs => snap.runs.len(),
             Focus::Queue => snap.queue.len(),
             Focus::Machines => snap.machines.len(),
@@ -955,7 +1018,7 @@ impl App {
         let current = self.selected();
         self.selected[p][f] = match (len, self.focus()) {
             (0, _) => 0,
-            (_, Focus::History) => (current + 1).min(len - 1),
+            (_, Focus::History | Focus::BoardTree) => (current + 1).min(len - 1),
             _ => (current + 1) % len,
         };
     }
@@ -971,7 +1034,7 @@ impl App {
         let current = self.selected();
         self.selected[p][f] = match (len, self.focus()) {
             (0, _) => 0,
-            (_, Focus::History) => current.saturating_sub(1),
+            (_, Focus::History | Focus::BoardTree) => current.saturating_sub(1),
             _ => (current + len - 1) % len,
         };
     }
@@ -1003,7 +1066,8 @@ impl App {
                 .get(idx)
                 .map(|h| (DetailKind::Run, h.run.clone())),
             // Inbox rows have no drill-down.
-            Focus::Inbox | Focus::ChairAgents | Focus::SpendSplit => None,
+            Focus::Inbox | Focus::ChairAgents | Focus::SpendSplit | Focus::BoardAgents => None,
+            Focus::BoardTree => board_target(snap, &self.board_rows(), idx),
         }
     }
 
@@ -1618,6 +1682,46 @@ fn page_slot(page: AppPage) -> usize {
     match page {
         AppPage::Regatta => 0,
         AppPage::Slipstream => 1,
+        AppPage::Board => 2,
+    }
+}
+
+/// The drill target of tree row `idx`. A phase has no drill of its own, so it names the
+/// initiative above it, found by walking back because phase ids repeat across initiatives. A task
+/// names its run when it has one and its initiative otherwise. Epic and landed rows name nothing.
+fn board_target(
+    snap: &FeedSnapshot,
+    rows: &[BoardRow],
+    idx: usize,
+) -> Option<(DetailKind, String)> {
+    let initiative_above = || {
+        rows.get(..idx)?.iter().rev().find_map(|r| match r {
+            BoardRow::Initiative { node, .. } => Some(node.id.as_str()),
+            _ => None,
+        })
+    };
+    match rows.get(idx)? {
+        BoardRow::Epic(_) | BoardRow::Landed { .. } => None,
+        BoardRow::Initiative { node, .. } => Some((DetailKind::Initiative, node.id.clone())),
+        BoardRow::Phase(_) => initiative_above().map(|id| (DetailKind::Initiative, id.to_string())),
+        BoardRow::Task { id, .. } => {
+            let initiative = initiative_above()?;
+            let run = snap
+                .board
+                .epics
+                .iter()
+                .flat_map(|e| &e.initiatives)
+                .filter(|i| i.id == initiative)
+                .flat_map(|i| &i.phases)
+                .flat_map(|p| &p.tasks)
+                .find(|t| t.id == *id)
+                .map_or("", |t| t.run.as_str());
+            Some(if run.is_empty() {
+                (DetailKind::Initiative, initiative.to_string())
+            } else {
+                (DetailKind::Run, run.to_string())
+            })
+        }
     }
 }
 
@@ -1631,6 +1735,8 @@ fn focus_slot(focus: Focus) -> usize {
         Focus::Inbox => 4,
         Focus::ChairAgents => 5,
         Focus::SpendSplit => 6,
+        Focus::BoardTree => 7,
+        Focus::BoardAgents => 8,
     }
 }
 
@@ -1786,6 +1892,137 @@ mod tests {
         app.toggle_run_expanded();
         assert!(!app.run_expanded("r0"));
         assert!(!app.run_expanded("i0"));
+    }
+
+    fn board_app() -> App {
+        let json = include_str!("../tests/fixtures/dash_feed_board_v1.json");
+        let mut app = App::new(AppPage::Board, ThemeId::Regatta);
+        app.apply_snapshot(crate::feed::parse_snapshot(json).expect("board fixture parses"));
+        app
+    }
+
+    /// The fixture's first epic opens with: 0 epic, 1 initiative board-view, 2 phase p1-data,
+    /// 3 task board-view-load, 4 landed p1-data, 5 phase p2-render, 6 task board-view-frame,
+    /// 7 task board-view-keys (no run), then the stray epic at 8.
+    fn board_target_at(app: &mut App, idx: usize) -> Option<(DetailKind, String)> {
+        app.select_at(idx);
+        app.selected_entity()
+    }
+
+    #[test]
+    fn board_page_keeps_its_own_selection_apart_from_regatta() {
+        let mut app = board_app();
+        app.select_at(3);
+        app.next_page();
+        assert_eq!(app.selected(), 0);
+        app.prev_page();
+        assert_eq!(app.selected(), 3);
+    }
+
+    #[test]
+    fn board_focus_alternates_between_tree_and_agents() {
+        let mut app = board_app();
+        assert_eq!(app.focus(), Focus::BoardTree);
+        app.cycle_focus_next();
+        assert_eq!(app.focus(), Focus::BoardAgents);
+        app.cycle_focus_prev();
+        assert_eq!(app.focus(), Focus::BoardTree);
+    }
+
+    #[test]
+    fn board_selection_stops_at_both_ends() {
+        let mut app = board_app();
+        let last = app.board_rows().len() - 1;
+        app.select_prev();
+        assert_eq!(app.selected(), 0);
+        app.select_at(usize::MAX);
+        assert_eq!(app.selected(), last);
+        app.select_next();
+        assert_eq!(app.selected(), last);
+    }
+
+    #[test]
+    fn board_selection_is_clamped_when_a_collapse_shortens_the_tree() {
+        let mut app = board_app();
+        let before = app.board_rows().len();
+        app.select_at(usize::MAX);
+        app.select_at(0);
+        app.toggle_board_node();
+        app.select_at(usize::MAX);
+        assert_eq!(app.selected(), app.board_rows().len() - 1);
+        assert!(app.board_rows().len() < before);
+    }
+
+    #[test]
+    fn collapsing_then_expanding_an_initiative_row_hides_then_restores_its_children() {
+        let mut app = board_app();
+        let full = app.board_rows().len();
+        app.select_at(1);
+        app.toggle_board_node();
+        assert_eq!(app.board_rows().len(), full - 6);
+        app.toggle_board_node();
+        assert_eq!(app.board_rows().len(), full);
+    }
+
+    #[test]
+    fn toggling_a_landed_row_opens_it_and_a_task_row_does_nothing() {
+        let mut app = board_app();
+        let full = app.board_rows().len();
+        app.select_at(4);
+        app.toggle_board_node();
+        assert_eq!(app.board_rows().len(), full + 1);
+        app.toggle_board_node();
+        assert_eq!(app.board_rows().len(), full + 1);
+        app.select_at(3);
+        app.toggle_board_node();
+        assert_eq!(app.board_rows().len(), full + 1);
+    }
+
+    #[test]
+    fn board_sets_survive_a_new_snapshot() {
+        let mut app = board_app();
+        app.select_at(1);
+        app.toggle_board_node();
+        let folded = app.board_rows().len();
+        let json = include_str!("../tests/fixtures/dash_feed_board_v1.json");
+        app.apply_snapshot(crate::feed::parse_snapshot(json).expect("board fixture parses"));
+        assert_eq!(app.board_rows().len(), folded);
+    }
+
+    #[test]
+    fn selected_entity_on_the_board_names_the_drill_for_each_row_kind() {
+        let mut app = board_app();
+        let initiative = (DetailKind::Initiative, "board-view".to_string());
+        assert_eq!(board_target_at(&mut app, 0), None);
+        assert_eq!(board_target_at(&mut app, 1), Some(initiative.clone()));
+        assert_eq!(board_target_at(&mut app, 2), Some(initiative.clone()));
+        assert_eq!(
+            board_target_at(&mut app, 3),
+            Some((DetailKind::Run, "board-1".to_string()))
+        );
+        assert_eq!(board_target_at(&mut app, 4), None);
+        assert_eq!(board_target_at(&mut app, 5), Some(initiative.clone()));
+        assert_eq!(board_target_at(&mut app, 7), Some(initiative));
+    }
+
+    #[test]
+    fn a_phase_in_the_second_initiative_names_that_initiative() {
+        let mut app = board_app();
+        assert_eq!(
+            board_target_at(&mut app, 10),
+            Some((DetailKind::Initiative, "stray-fix".to_string()))
+        );
+    }
+
+    #[test]
+    fn open_detail_on_a_board_task_row_opens_its_run() {
+        let mut app = board_app();
+        app.select_at(3);
+        app.open_detail();
+        assert_eq!(
+            app.detail().map(|(k, id, _)| (*k, id.as_str())),
+            Some((DetailKind::Run, "board-1"))
+        );
     }
 
     /// Builds a literal `FeedSnapshot` with the given timestamp and total lanes-in-use,
@@ -1993,10 +2230,18 @@ mod tests {
     }
 
     #[test]
-    fn next_page_wraps_from_slipstream_to_regatta() {
-        let mut app = App::new(AppPage::Slipstream, ThemeId::Regatta);
-        app.next_page();
-        assert_eq!(app.page(), AppPage::Regatta);
+    fn next_page_cycles_board_regatta_slipstream_and_back() {
+        let mut app = App::new(AppPage::Board, ThemeId::Regatta);
+        let seen: Vec<AppPage> = (0..3)
+            .map(|_| {
+                app.next_page();
+                app.page()
+            })
+            .collect();
+        assert_eq!(
+            seen,
+            [AppPage::Regatta, AppPage::Slipstream, AppPage::Board]
+        );
     }
 
     #[test]
@@ -2010,10 +2255,18 @@ mod tests {
     }
 
     #[test]
-    fn prev_page_wraps_from_regatta_to_slipstream() {
+    fn prev_page_cycles_regatta_board_slipstream_and_back() {
         let mut app = App::new(AppPage::Regatta, ThemeId::Regatta);
-        app.prev_page();
-        assert_eq!(app.page(), AppPage::Slipstream);
+        let seen: Vec<AppPage> = (0..3)
+            .map(|_| {
+                app.prev_page();
+                app.page()
+            })
+            .collect();
+        assert_eq!(
+            seen,
+            [AppPage::Board, AppPage::Slipstream, AppPage::Regatta]
+        );
     }
 
     #[test]
@@ -3105,6 +3358,7 @@ mod tests {
     fn regatta_focus_survives_a_round_trip_through_slipstream() {
         let mut app = App::new(AppPage::Regatta, ThemeId::Regatta);
         app.cycle_focus_next();
+        app.next_page();
         app.next_page();
         app.next_page();
         assert_eq!(app.page(), AppPage::Regatta);
