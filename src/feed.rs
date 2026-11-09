@@ -44,12 +44,25 @@ pub struct FeedSnapshot {
     /// `..snap` struct updates in other modules still compile.
     #[serde(default, deserialize_with = "lenient_budget")]
     pub(crate) budget: Option<Budget>,
+    /// What building this snapshot cost. An older coxswain emits no `cost` key.
+    #[serde(default)]
+    pub cost: Option<FeedCost>,
 }
 
 impl FeedSnapshot {
     pub fn budget(&self) -> Option<&Budget> {
         self.budget.as_ref()
     }
+}
+
+/// Producer cost of one snapshot: CPU and wall milliseconds, and which sections were
+/// recomputed or reused from the previous snapshot.
+#[derive(Debug, Deserialize)]
+pub struct FeedCost {
+    pub cpu_ms: f64,
+    pub wall_ms: f64,
+    pub recomputed: Vec<String>,
+    pub reused: Vec<String>,
 }
 
 /// One queued intake. `stage` is the word `draft` or `ready`.
@@ -1236,6 +1249,35 @@ mod tests {
     fn parse_snapshot_leaves_watch_empty_for_the_existing_fixture() {
         let snapshot = parse_snapshot(FIXTURE).expect("fixture should parse");
         assert!(snapshot.watch.is_empty());
+    }
+
+    const COST_FIXTURE: &str = include_str!("../tests/fixtures/dash_feed_cost_v1.json");
+
+    // The cost fixture is a partial feed (schema, at, cost), not a full snapshot, so it cannot
+    // go through `parse_snapshot` alone. Graft its `cost` key onto the full v1 fixture.
+    #[test]
+    fn parse_snapshot_reads_the_cost_block() {
+        let cost_feed: serde_json::Value =
+            serde_json::from_str(COST_FIXTURE).expect("cost fixture is json");
+        let mut full: serde_json::Value = serde_json::from_str(FIXTURE).expect("fixture is json");
+        full["cost"] = cost_feed["cost"].clone();
+        let snapshot: FeedSnapshot = serde_json::from_value(full).expect("snapshot should parse");
+        let cost = snapshot.cost.expect("cost should be present");
+        assert_eq!(cost.cpu_ms, 6.5);
+        assert_eq!(cost.wall_ms, 12.0);
+        assert_eq!(cost.recomputed, vec!["live"]);
+        assert_eq!(
+            cost.reused,
+            vec![
+                "chair", "spend", "machines", "runs", "queue", "inbox", "history", "board", "epics"
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_snapshot_leaves_cost_none_for_the_existing_fixture() {
+        let snapshot = parse_snapshot(FIXTURE).expect("fixture should parse");
+        assert!(snapshot.cost.is_none());
     }
 
     #[test]
