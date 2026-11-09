@@ -1,0 +1,22 @@
+---
+source: src/ui/board_tree.rs
+assertion_line: 447
+expression: "draw(&app, WIDTH, HEIGHT).backend().to_string()"
+---
+"┌tree────────────────────────────────────────────────────────────────────────────────────┐"
+"│▾ ░ Board shows epics  1 building 1 quarantined 1 ready 1 landed                   $1.75│"
+"│  ▾ ░ bv  1 building 1 quarantined 1 ready 1 landed  landed today 0                $1.75│"
+"│    ▾ ░ p1-data  1 building 1 landed                                               $0.75│"
+"│        ▒ board-view-load  host-b 2m                                               $0.25│"
+"│      ▸ █ landed today 0 and earlier 1                                                  │"
+"│    ▾ ░ p2-render  1 quarantined 1 ready                                           $1.00│"
+"│        ✕ board-view-frame                                                         $1.00│"
+"│        ░ board-view-keys                                                          $0.00│"
+"│▾ ░ no epic  1 building 1 blocked                                                  $0.50│"
+"│  ▾ ░ sf  1 building 1 blocked  landed today 0                                     $0.50│"
+"│    ▾ ░ p1-fix  1 building 1 blocked                                               $0.50│"
+"│        ▒ stray-fix-patch  host-b 5m                                               $0.50│"
+"│        ░ stray-fix-docs                                                           $0.00│"
+"│                                                                                        │"
+"│                                                                                        │"
+"└────────────────────────────────────────────────────────────────────────────────────────┘"
