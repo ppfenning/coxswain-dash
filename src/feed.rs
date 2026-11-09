@@ -36,6 +36,10 @@ pub struct FeedSnapshot {
     pub intake: Vec<IntakeEntry>,
     #[serde(default)]
     pub spend_split: Option<SpendSplit>,
+    #[serde(default)]
+    pub operator_sessions: OperatorSessions,
+    #[serde(default)]
+    pub spend_sources: SpendSources,
     /// Month budget and pace. Read it through `budget()`. Crate-visible so the
     /// `..snap` struct updates in other modules still compile.
     #[serde(default, deserialize_with = "lenient_budget")]
@@ -134,6 +138,45 @@ pub struct NodeSpend {
 pub struct SpendSplit {
     pub five_hour: SpendWindow,
     pub weekly: SpendWindow,
+}
+
+/// One agent an operator session launched.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct OperatorAgent {
+    pub agent_type: String,
+    pub description: String,
+    pub cost_usd: f64,
+}
+
+/// One operator session priced inside a meter window. `started_at` is RFC 3339 UTC, kept as sent.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct OperatorSession {
+    pub session_id: String,
+    pub started_at: String,
+    pub model: String,
+    pub cost_usd: f64,
+    pub agent_count: u64,
+    pub agents: Vec<OperatorAgent>,
+}
+
+/// Operator sessions per meter window, in the order the feed sends them.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct OperatorSessions {
+    pub five_hour: Vec<OperatorSession>,
+    pub weekly: Vec<OperatorSession>,
+}
+
+/// Where the spend split got its numbers. Absent from an older cox, which leaves every word empty.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct SpendSources {
+    pub chair_session: String,
+    pub price_catalog: String,
+    pub sessions_found: u64,
+    pub sessions_priced: String,
 }
 
 /// How an ended run finished. A value this build does not know parses as `Unknown`.
@@ -1035,6 +1078,86 @@ mod tests {
         assert_eq!(split.weekly.cox_seats_share, 0.6192);
         assert_eq!(split.weekly.meter_fraction, 0.57);
         assert_eq!(split.weekly.resets_at, "2026-10-18T08:00:00Z");
+    }
+
+    const SESSIONS_FIXTURE: &str = include_str!("../tests/fixtures/dash_sessions_v1.json");
+
+    #[test]
+    fn the_sessions_fixture_parses_both_windows_and_the_sources() {
+        let snapshot = parse_snapshot(&with_intake(SESSIONS_FIXTURE)).expect("fixture parses");
+        let five = &snapshot.operator_sessions.five_hour;
+        let weekly = &snapshot.operator_sessions.weekly;
+        assert_eq!(five.len(), 1);
+        assert_eq!(five[0].session_id, "5f0c2a9e-3b1d-4c7a-9e21-0a6b7d8c1f34");
+        assert_eq!(five[0].cost_usd, 4.21);
+        assert_eq!(five[0].agent_count, 2);
+        assert_eq!(five[0].agents.len(), 2);
+        assert_eq!(five[0].agents[0].agent_type, "general-purpose");
+        assert_eq!(
+            five[0].agents[0].description,
+            "Trace the lease heartbeat path"
+        );
+        assert_eq!(five[0].agents[0].cost_usd, 0.62);
+        assert_eq!(five[0].agents[1].agent_type, "Explore");
+        assert_eq!(five[0].agents[1].description, "Find the budget readers");
+        assert_eq!(five[0].agents[1].cost_usd, 0.18);
+        assert_eq!(weekly.len(), 2);
+        assert_eq!(weekly[0].session_id, "c81e4d57-92a0-4f6b-b3d5-71e2a9f04c68");
+        assert_eq!(weekly[0].cost_usd, 30.0);
+        assert_eq!(weekly[0].agent_count, 1);
+        assert_eq!(weekly[0].agents[0].agent_type, "general-purpose");
+        assert_eq!(weekly[0].agents[0].description, "Review the lease reader");
+        assert_eq!(weekly[0].agents[0].cost_usd, 1.6);
+        assert_eq!(weekly[1].session_id, five[0].session_id);
+        assert_eq!(weekly[1].started_at, five[0].started_at);
+        assert_eq!(weekly[1].model, five[0].model);
+        assert_eq!(weekly[1].cost_usd, 12.4);
+        assert_eq!(weekly[1].agent_count, 2);
+        assert_eq!(
+            weekly[1].agents[0].description,
+            "Survey the dash feed readers"
+        );
+        assert_eq!(weekly[1].agents[0].agent_type, "general-purpose");
+        assert_eq!(weekly[1].agents[0].cost_usd, 0.9);
+        assert_eq!(weekly[1].agents[1].agent_type, "Explore");
+        assert_eq!(
+            weekly[1].agents[1].description,
+            "Find the spend split callers"
+        );
+        assert_eq!(weekly[1].agents[1].cost_usd, 0.18);
+        assert_eq!(snapshot.spend_sources.chair_session, "none");
+        assert_eq!(snapshot.spend_sources.price_catalog, "ok");
+        assert_eq!(snapshot.spend_sources.sessions_found, 2);
+        assert_eq!(snapshot.spend_sources.sessions_priced, "ok");
+        let split = snapshot.spend_split.expect("split present");
+        assert_eq!(split.five_hour.total_usd, 7.01);
+        assert_eq!(split.weekly.resets_at, "2026-11-08T08:00:00Z");
+    }
+
+    #[test]
+    fn partial_operator_fields_default_the_rest() {
+        let keys = r#""operator_sessions":{"weekly":[{"session_id":"s-1"}]},"spend_sources":{"sessions_found":3}"#;
+        let json = with_chair(&format!("{OLD_CHAIR}}}"))
+            .replace(r#""watch":[]"#, &format!(r#""watch":[],{keys}"#));
+        let snapshot = parse_snapshot(&json).expect("partial parses");
+        assert!(snapshot.operator_sessions.five_hour.is_empty());
+        let row = &snapshot.operator_sessions.weekly[0];
+        assert_eq!(row.session_id, "s-1");
+        assert_eq!(row.model, "");
+        assert_eq!(row.agent_count, 0);
+        assert!(row.agents.is_empty());
+        assert_eq!(snapshot.spend_sources.sessions_found, 3);
+        assert_eq!(snapshot.spend_sources.sessions_priced, "");
+        assert_eq!(snapshot.spend_sources.chair_session, "");
+    }
+
+    #[test]
+    fn an_older_feed_without_operator_fields_parses_with_empty_defaults() {
+        let snapshot = parse_snapshot(FIXTURE).expect("fixture should parse");
+        assert!(snapshot.operator_sessions.five_hour.is_empty());
+        assert!(snapshot.operator_sessions.weekly.is_empty());
+        assert_eq!(snapshot.spend_sources.sessions_found, 0);
+        assert_eq!(snapshot.spend_sources.sessions_priced, "");
     }
 
     const WINDOW_HEAD: &str = r#""chair_session_usd":1.0,"chair_agents_usd":2.0,"cox_seats_usd":3.0,"total_usd":6.0,"chair_session_share":0.1,"chair_agents_share":0.3,"cox_seats_share":0.6,"meter_fraction":0.2,"resets_at":"2026-10-16T22:00:00Z""#;
