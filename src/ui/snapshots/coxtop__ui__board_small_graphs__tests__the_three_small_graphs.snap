@@ -1,0 +1,11 @@
+---
+source: src/ui/board_small_graphs.rs
+assertion_line: 240
+expression: draw(SNAPSHOT).backend().to_string()
+---
+"┌calls/min 20──┐┌cache hit 94%─┐┌land/quar 6/3─┐"
+"│    ▅ █       ││    ▂▄▆       ││      ▃   █   │"
+"│  ▆ █▃█       ││ ▂▆▄███       ││      █ ▅ █   │"
+"│ ▆█▂███       ││▅██████       ││  █ ▃ █▃█ ██  │"
+"│▆██████       ││███████       ││▅ █▅█ ███▅██  │"
+"└──────────────┘└──────────────┘└──────────────┘"
