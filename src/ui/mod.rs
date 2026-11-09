@@ -2,6 +2,15 @@
 //! module owns its own `render`.
 
 mod board;
+mod board_agents;
+mod board_burn;
+mod board_header;
+mod board_machines;
+mod board_schedule;
+mod board_small_graphs;
+mod board_throughput;
+mod board_timeline;
+mod board_tree;
 #[allow(dead_code)]
 mod budget_panel;
 mod chair_agents;
@@ -403,7 +412,7 @@ fn render_page_in(
             }
             // Slipstream draws its own error line, in its own palette.
             AppPage::Slipstream => slipstream::render(f, area, app),
-            AppPage::Board => board::render(f, area, app),
+            AppPage::Board => board::render(f, area, app, theme),
         },
     }
 }
