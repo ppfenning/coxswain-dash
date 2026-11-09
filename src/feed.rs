@@ -40,6 +40,8 @@ pub struct FeedSnapshot {
     /// `..snap` struct updates in other modules still compile.
     #[serde(default, deserialize_with = "lenient_budget")]
     pub(crate) budget: Option<Budget>,
+    #[serde(default)]
+    pub board: Board,
 }
 
 impl FeedSnapshot {
@@ -438,6 +440,95 @@ pub struct Machine {
     pub login_checked_at: String,
     pub beat_age_s: u64,
     pub checkouts: HashMap<String, Checkout>,
+    #[serde(default)]
+    pub lanes: Vec<Lane>,
+    #[serde(default)]
+    pub load: MachineLoad,
+}
+
+/// One running lane on a machine. `tasks` holds task ids.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct Lane {
+    pub run: String,
+    pub initiative: String,
+    pub phase: String,
+    pub tasks: Vec<String>,
+    pub elapsed_s: u64,
+    pub cost_usd: f64,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct MachineLoad {
+    pub cpu_pct: f64,
+    pub load_avg_per_core: f64,
+    pub mem_used_gb: f64,
+    pub mem_total_gb: f64,
+}
+
+/// The epic, initiative, phase and task tree. The feed has no nulls: an absent string is
+/// "" and an absent number is 0. Initiatives with no epic sit under the epic with id "".
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct Board {
+    pub epics: Vec<Epic>,
+}
+
+/// Task counts by status. A parent's counts are the sums of its children's.
+#[derive(Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct StatusCounts {
+    pub ready: u32,
+    pub building: u32,
+    pub approved: u32,
+    pub merged: u32,
+    pub landed: u32,
+    pub quarantined: u32,
+    pub dropped: u32,
+    pub blocked: u32,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct Epic {
+    pub id: String,
+    pub title: String,
+    pub status: String,
+    pub cost_usd: f64,
+    pub counts: StatusCounts,
+    pub initiatives: Vec<BoardInitiative>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct BoardInitiative {
+    pub id: String,
+    pub short_id: String,
+    pub status: String,
+    pub cost_usd: f64,
+    pub counts: StatusCounts,
+    pub phases: Vec<BoardPhase>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct BoardPhase {
+    pub id: String,
+    pub status: String,
+    pub cost_usd: f64,
+    pub counts: StatusCounts,
+    pub tasks: Vec<BoardTask>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct BoardTask {
+    pub id: String,
+    pub status: String,
+    pub run: String,
+    pub host: String,
+    pub cost_usd: f64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -888,6 +979,181 @@ mod tests {
     use super::*;
 
     const FIXTURE: &str = include_str!("../tests/fixtures/dash_feed_v1.json");
+    const BOARD_FIXTURE: &str = include_str!("../tests/fixtures/dash_feed_board_v1.json");
+
+    #[test]
+    fn the_board_fixture_parses_into_the_tree_lanes_and_load() {
+        let snapshot = parse_snapshot(BOARD_FIXTURE).expect("board fixture parses");
+        let [real, orphans] = snapshot.board.epics.as_slice() else {
+            panic!("want two epics, got {}", snapshot.board.epics.len());
+        };
+        assert_eq!(
+            (orphans.id.as_str(), orphans.title.as_str()),
+            ("", "no epic")
+        );
+        let initiative = &real.initiatives[0];
+        assert_eq!(
+            initiative.counts,
+            StatusCounts {
+                ready: 1,
+                building: 1,
+                landed: 1,
+                quarantined: 1,
+                ..StatusCounts::default()
+            }
+        );
+        let building = &initiative.phases[0].tasks[1];
+        assert_eq!(
+            (building.status.as_str(), building.host.as_str()),
+            ("building", "host-b")
+        );
+        assert_eq!(initiative.phases[1].tasks[0].status, "quarantined");
+
+        let machine = &snapshot.machines[0];
+        assert_eq!(machine.capacity, 3);
+        let runs: Vec<_> = machine.lanes.iter().map(|l| l.run.as_str()).collect();
+        assert_eq!(runs, ["board-1", "stray-1"]);
+        assert_eq!(machine.lanes[0].tasks, ["board-view-load"]);
+        assert_eq!(machine.lanes[1].elapsed_s, 300);
+        assert_eq!(
+            (
+                machine.load.cpu_pct,
+                machine.load.load_avg_per_core,
+                machine.load.mem_used_gb,
+                machine.load.mem_total_gb
+            ),
+            (42.5, 0.75, 12.5, 32.0)
+        );
+    }
+
+    fn tally(tasks: &[&BoardTask]) -> StatusCounts {
+        let n = |status: &str| tasks.iter().filter(|t| t.status == status).count() as u32;
+        StatusCounts {
+            ready: n("ready"),
+            building: n("building"),
+            approved: n("approved"),
+            merged: n("merged"),
+            landed: n("landed"),
+            quarantined: n("quarantined"),
+            dropped: n("dropped"),
+            blocked: n("blocked"),
+        }
+    }
+
+    fn total(c: &StatusCounts) -> usize {
+        [
+            c.ready,
+            c.building,
+            c.approved,
+            c.merged,
+            c.landed,
+            c.quarantined,
+            c.dropped,
+            c.blocked,
+        ]
+        .iter()
+        .sum::<u32>() as usize
+    }
+
+    fn initiative_tasks(i: &BoardInitiative) -> Vec<&BoardTask> {
+        i.phases.iter().flat_map(|p| p.tasks.iter()).collect()
+    }
+
+    fn close(a: f64, b: f64) -> bool {
+        (a - b).abs() < 1e-9
+    }
+
+    #[test]
+    fn board_costs_and_counts_equal_the_sums_of_their_children_at_every_level() {
+        let snapshot = parse_snapshot(BOARD_FIXTURE).expect("board fixture parses");
+        let epics = &snapshot.board.epics;
+        let initiatives: Vec<&BoardInitiative> =
+            epics.iter().flat_map(|e| e.initiatives.iter()).collect();
+        let phases: Vec<&BoardPhase> = initiatives.iter().flat_map(|i| i.phases.iter()).collect();
+        assert_eq!((epics.len(), initiatives.len(), phases.len()), (2, 2, 3));
+        for epic in epics {
+            let tasks: Vec<&BoardTask> =
+                epic.initiatives.iter().flat_map(initiative_tasks).collect();
+            let children: f64 = epic.initiatives.iter().map(|i| i.cost_usd).sum();
+            assert!(close(epic.cost_usd, children), "epic {:?} cost", epic.id);
+            assert_eq!(epic.counts, tally(&tasks), "epic {:?} counts", epic.id);
+            assert_eq!(
+                total(&epic.counts),
+                tasks.len(),
+                "epic {:?} statuses",
+                epic.id
+            );
+        }
+        for initiative in &initiatives {
+            let tasks = initiative_tasks(initiative);
+            let children: f64 = initiative.phases.iter().map(|p| p.cost_usd).sum();
+            assert!(
+                close(initiative.cost_usd, children),
+                "{} cost",
+                initiative.id
+            );
+            assert_eq!(initiative.counts, tally(&tasks), "{} counts", initiative.id);
+        }
+        for phase in &phases {
+            let tasks: Vec<&BoardTask> = phase.tasks.iter().collect();
+            let children: f64 = phase.tasks.iter().map(|t| t.cost_usd).sum();
+            assert!(close(phase.cost_usd, children), "{} cost", phase.id);
+            assert_eq!(phase.counts, tally(&tasks), "{} counts", phase.id);
+        }
+    }
+
+    fn counts_objects(v: &serde_json::Value) -> Vec<&serde_json::Value> {
+        match v {
+            serde_json::Value::Object(map) => map
+                .iter()
+                .flat_map(|(key, child)| {
+                    if key == "counts" {
+                        vec![child]
+                    } else {
+                        counts_objects(child)
+                    }
+                })
+                .collect(),
+            serde_json::Value::Array(items) => items.iter().flat_map(counts_objects).collect(),
+            _ => vec![],
+        }
+    }
+
+    /// Reads the raw JSON because `StatusCounts` defaults a missing key to 0, so a typed
+    /// assertion cannot tell a missing key from a zero.
+    #[test]
+    fn every_board_counts_object_in_the_fixture_has_exactly_the_eight_integer_status_keys() {
+        use std::collections::BTreeSet;
+        let raw: serde_json::Value = serde_json::from_str(BOARD_FIXTURE).expect("fixture is JSON");
+        let all = counts_objects(&raw["board"]);
+        assert_eq!(all.len(), 7, "two epics, two initiatives, three phases");
+        let want: BTreeSet<&str> = [
+            "ready",
+            "building",
+            "approved",
+            "merged",
+            "landed",
+            "quarantined",
+            "dropped",
+            "blocked",
+        ]
+        .into_iter()
+        .collect();
+        for counts in all {
+            let object = counts.as_object().expect("counts is an object");
+            let keys: BTreeSet<&str> = object.keys().map(String::as_str).collect();
+            assert_eq!(keys, want);
+            assert!(object.values().all(|v| v.is_u64()), "{counts}");
+        }
+    }
+
+    #[test]
+    fn the_original_fixture_parses_with_an_empty_board_and_no_lanes() {
+        let snapshot = parse_snapshot(FIXTURE).expect("dash_feed_v1 still parses");
+        assert!(snapshot.board.epics.is_empty());
+        assert!(snapshot.machines[0].lanes.is_empty());
+        assert_eq!(snapshot.machines[0].load.cpu_pct, 0.0);
+    }
 
     fn chair_with(extra: &str) -> Chair {
         let json = format!(
