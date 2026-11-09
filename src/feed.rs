@@ -48,6 +48,20 @@ pub struct FeedSnapshot {
     pub board: Board,
     #[serde(default)]
     pub live: Live,
+    /// What producing this snapshot cost. An older coxswain emits no `cost` key, so it is `None`.
+    #[serde(default)]
+    pub cost: Option<FeedCost>,
+}
+
+/// The producer's cost for one snapshot: milliseconds, and which frames it recomputed or reused.
+#[derive(Debug, Deserialize)]
+pub struct FeedCost {
+    pub cpu_ms: f64,
+    pub wall_ms: f64,
+    #[serde(default)]
+    pub recomputed: Vec<String>,
+    #[serde(default)]
+    pub reused: Vec<String>,
 }
 
 impl FeedSnapshot {
@@ -1666,6 +1680,37 @@ mod tests {
     fn parse_snapshot_leaves_watch_empty_for_the_existing_fixture() {
         let snapshot = parse_snapshot(FIXTURE).expect("fixture should parse");
         assert!(snapshot.watch.is_empty());
+    }
+
+    const COST_FIXTURE: &str = include_str!("../tests/fixtures/dash_feed_cost_v1.json");
+
+    /// The cost fixture carries only `schema`, `at` and `cost`, so it is read through this view.
+    #[derive(Deserialize)]
+    struct CostOnly {
+        cost: Option<FeedCost>,
+    }
+
+    #[test]
+    fn parse_snapshot_reads_the_cost_block() {
+        let cost = serde_json::from_str::<CostOnly>(COST_FIXTURE)
+            .expect("fixture should parse")
+            .cost
+            .expect("fixture carries a cost block");
+        assert_eq!(cost.cpu_ms, 6.5);
+        assert_eq!(cost.wall_ms, 12.0);
+        assert_eq!(cost.recomputed, vec!["live"]);
+        assert_eq!(
+            cost.reused,
+            vec![
+                "chair", "spend", "machines", "runs", "queue", "inbox", "history", "board", "epics"
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_snapshot_leaves_cost_none_for_the_existing_fixture() {
+        let snapshot = parse_snapshot(FIXTURE).expect("fixture should parse");
+        assert!(snapshot.cost.is_none());
     }
 
     #[test]
