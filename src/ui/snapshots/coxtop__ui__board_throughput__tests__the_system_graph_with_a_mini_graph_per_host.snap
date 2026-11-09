@@ -1,0 +1,13 @@
+---
+source: src/ui/board_throughput.rs
+assertion_line: 324
+expression: "draw(&app, 48, 8)"
+---
+"┌throughput tok/min────────────────────────────┐"
+"│■ input 700  ■ output 140  ■ cache 5.2k       │"
+"│                                           ▄▁█│"
+"│                                        ▄▆▂███│"
+"│                                      ▁▁▁▁▁▁▁▁│"
+"│host-a                                    ▂▂██│"
+"│host-b                                     ▁▃█│"
+"└──────────────────────────────────────────────┘"
