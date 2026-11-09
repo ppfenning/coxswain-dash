@@ -54,14 +54,47 @@ const FRAME_NAMES: [&str; 6] = [
 ];
 
 pub fn render(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
+    render_with_health(f, area, app, theme, None);
+}
+
+/// The feed's age in whole seconds and whether it is stale (over three intervals), from the
+/// `(now, interval)` the caller read at the edge. `None` without health or an age.
+fn feed_age_of(
+    app: &App,
+    health: Option<(DateTime<FixedOffset>, chrono::Duration)>,
+) -> Option<(i64, bool)> {
+    let (now, interval) = health?;
+    let secs = app.feed_age_secs(now)?;
+    Some((secs, app.feed_stale(now, interval).is_some()))
+}
+
+/// `render` with the feed's age drawn when `health` is `Some((now, interval))`.
+pub fn render_with_health(
+    f: &mut Frame,
+    area: Rect,
+    app: &App,
+    theme: &Theme,
+    health: Option<(DateTime<FixedOffset>, chrono::Duration)>,
+) {
     let Some(snapshot) = app.snapshot() else {
         render_waiting(f, area, theme);
         return;
     };
+    let age = feed_age_of(app, health);
     let (rects, inbox_area) = layout_rects(area, app);
     for (idx, rect) in rects.into_iter().enumerate() {
         if let Some(rect) = rect {
-            render_frame(f, rect, idx, snapshot, app, theme);
+            render_frame_aged(f, rect, idx, snapshot, app, age, theme);
+        }
+    }
+    // With the machines frame hidden the age moves to the first frame that is shown.
+    if let (Some((secs, stale)), None) = (age, rects[2]) {
+        if let Some((idx, rect)) = rects
+            .iter()
+            .enumerate()
+            .find_map(|(idx, rect)| rect.map(|rect| (idx, rect)))
+        {
+            render_age_on_border(f, rect, idx, secs, stale, theme);
         }
     }
     if app.regatta_inbox_visible() {
@@ -623,14 +656,28 @@ fn render_frame(
     app: &App,
     theme: &Theme,
 ) {
+    render_frame_aged(f, rect, idx, snapshot, app, None, theme);
+}
+
+/// Frame `idx`, with the feed's age on the machines frame when `age` is known.
+fn render_frame_aged(
+    f: &mut Frame,
+    rect: Rect,
+    idx: usize,
+    snapshot: &FeedSnapshot,
+    app: &App,
+    age: Option<(i64, bool)>,
+    theme: &Theme,
+) {
     match idx {
         0 => render_chair(f, rect, snapshot, theme),
         1 => render_spend(f, rect, snapshot, app, theme),
-        2 => render_machines(
+        2 => render_machines_aged(
             f,
             rect,
             snapshot,
             frame_selection(app, Focus::Machines),
+            age,
             theme,
         ),
         3 => render_lanes(f, rect, app, theme),
@@ -1058,6 +1105,104 @@ fn render_machines(
     selected: Option<usize>,
     theme: &Theme,
 ) {
+    render_machines_aged(f, rect, snapshot, selected, None, theme);
+}
+
+/// The feed's age as `feed Ns`, in `theme.meter_high` when `stale` and `theme.dim` otherwise.
+fn feed_age_span(secs: i64, stale: bool, theme: &Theme) -> Span<'static> {
+    let color = if stale { theme.meter_high } else { theme.dim };
+    Span::styled(format!("feed {secs}s"), Style::default().fg(color))
+}
+
+/// Columns the left title of frame `idx` takes on its top border, padding included.
+fn border_title_width(idx: usize) -> usize {
+    format!(" {} {} ", idx + 1, FRAME_NAMES[idx])
+        .chars()
+        .count()
+}
+
+/// The feed's age right-aligned on the top border of frame `idx` in `rect`, over the border line.
+/// Drawn only when it leaves the frame's title and both corners untouched.
+fn render_age_on_border(
+    f: &mut Frame,
+    rect: Rect,
+    idx: usize,
+    secs: i64,
+    stale: bool,
+    theme: &Theme,
+) {
+    let span = feed_age_span(secs, stale, theme);
+    if span.width() + 2 + border_title_width(idx) + 2 > usize::from(rect.width) {
+        return;
+    }
+    let line = Line::from(vec![Span::raw(" "), span, Span::raw(" ")]).right_aligned();
+    let top = Rect {
+        x: rect.x + 1,
+        y: rect.y,
+        width: rect.width.saturating_sub(2),
+        height: 1,
+    };
+    f.render_widget(line, top);
+}
+
+/// The producer's CPU cost as `feed 3.2 ms`, one decimal.
+fn feed_cost_span(cpu_ms: f64, theme: &Theme) -> Span<'static> {
+    Span::styled(
+        format!("feed {cpu_ms:.1} ms"),
+        Style::default().fg(theme.dim),
+    )
+}
+
+/// The machines frame, with the feed's age and CPU cost right-aligned on its top border. Each is
+/// drawn only when known.
+fn render_machines_aged(
+    f: &mut Frame,
+    rect: Rect,
+    snapshot: &FeedSnapshot,
+    selected: Option<usize>,
+    age: Option<(i64, bool)>,
+    theme: &Theme,
+) {
+    let dim = Style::default().fg(theme.dim);
+    let all_badges: Vec<Span<'static>> = age
+        .map(|(secs, stale)| feed_age_span(secs, stale, theme))
+        .into_iter()
+        .chain(
+            snapshot
+                .cost
+                .as_ref()
+                .map(|c| feed_cost_span(c.cpu_ms, theme)),
+        )
+        .collect();
+    // Badges that would reach the frame's title are dropped, the cost first.
+    let room = usize::from(rect.width).saturating_sub(border_title_width(2) + 4);
+    let badges: Vec<Span<'static>> = (0..=all_badges.len())
+        .rev()
+        .map(|n| all_badges[..n].to_vec())
+        .find(|set| {
+            set.iter().map(Span::width).sum::<usize>() + 3 * set.len().saturating_sub(1) <= room
+        })
+        .unwrap_or_default();
+    let joined: Vec<Span<'static>> = badges
+        .into_iter()
+        .enumerate()
+        .flat_map(|(i, span)| {
+            [(i > 0).then(|| Span::styled(" \u{b7} ", dim)), Some(span)]
+                .into_iter()
+                .flatten()
+        })
+        .collect();
+    let block = numbered_block(3, FRAME_NAMES[2], theme, selected.is_some());
+    let block = if joined.is_empty() {
+        block
+    } else {
+        let padded = [Span::raw(" ")]
+            .into_iter()
+            .chain(joined)
+            .chain([Span::raw(" ")])
+            .collect::<Vec<_>>();
+        block.title_top(Line::from(padded).right_aligned())
+    };
     let lines: Vec<Line> = snapshot
         .machines
         .iter()
@@ -1067,9 +1212,7 @@ fn render_machines(
             machine_line(m, accent, selected == Some(i), theme)
         })
         .collect();
-    let paragraph = Paragraph::new(lines)
-        .block(numbered_block(3, FRAME_NAMES[2], theme, selected.is_some()))
-        .style(base_style(theme));
+    let paragraph = Paragraph::new(lines).block(block).style(base_style(theme));
     f.render_widget(paragraph, rect);
 }
 
@@ -3669,6 +3812,148 @@ mod tests {
             .draw(|f| render_machines(f, f.area(), &snapshot, None, &theme))
             .expect("draw should not fail");
         terminal
+    }
+
+    /// The dash fixture with a `cost` block of 3.2 CPU ms. Its `at` is 2026-09-29T00:00:00Z.
+    fn cost_feed() -> String {
+        FIXTURE.replacen(
+            "\"schema\": 1,",
+            r#""schema": 1, "cost": {"cpu_ms": 3.2, "wall_ms": 9.0, "recomputed": [], "reused": []},"#,
+            1,
+        )
+    }
+
+    fn draw_machines_aged(feed: &str, age: Option<(i64, bool)>) -> Terminal<TestBackend> {
+        let snapshot = crate::feed::parse_snapshot(feed.trim()).expect("feed parses");
+        let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
+        let mut terminal = Terminal::new(TestBackend::new(60, 4)).expect("terminal");
+        terminal
+            .draw(|f| render_machines_aged(f, f.area(), &snapshot, None, age, &theme))
+            .expect("draw should not fail");
+        terminal
+    }
+
+    #[test]
+    fn machines_frame_shows_feed_cost() {
+        let terminal = draw_machines_aged(&cost_feed(), Some((12, false)));
+        assert!(row_text(&terminal, 0).contains("feed 12s \u{b7} feed 3.2 ms"));
+        insta::assert_snapshot!(terminal.backend().to_string());
+    }
+
+    #[test]
+    fn a_fresh_feed_age_is_dim_and_a_stale_one_is_the_warning_colour() {
+        let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
+        let fresh = draw_machines_aged(&cost_feed(), Some((12, false)));
+        assert_eq!(fg_of(&fresh, 0, "feed 12s"), theme.dim);
+        let stale = draw_machines_aged(&cost_feed(), Some((31, true)));
+        assert!(row_text(&stale, 0).contains("feed 31s"));
+        assert_eq!(fg_of(&stale, 0, "feed 31s"), theme.meter_high);
+        assert_eq!(fg_of(&stale, 0, "feed 3.2 ms"), theme.dim);
+    }
+
+    #[test]
+    fn an_absent_cost_or_age_draws_nothing_for_it() {
+        let without_cost = draw_machines_aged(FIXTURE, Some((12, false)));
+        assert!(row_text(&without_cost, 0).contains("feed 12s"));
+        assert!(!row_text(&without_cost, 0).contains(" ms"));
+        let without_age = draw_machines_aged(&cost_feed(), None);
+        assert!(row_text(&without_age, 0).contains("feed 3.2 ms"));
+        assert!(!row_text(&without_age, 0).contains("12s"));
+        let neither = draw_machines_aged(FIXTURE, None);
+        assert!(!row_text(&neither, 0).contains("feed "));
+    }
+
+    #[test]
+    fn the_page_draws_the_age_from_health_and_stale_past_three_intervals() {
+        let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
+        let mut app = App::new(AppPage::Regatta, ThemeId::Regatta);
+        app.apply_snapshot(
+            crate::feed::parse_snapshot(cost_feed().trim()).expect("fixture should parse"),
+        );
+        let interval = chrono::Duration::seconds(10);
+        let draw_at = |now: &str| {
+            let now = DateTime::parse_from_rfc3339(now).expect("literal time");
+            let mut terminal = Terminal::new(TestBackend::new(120, 40)).expect("terminal");
+            terminal
+                .draw(|f| render_with_health(f, f.area(), &app, &theme, Some((now, interval))))
+                .expect("draw should not fail");
+            terminal
+        };
+        let fresh = draw_at("2026-09-29T00:00:12Z");
+        let y = (0..40)
+            .find(|y| row_text(&fresh, *y).contains("feed 12s"))
+            .expect("age is drawn");
+        assert_eq!(fg_of(&fresh, y, "feed 12s"), theme.dim);
+        let stale = draw_at("2026-09-29T00:00:31Z");
+        assert_eq!(fg_of(&stale, y, "feed 31s"), theme.meter_high);
+        let none = draw_page(&app, ThemeId::Regatta, 120, 40);
+        assert!((0..40).all(|y| !row_text(&none, y).contains("feed 12s")));
+    }
+
+    #[test]
+    fn a_narrow_frame_drops_the_badges_before_it_touches_its_title() {
+        let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
+        let snapshot = crate::feed::parse_snapshot(cost_feed().trim()).expect("feed parses");
+        let top_row = |width: u16| {
+            let mut terminal = Terminal::new(TestBackend::new(width, 4)).expect("terminal");
+            terminal
+                .draw(|f| {
+                    render_machines_aged(f, f.area(), &snapshot, None, Some((12, false)), &theme)
+                })
+                .expect("draw should not fail");
+            row_text(&terminal, 0)
+        };
+        let both = top_row(60);
+        assert!(both.contains(" 3 machines ") && both.contains("feed 12s \u{b7} feed 3.2 ms"));
+        let age_only = top_row(30);
+        assert!(age_only.contains(" 3 machines ") && age_only.contains("feed 12s"));
+        assert!(!age_only.contains("ms"));
+        let none = top_row(20);
+        assert!(none.contains(" 3 machines ") && !none.contains("feed"));
+    }
+
+    #[test]
+    fn the_border_age_leaves_a_narrow_frames_title_alone() {
+        let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
+        let top_row = |width: u16| {
+            let mut terminal = Terminal::new(TestBackend::new(width, 3)).expect("terminal");
+            terminal
+                .draw(|f| {
+                    let rect = f.area();
+                    f.render_widget(numbered_block(1, FRAME_NAMES[0], &theme, false), rect);
+                    render_age_on_border(f, rect, 0, 31, true, &theme);
+                })
+                .expect("draw should not fail");
+            row_text(&terminal, 0)
+        };
+        let wide = top_row(40);
+        assert!(wide.contains(" 1 chair ") && wide.contains(" feed 31s "));
+        let narrow = top_row(18);
+        assert!(narrow.starts_with("\u{256d} 1 chair "));
+        assert!(narrow.ends_with('\u{256e}') && !narrow.contains("feed"));
+    }
+
+    #[test]
+    fn a_hidden_machines_frame_moves_the_age_to_the_first_shown_frame() {
+        let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
+        let mut app = app_with_fixture();
+        app.toggle_regatta_frame(3);
+        let now = DateTime::parse_from_rfc3339("2026-09-29T00:00:31Z").expect("literal time");
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).expect("terminal");
+        terminal
+            .draw(|f| {
+                render_with_health(
+                    f,
+                    f.area(),
+                    &app,
+                    &theme,
+                    Some((now, chrono::Duration::seconds(10))),
+                )
+            })
+            .expect("draw should not fail");
+        assert!(row_text(&terminal, 0).contains("feed 31s"));
+        assert_eq!(fg_of(&terminal, 0, "feed 31s"), theme.meter_high);
+        assert!((0..40).all(|y| !row_text(&terminal, y).contains("3 machines")));
     }
 
     fn fg_at(terminal: &Terminal<TestBackend>, y: u16, needle: &str) -> Option<Color> {
