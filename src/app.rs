@@ -547,6 +547,11 @@ impl App {
         Some(now - at)
     }
 
+    /// `feed_age` in whole seconds, truncated toward zero; `None` where `feed_age` is.
+    pub fn feed_age_secs(&self, now: DateTime<FixedOffset>) -> Option<i64> {
+        self.feed_age(now).map(|age| age.num_seconds())
+    }
+
     /// The feed's age when it exceeds three times `interval`, else `None`.
     pub fn feed_stale(
         &self,
@@ -2418,6 +2423,14 @@ mod tests {
             app.feed_age(at("2026-09-29T00:00:30Z")),
             Some(chrono::Duration::seconds(30))
         );
+    }
+
+    #[test]
+    fn feed_age_secs_is_whole_seconds_and_none_with_no_snapshot() {
+        let mut app = App::default();
+        assert_eq!(app.feed_age_secs(at("2026-09-29T00:00:42Z")), None);
+        app.apply_snapshot(make_snapshot("2026-09-29T00:00:00Z", 1));
+        assert_eq!(app.feed_age_secs(at("2026-09-29T00:00:42Z")), Some(42));
     }
 
     #[test]
