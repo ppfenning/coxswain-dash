@@ -18,8 +18,8 @@ use ratatui::{
 use crate::actions::{Target, bindings};
 use crate::app::{App, Focus};
 use crate::feed::{
-    Chair, CurrentAction, FeedSnapshot, HistoryRow, HistoryToday, InboxEntry, Machine, Outcome,
-    QueueEntry, Run, RunEnd, grouped_inbox, is_stale,
+    Chair, CurrentAction, FeedSnapshot, HistoryRow, HistoryToday, InboxEntry, IntakeEntry, Machine,
+    Outcome, QueueEntry, Run, RunEnd, grouped_inbox, is_stale,
 };
 use crate::form::{KEY_ADD_MACHINE, KEY_EDIT, KEY_NEW, KEY_REMOVE};
 use crate::theme::Theme;
@@ -2286,9 +2286,49 @@ fn queue_line(
     }
 }
 
+/// The word that opens a ready or draft intake line, then priority, repo, epic and target release.
+/// An absent epic or release is left out. A deferred ready intake names its release as the one
+/// it waits for.
+fn intake_text(e: &IntakeEntry) -> String {
+    let release = match (e.deferred && e.stage == "ready", &e.target_release) {
+        (true, Some(release)) => Some(format!("waiting for {release}")),
+        (true, None) => Some("waiting for release".to_string()),
+        (false, release) => release.clone(),
+    };
+    [
+        Some(e.stage.clone()),
+        Some(format!("p{}", e.priority)),
+        Some(e.repo.clone()),
+        e.epic.clone(),
+        release,
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>()
+    .join(" ")
+}
+
+/// The intake lines of the queue frame: ready ones first in feed order, then drafts in feed
+/// order and `theme.dim`. Each is indented two cells like a queue row. A stage other than
+/// `ready` or `draft` is not drawn.
+fn intake_lines(intake: &[IntakeEntry], theme: &Theme) -> Vec<Line<'static>> {
+    let ready = intake
+        .iter()
+        .filter(|e| e.stage == "ready")
+        .map(|e| Line::raw(format!("  {}", intake_text(e))));
+    let drafts = intake.iter().filter(|e| e.stage == "draft").map(|e| {
+        Line::styled(
+            format!("  {}", intake_text(e)),
+            Style::default().fg(theme.dim),
+        )
+    });
+    ready.chain(drafts).collect()
+}
+
 /// The queue frame. `selected` indexes the queue and fixes the window whether or not the frame
 /// has focus. Only a `focused` frame highlights a line. Grouped, each project gets a dim header
-/// line over its rows, with no-project rows last under `other`.
+/// line over its rows, with no-project rows last under `other`. Intake lines follow the queue
+/// rows in whatever height is left. They are never selectable and do not move the window.
 fn render_queue(
     f: &mut Frame,
     rect: Rect,
@@ -2303,7 +2343,7 @@ fn render_queue(
     let (body, at) =
         queue_rows(&snapshot.queue, grouped).visible(selected, usize::from(inner.height));
     let at = at.filter(|_| focused);
-    let lines: Vec<Line> = body
+    let queue_lines: Vec<Line> = body
         .iter()
         .enumerate()
         .filter_map(|(i, line)| match line {
@@ -2320,6 +2360,11 @@ fn render_queue(
                 )
             }),
         })
+        .collect();
+    let room = usize::from(inner.height).saturating_sub(queue_lines.len());
+    let lines: Vec<Line> = queue_lines
+        .into_iter()
+        .chain(intake_lines(&snapshot.intake, theme).into_iter().take(room))
         .collect();
     let paragraph = Paragraph::new(lines).block(block).style(base_style(theme));
     f.render_widget(paragraph, rect);
@@ -6430,6 +6475,138 @@ mod tests {
         insta::assert_snapshot!(terminal.backend().to_string());
         let x = col_of(&terminal, 1, "example-repo");
         assert_eq!(terminal.backend().buffer()[(x, 1)].fg, theme.dim);
+    }
+
+    fn intake(
+        stage: &str,
+        repo: &str,
+        epic: Option<&str>,
+        priority: i64,
+        release: Option<&str>,
+        deferred: bool,
+    ) -> IntakeEntry {
+        IntakeEntry {
+            id: format!("{stage}-{repo}"),
+            title: "t".to_string(),
+            stage: stage.to_string(),
+            repo: repo.to_string(),
+            epic: epic.map(str::to_string),
+            priority,
+            target_release: release.map(str::to_string),
+            deferred,
+        }
+    }
+
+    #[test]
+    fn intake_lines_put_ready_first_then_drafts_in_feed_order() {
+        let theme = project_theme();
+        let entries = [
+            intake("draft", "d1", None, 5, None, false),
+            intake("ready", "r1", None, 1, None, false),
+            intake("draft", "d2", None, 4, None, false),
+            intake("ready", "r2", None, 2, None, false),
+        ];
+        let text: Vec<String> = intake_lines(&entries, &theme)
+            .iter()
+            .map(|l| l.to_string())
+            .collect();
+        assert_eq!(
+            text,
+            [
+                "  ready p1 r1",
+                "  ready p2 r2",
+                "  draft p5 d1",
+                "  draft p4 d2"
+            ]
+        );
+    }
+
+    #[test]
+    fn intake_text_leaves_out_an_absent_epic_and_release() {
+        let full = intake("ready", "cox", Some("towpath"), 2, Some("2026.11"), false);
+        assert_eq!(intake_text(&full), "ready p2 cox towpath 2026.11");
+        let bare = intake("ready", "cox", None, 3, None, false);
+        assert_eq!(intake_text(&bare), "ready p3 cox");
+        let epic_only = intake("ready", "cox", Some("towpath"), 3, None, false);
+        assert_eq!(intake_text(&epic_only), "ready p3 cox towpath");
+    }
+
+    #[test]
+    fn intake_text_marks_a_deferred_ready_intake_with_its_release() {
+        let held = intake("ready", "cox", None, 1, Some("2026.12"), true);
+        assert_eq!(intake_text(&held), "ready p1 cox waiting for 2026.12");
+        let no_release = intake("ready", "cox", None, 1, None, true);
+        assert_eq!(intake_text(&no_release), "ready p1 cox waiting for release");
+    }
+
+    #[test]
+    fn intake_lines_skip_an_unknown_stage_and_style_only_drafts() {
+        let theme = project_theme();
+        let entries = [
+            intake("ready", "r", None, 1, None, false),
+            intake("draft", "d", None, 1, None, false),
+            intake("archived", "a", None, 1, None, false),
+        ];
+        let lines = intake_lines(&entries, &theme);
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0].style.fg, None);
+        assert_eq!(lines[1].style.fg, Some(theme.dim));
+    }
+
+    /// A feed with a two-row queue and a literal `intake` array.
+    fn intake_feed_app(intake_json: &str) -> App {
+        let json = format!(
+            r#"{{"schema":1,"at":"2026-09-29T00:00:00Z","chair":{{"holder":"h","host":"h","epoch":1,"liveness":"live","beat_age_s":0}},"spend":{{"five_hour_fraction":0.0,"five_hour_source":"meter","weekly_fraction":0.0,"weekly_source":"meter","hard_stop_fraction":0.0,"five_hour_resets_at":"2026-09-29T00:00:00Z","weekly_resets_at":"2026-09-29T00:00:00Z"}},"machines":[],"runs":[],"queue":[{}],"inbox":[],"watch":[],"intake":[{intake_json}]}}"#,
+            queue_json(2, 1, 3)
+        );
+        let mut app = App::default();
+        app.apply_snapshot(crate::feed::parse_snapshot(&json).expect("literal feed parses"));
+        app
+    }
+
+    const FOUR_INTAKES: &str = r#"
+{"id":"a","title":"A","stage":"ready","repo":"coxswain-dash","epic":"towpath","priority":2,"target_release":"2026.11","deferred":false},
+{"id":"b","title":"B","stage":"ready","repo":"coxswain-tools","epic":null,"priority":3,"target_release":null,"deferred":false},
+{"id":"c","title":"C","stage":"ready","repo":"coxswain-dash","epic":"orch","priority":1,"target_release":"2027.01","deferred":true},
+{"id":"d","title":"D","stage":"draft","repo":"coxswain-docs","epic":null,"priority":4,"target_release":null,"deferred":false}"#;
+
+    fn draw_intake_frame(app: &App, theme: &Theme, focused: bool) -> Terminal<TestBackend> {
+        let snapshot = app.snapshot().expect("snapshot");
+        let mut terminal = Terminal::new(TestBackend::new(60, 8)).expect("terminal");
+        terminal
+            .draw(|f| render_queue(f, f.area(), snapshot, 0, focused, false, theme))
+            .expect("draw should not fail");
+        terminal
+    }
+
+    #[test]
+    fn the_queue_frame_lists_intakes_ready_first_then_drafts() {
+        let theme = project_theme();
+        let terminal = draw_intake_frame(&intake_feed_app(FOUR_INTAKES), &theme, false);
+        insta::assert_snapshot!(terminal.backend().to_string());
+        let draft_x = col_of(&terminal, 6, "draft");
+        assert_eq!(terminal.backend().buffer()[(draft_x, 6)].fg, theme.dim);
+        let ready_x = col_of(&terminal, 3, "ready");
+        assert_ne!(terminal.backend().buffer()[(ready_x, 3)].fg, theme.dim);
+    }
+
+    #[test]
+    fn intake_lines_do_not_change_the_queue_rows_or_their_selection() {
+        let theme = project_theme();
+        let with = draw_intake_frame(&intake_feed_app(FOUR_INTAKES), &theme, true);
+        let without = draw_intake_frame(&intake_feed_app(""), &theme, true);
+        let buffer =
+            |t: &Terminal<TestBackend>, y: u16, x: u16| t.backend().buffer()[(x, y)].clone();
+        for y in 0..3 {
+            for x in 0..60 {
+                assert_eq!(buffer(&with, y, x), buffer(&without, y, x), "({x},{y})");
+            }
+        }
+        assert!(
+            row_text(&without, 3)
+                .trim_matches(|c| c == ' ' || c == '\u{2502}')
+                .is_empty()
+        );
     }
 
     /// The queue frame alone, 60 wide, windowed on `selected`.
