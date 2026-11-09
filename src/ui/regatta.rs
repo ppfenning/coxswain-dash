@@ -28,7 +28,12 @@ use super::budget_panel;
 use super::chair_agents;
 use super::chair_card::{Freshness, TICK_INTERVAL_S, beat_freshness, short_age};
 use super::rows::{Body, queue_rows, runs_rows};
-use super::run_cost::{chart_bounds, dollar_labels, draw_spend_split, drawable, spend_split_lines};
+use super::run_cost::{
+    SessionWindow, chart_bounds, dollar_labels, draw_spend_split, drawable, spend_frame_height,
+};
+
+/// The window the spend split frame lists sessions for, both to draw and to size the frame.
+const SPEND_SESSION_WINDOW: SessionWindow = SessionWindow::Weekly;
 use super::status::{self, Status};
 use super::{CollapsedRun, collapse_runs, end_chip, local_time};
 
@@ -90,7 +95,15 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
         let block = framed("spend split", theme, app.focus() == Focus::SpendSplit);
         let inner = block.inner(rect);
         f.render_widget(block, rect);
-        draw_spend_split(f.buffer_mut(), inner, snapshot.spend_split.as_ref(), now);
+        draw_spend_split(
+            f.buffer_mut(),
+            inner,
+            snapshot.spend_split.as_ref(),
+            &snapshot.operator_sessions,
+            &snapshot.spend_sources,
+            SPEND_SESSION_WINDOW,
+            now,
+        );
     }
     render_key_bar(f, split_key_bar(area).1, app.focus(), theme);
 }
@@ -335,7 +348,12 @@ fn split_activity(body: Rect, app: &App) -> (Rect, Option<Rect>, Option<Rect>) {
     let agents = app.regatta_chair_agents_visible();
     let spend = app.regatta_spend_split_visible();
     let want_agents = snapshot.chair_agents.len().max(1) + 2;
-    let want_spend = spend_split_lines(snapshot.spend_split.as_ref(), feed_now(snapshot)).len() + 2;
+    let want_spend = spend_frame_height(
+        snapshot.spend_split.as_ref(),
+        &snapshot.operator_sessions,
+        SPEND_SESSION_WINDOW,
+        feed_now(snapshot),
+    ) + 2;
     let want = [(agents, want_agents), (spend, want_spend)]
         .into_iter()
         .filter_map(|(shown, rows)| shown.then_some(rows))
@@ -7416,5 +7434,119 @@ mod tests {
         let app = activity_app(false);
         let full = Rect::new(0, 0, 120, 40);
         assert_eq!(split_activity(full, &app), (full, None, None));
+    }
+
+    const SESSIONS_FIXTURE: &str = include_str!("../../tests/fixtures/dash_sessions_v1.json");
+
+    /// The existing feed fixture with the sessions fixture's keys laid over it; without
+    /// `sessions`, the operator sessions and spend sources are dropped so the split stands alone.
+    fn sessions_feed(sessions: bool) -> crate::feed::FeedSnapshot {
+        let mut feed: serde_json::Value = serde_json::from_str(FIXTURE.trim()).expect("feed json");
+        let extra: serde_json::Value =
+            serde_json::from_str(SESSIONS_FIXTURE).expect("sessions json");
+        for (key, value) in extra.as_object().expect("object") {
+            if sessions || key == "spend_split" {
+                feed[key] = value.clone();
+            }
+        }
+        crate::feed::parse_snapshot(&feed.to_string()).expect("merged feed parses")
+    }
+
+    fn sessions_frame(snapshot: &crate::feed::FeedSnapshot, window: SessionWindow) -> String {
+        let area = Rect::new(0, 0, 70, 14);
+        let mut buf = ratatui::buffer::Buffer::empty(area);
+        draw_spend_split(
+            &mut buf,
+            area,
+            snapshot.spend_split.as_ref(),
+            &snapshot.operator_sessions,
+            &snapshot.spend_sources,
+            window,
+            "2026-11-06T20:00:00Z".parse().unwrap(),
+        );
+        (0..area.height)
+            .map(|y| {
+                (0..area.width)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn the_weekly_spend_frame_lists_both_sessions_with_their_agents() {
+        let text = sessions_frame(&sessions_feed(true), SessionWindow::Weekly);
+        for part in ["sessions", "agents", "seats"] {
+            assert!(text.contains(part), "{part} missing from {text}");
+        }
+        for line in [
+            "c81e4d57 11-05 14:02 claude-sonnet-5-5 $30.00 1 agent",
+            "    general-purpose  Review the lease reader  $1.60",
+            "5f0c2a9e 11-01 08:15 claude-opus-5 $12.40 2 agents",
+            "    general-purpose  Survey the dash feed readers  $0.90",
+            "    Explore  Find the spend split callers  $0.18",
+        ] {
+            assert!(text.contains(line), "{line} missing from {text}");
+        }
+        assert!(!text.contains("chair session") && !text.contains("cox seats"));
+    }
+
+    #[test]
+    fn the_five_hour_spend_frame_lists_only_its_session() {
+        let text = sessions_frame(&sessions_feed(true), SessionWindow::FiveHour);
+        assert!(
+            text.contains("5f0c2a9e 11-01 08:15 claude-opus-5 $4.21 2 agents"),
+            "{text}"
+        );
+        assert!(text.contains("Trace the lease heartbeat path"), "{text}");
+        assert!(!text.contains("c81e4d57"), "{text}");
+    }
+
+    #[test]
+    fn a_feed_with_no_sessions_says_none_found_and_unpriced() {
+        let text = sessions_frame(&sessions_feed(false), SessionWindow::Weekly);
+        assert!(
+            text.contains("none found  found 0  sessions unpriced"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn the_shown_spend_split_frame_in_the_whole_page_lists_the_sessions() {
+        let mut app = App::new(AppPage::Regatta, ThemeId::Regatta);
+        app.apply_snapshot(sessions_feed(true));
+        crate::input::handle_key(&mut app, crossterm::event::KeyCode::Char('.'));
+        let tall = all_text(&draw_page(&app, ThemeId::Regatta, 120, 60));
+        for line in [
+            "c81e4d57 11-05 14:02 claude-sonnet-5-5 $30.00 1 agent",
+            "    Explore  Find the spend split callers  $0.18",
+        ] {
+            assert!(tall.contains(line), "{line} missing from {tall}");
+        }
+        assert!(!tall.contains("more lines"), "{tall}");
+        let short = all_text(&draw_page(&app, ThemeId::Regatta, 120, 40));
+        assert!(short.contains("c81e4d57 11-05 14:02"), "{short}");
+        assert!(short.contains("more lines"), "{short}");
+    }
+
+    #[test]
+    fn the_shown_spend_split_frame_in_the_whole_page_says_none_found() {
+        let mut app = App::new(AppPage::Regatta, ThemeId::Regatta);
+        app.apply_snapshot(sessions_feed(false));
+        crate::input::handle_key(&mut app, crossterm::event::KeyCode::Char('.'));
+        let text = all_text(&draw_page(&app, ThemeId::Regatta, 120, 60));
+        assert!(
+            text.contains("none found  found 0  sessions unpriced"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn spend_split_frame_lists_weekly_sessions_and_agents() {
+        let text = sessions_frame(&sessions_feed(true), SessionWindow::Weekly);
+        insta::assert_snapshot!("spend_split_frame_lists_weekly_sessions_and_agents", text);
     }
 }

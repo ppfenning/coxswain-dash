@@ -1,0 +1,18 @@
+---
+source: src/ui/regatta.rs
+assertion_line: 7512
+expression: text
+---
+five-hour  meter 12%  resets in 2h 0m
+  sessions          $4.21   60%
+  agents            $0.80   11%
+  seats             $2.00   29%
+weekly  meter 57%  resets in 1d 12h
+  sessions         $42.40   32%
+  agents            $2.68    2%
+  seats            $88.00   66%
+c81e4d57 11-05 14:02 claude-sonnet-5-5 $30.00 1 agent
+    general-purpose  Review the lease reader  $1.60
+5f0c2a9e 11-01 08:15 claude-opus-5 $12.40 2 agents
+    general-purpose  Survey the dash feed readers  $0.90
+    Explore  Find the spend split callers  $0.18
