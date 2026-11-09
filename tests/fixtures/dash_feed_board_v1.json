@@ -1,0 +1,140 @@
+{
+  "schema": 1,
+  "at": "2026-11-09T12:00:00Z",
+  "chair": {"holder": "chair@host-b:12345", "host": "host-b", "epoch": 7, "liveness": "live", "beat_age_s": 4, "session": "d2820a82", "last_tick_at": "11-09 07:00 EST", "last_status": "chair 11-09 07:00 EST | landed 1, launched 2", "current_action": {"kind": "land", "target": "board-view/p1", "since": "2026-11-09T11:59:50Z"}, "today": {"lands": 1, "launches": 2, "refused_or_failed": 1, "needs_chair_open": 0}},
+  "spend": {"five_hour_fraction": 0.16, "five_hour_source": "meter", "weekly_fraction": 0.35, "weekly_source": "meter", "hard_stop_fraction": 0.93, "five_hour_resets_at": "2026-11-09T14:00:00Z", "weekly_resets_at": "2026-11-14T04:00:00Z"},
+  "runs": [],
+  "queue": [],
+  "inbox": [],
+  "board": {
+    "epics": [
+      {
+        "id": "board-epic",
+        "title": "Board shows epics",
+        "status": "active",
+        "cost_usd": 1.75,
+        "counts": {"ready": 1, "building": 1, "approved": 0, "merged": 0, "landed": 1, "quarantined": 1, "dropped": 0, "blocked": 0},
+        "initiatives": [
+          {
+            "id": "board-view",
+            "short_id": "bv",
+            "status": "active",
+            "cost_usd": 1.75,
+            "counts": {"ready": 1, "building": 1, "approved": 0, "merged": 0, "landed": 1, "quarantined": 1, "dropped": 0, "blocked": 0},
+            "phases": [
+              {
+                "id": "p1-data",
+                "status": "active",
+                "cost_usd": 0.75,
+                "counts": {"ready": 0, "building": 1, "approved": 0, "merged": 0, "landed": 1, "quarantined": 0, "dropped": 0, "blocked": 0},
+                "tasks": [
+                  {"id": "board-view-parse", "status": "landed", "run": "board-0", "host": "host-b", "cost_usd": 0.5},
+                  {"id": "board-view-load", "status": "building", "run": "board-1", "host": "host-b", "cost_usd": 0.25}
+                ]
+              },
+              {
+                "id": "p2-render",
+                "status": "active",
+                "cost_usd": 1.0,
+                "counts": {"ready": 1, "building": 0, "approved": 0, "merged": 0, "landed": 0, "quarantined": 1, "dropped": 0, "blocked": 0},
+                "tasks": [
+                  {"id": "board-view-frame", "status": "quarantined", "run": "board-2", "host": "host-b", "cost_usd": 1.0},
+                  {"id": "board-view-keys", "status": "ready", "run": "", "host": "", "cost_usd": 0}
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "",
+        "title": "no epic",
+        "status": "active",
+        "cost_usd": 0.5,
+        "counts": {"ready": 0, "building": 1, "approved": 0, "merged": 0, "landed": 0, "quarantined": 0, "dropped": 0, "blocked": 1},
+        "initiatives": [
+          {
+            "id": "stray-fix",
+            "short_id": "sf",
+            "status": "active",
+            "cost_usd": 0.5,
+            "counts": {"ready": 0, "building": 1, "approved": 0, "merged": 0, "landed": 0, "quarantined": 0, "dropped": 0, "blocked": 1},
+            "phases": [
+              {
+                "id": "p1-fix",
+                "status": "active",
+                "cost_usd": 0.5,
+                "counts": {"ready": 0, "building": 1, "approved": 0, "merged": 0, "landed": 0, "quarantined": 0, "dropped": 0, "blocked": 1},
+                "tasks": [
+                  {"id": "stray-fix-patch", "status": "building", "run": "stray-1", "host": "host-b", "cost_usd": 0.5},
+                  {"id": "stray-fix-docs", "status": "blocked", "run": "", "host": "", "cost_usd": 0}
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "machines": [
+    {
+      "name": "host-b",
+      "state": "active",
+      "lanes_in_use": 2,
+      "capacity": 3,
+      "login_ok": true,
+      "login_checked_at": "2026-11-09T11:50:00Z",
+      "beat_age_s": 12,
+      "checkouts": {"coxswain-dash": {"behind_main": 0}},
+      "lanes": [
+        {"run": "board-1", "initiative": "board-view", "phase": "p1-data", "tasks": ["board-view-load"], "elapsed_s": 120, "cost_usd": 0.25},
+        {"run": "stray-1", "initiative": "stray-fix", "phase": "p1-fix", "tasks": ["stray-fix-patch"], "elapsed_s": 300, "cost_usd": 0.5}
+      ],
+      "load": {"cpu_pct": 42.5, "load_avg_per_core": 0.75, "mem_used_gb": 12.5, "mem_total_gb": 32.0}
+    }
+  ],
+  "live": {
+    "throughput": {
+      "system": [
+        {"at": "2026-11-09T11:58:00Z", "input": 1200, "output": 300, "cache_read": 9000},
+        {"at": "2026-11-09T11:59:00Z", "input": 1500, "output": 420, "cache_read": 11000},
+        {"at": "2026-11-09T12:00:00Z", "input": 900, "output": 250, "cache_read": 8000}
+      ],
+      "hosts": [
+        {"host": "host-b", "series": [
+          {"at": "2026-11-09T11:58:00Z", "input": 1200, "output": 300, "cache_read": 9000},
+          {"at": "2026-11-09T11:59:00Z", "input": 1500, "output": 420, "cache_read": 11000},
+          {"at": "2026-11-09T12:00:00Z", "input": 900, "output": 250, "cache_read": 8000}
+        ]}
+      ]
+    },
+    "burn": {
+      "usd_per_min_5m": 0.12,
+      "usd_per_min_15m": 0.09,
+      "meters": {
+        "five_hour": {"used_fraction": 0.16, "projected_fraction": 0.4, "ceiling_fraction": 0.93, "resets_at": "2026-11-09T14:00:00Z", "over_ceiling": false},
+        "weekly": {"used_fraction": 0.35, "projected_fraction": 0.95, "ceiling_fraction": 0.93, "resets_at": "2026-11-14T04:00:00Z", "over_ceiling": true}
+      }
+    },
+    "agents": [
+      {"id": "agent-1", "kind": "build", "model": "claude-sonnet-5-5", "host": "host-b", "serves": "board-view-load", "tokens_per_min": 4200, "cost_usd": 0.25, "elapsed_s": 120, "context_fill": 0.38},
+      {"id": "agent-2", "kind": "build", "model": "claude-sonnet-5-5", "host": "host-b", "serves": "stray-fix-patch", "tokens_per_min": 3100, "cost_usd": 0.5, "elapsed_s": 300, "context_fill": 0.61}
+    ],
+    "calls_per_min": [
+      {"at": "2026-11-09T11:59:00Z", "value": 6},
+      {"at": "2026-11-09T12:00:00Z", "value": 8}
+    ],
+    "cache_hit_pct": [
+      {"at": "2026-11-09T11:59:00Z", "value": 88.5},
+      {"at": "2026-11-09T12:00:00Z", "value": 90.0}
+    ],
+    "lands_per_hour": [
+      {"at": "2026-11-09T11:00:00Z", "value": 1},
+      {"at": "2026-11-09T12:00:00Z", "value": 2}
+    ],
+    "quarantines_per_hour": [
+      {"at": "2026-11-09T11:00:00Z", "value": 0},
+      {"at": "2026-11-09T12:00:00Z", "value": 1}
+    ]
+  }
+}
