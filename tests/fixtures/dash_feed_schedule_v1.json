@@ -1,0 +1,155 @@
+{
+  "feed": {
+    "schema": 1,
+    "at": "2026-11-09T12:00:00Z",
+    "schedule": {
+      "lanes": [
+        {
+          "host": "host-a",
+          "lane": 0,
+          "next": [
+            {
+              "initiative": "towpath-board",
+              "phase": "p5-live",
+              "start": "2026-11-09T12:00:00Z",
+              "finish": "2026-11-09T15:30:00Z",
+              "critical": true
+            },
+            {
+              "initiative": "towpath-board",
+              "phase": "p6-timeline",
+              "start": "2026-11-09T15:30:00Z",
+              "finish": "2026-11-10T09:00:00Z",
+              "critical": true
+            }
+          ]
+        },
+        {
+          "host": "host-b",
+          "lane": 0,
+          "next": [
+            {
+              "initiative": "cox-cache",
+              "phase": "p2-evict",
+              "start": "2026-11-09T12:00:00Z",
+              "finish": "2026-11-09T14:00:00Z",
+              "critical": false
+            }
+          ]
+        }
+      ],
+      "initiatives": [
+        {
+          "initiative": "towpath-board",
+          "priority": 1,
+          "projected_finish": "2026-11-10T09:00:00Z",
+          "on_critical_path": true
+        },
+        {
+          "initiative": "cox-cache",
+          "priority": 2,
+          "projected_finish": "2026-11-09T14:00:00Z",
+          "on_critical_path": false
+        },
+        {
+          "initiative": "dash-themes",
+          "priority": 3,
+          "projected_finish": "2026-11-11T18:00:00Z",
+          "on_critical_path": false
+        }
+      ],
+      "release": {
+        "target": null,
+        "projected_finish": "2026-11-11T18:00:00Z",
+        "misses_target": false
+      },
+      "critical_path": [
+        { "initiative": "towpath-board", "phase": "p5-live" },
+        { "initiative": "towpath-board", "phase": "p6-timeline" }
+      ],
+      "advice": [
+        {
+          "kind": "tie",
+          "text": "cox-cache and dash-themes share priority 2; ordered by id.",
+          "at": "2026-11-09T12:00:00Z"
+        }
+      ]
+    }
+  },
+  "action": {
+    "kind": "schedule_updated",
+    "schedule": {
+      "lanes": [
+        {
+          "host": "host-a",
+          "lane": 0,
+          "next": [
+            {
+              "initiative": "towpath-board",
+              "phase": "p5-live",
+              "start": "2026-11-09T12:00:00Z",
+              "finish": "2026-11-09T15:30:00Z",
+              "critical": true
+            },
+            {
+              "initiative": "towpath-board",
+              "phase": "p6-timeline",
+              "start": "2026-11-09T15:30:00Z",
+              "finish": "2026-11-10T09:00:00Z",
+              "critical": true
+            }
+          ]
+        },
+        {
+          "host": "host-b",
+          "lane": 0,
+          "next": [
+            {
+              "initiative": "cox-cache",
+              "phase": "p2-evict",
+              "start": "2026-11-09T12:00:00Z",
+              "finish": "2026-11-09T14:00:00Z",
+              "critical": false
+            }
+          ]
+        }
+      ],
+      "initiatives": [
+        {
+          "initiative": "towpath-board",
+          "priority": 1,
+          "projected_finish": "2026-11-10T09:00:00Z",
+          "on_critical_path": true
+        },
+        {
+          "initiative": "cox-cache",
+          "priority": 2,
+          "projected_finish": "2026-11-09T14:00:00Z",
+          "on_critical_path": false
+        },
+        {
+          "initiative": "dash-themes",
+          "priority": 3,
+          "projected_finish": "2026-11-11T18:00:00Z",
+          "on_critical_path": false
+        }
+      ],
+      "release": {
+        "target": null,
+        "projected_finish": "2026-11-11T18:00:00Z",
+        "misses_target": false
+      },
+      "critical_path": [
+        { "initiative": "towpath-board", "phase": "p5-live" },
+        { "initiative": "towpath-board", "phase": "p6-timeline" }
+      ],
+      "advice": [
+        {
+          "kind": "tie",
+          "text": "cox-cache and dash-themes share priority 2; ordered by id.",
+          "at": "2026-11-09T12:00:00Z"
+        }
+      ]
+    }
+  }
+}
