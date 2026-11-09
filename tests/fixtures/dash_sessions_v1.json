@@ -1,0 +1,70 @@
+{
+  "operator_sessions": {
+    "five_hour": [
+      {
+        "session_id": "5f0c2a9e-3b1d-4c7a-9e21-0a6b7d8c1f34",
+        "started_at": "2026-11-01T08:15:30Z",
+        "model": "claude-opus-5",
+        "cost_usd": 4.21,
+        "agent_count": 2,
+        "agents": [
+          {"agent_type": "general-purpose", "description": "Trace the lease heartbeat path", "cost_usd": 0.62},
+          {"agent_type": "Explore", "description": "Find the budget readers", "cost_usd": 0.18}
+        ]
+      }
+    ],
+    "weekly": [
+      {
+        "session_id": "c81e4d57-92a0-4f6b-b3d5-71e2a9f04c68",
+        "started_at": "2026-11-05T14:02:11Z",
+        "model": "claude-sonnet-5-5",
+        "cost_usd": 30.0,
+        "agent_count": 1,
+        "agents": [
+          {"agent_type": "general-purpose", "description": "Review the lease reader", "cost_usd": 1.6}
+        ]
+      },
+      {
+        "session_id": "5f0c2a9e-3b1d-4c7a-9e21-0a6b7d8c1f34",
+        "started_at": "2026-11-01T08:15:30Z",
+        "model": "claude-opus-5",
+        "cost_usd": 12.4,
+        "agent_count": 2,
+        "agents": [
+          {"agent_type": "general-purpose", "description": "Survey the dash feed readers", "cost_usd": 0.9},
+          {"agent_type": "Explore", "description": "Find the spend split callers", "cost_usd": 0.18}
+        ]
+      }
+    ]
+  },
+  "spend_split": {
+    "five_hour": {
+      "chair_session_usd": 4.21,
+      "chair_agents_usd": 0.8,
+      "cox_seats_usd": 2.0,
+      "total_usd": 7.01,
+      "chair_session_share": 0.6006,
+      "chair_agents_share": 0.1141,
+      "cox_seats_share": 0.2853,
+      "meter_fraction": 0.12,
+      "resets_at": "2026-11-06T22:00:00Z"
+    },
+    "weekly": {
+      "chair_session_usd": 42.4,
+      "chair_agents_usd": 2.68,
+      "cox_seats_usd": 88.0,
+      "total_usd": 133.08,
+      "chair_session_share": 0.3186,
+      "chair_agents_share": 0.0201,
+      "cox_seats_share": 0.6613,
+      "meter_fraction": 0.57,
+      "resets_at": "2026-11-08T08:00:00Z"
+    }
+  },
+  "spend_sources": {
+    "chair_session": "none",
+    "price_catalog": "ok",
+    "sessions_found": 2,
+    "sessions_priced": "ok"
+  }
+}
