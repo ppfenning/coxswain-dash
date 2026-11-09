@@ -5,6 +5,9 @@
 
 mod actions;
 mod app;
+// Nothing draws the board rows yet; the Board frame task wires them.
+#[allow(dead_code)]
+mod board_rows;
 // The panel's drawing and `start_session` are not wired yet.
 #[allow(dead_code)]
 mod chair_panel;
