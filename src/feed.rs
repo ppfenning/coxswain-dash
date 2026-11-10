@@ -457,6 +457,22 @@ impl Budget {
 }
 
 /// Reads `measured` as a count of measured tasks. An older feed sent a bool: true is 1, false is 0.
+/// A non-negative rate as whole units: an integer as is, a float rounded, anything else 0.
+fn whole_rate<'de, D: Deserializer<'de>>(d: D) -> Result<u64, D::Error> {
+    let value = serde_json::Value::deserialize(d)?;
+    Ok(match value {
+        serde_json::Value::Number(n) => n
+            .as_u64()
+            .or_else(|| {
+                n.as_f64()
+                    .filter(|f| f.is_finite() && *f >= 0.0)
+                    .map(|f| f.round() as u64)
+            })
+            .unwrap_or(0),
+        _ => 0,
+    })
+}
+
 fn measured_count<'de, D: Deserializer<'de>>(d: D) -> Result<Option<u64>, D::Error> {
     #[derive(Deserialize)]
     #[serde(untagged)]
@@ -660,6 +676,9 @@ pub struct LiveAgent {
     pub model: String,
     pub host: String,
     pub serves: String,
+    /// The producer sends a rate rounded to one decimal (`964143.2`, `0.0`); it is kept as whole
+    /// tokens per minute. A value that is not a number reads 0 rather than failing the snapshot.
+    #[serde(deserialize_with = "whole_rate")]
     pub tokens_per_min: u64,
     pub cost_usd: f64,
     pub elapsed_s: u64,
@@ -2617,5 +2636,14 @@ mod tests {
     fn an_empty_inbox_has_no_groups() {
         let snapshot = inbox_snapshot("", &[]);
         assert!(grouped_inbox(&snapshot).is_empty());
+    }
+    #[test]
+    fn a_fractional_tokens_per_min_rounds_and_does_not_fail_the_live_block() {
+        let live: Live = serde_json::from_str(
+            r#"{"agents": [{"id": "a", "tokens_per_min": 964143.2}, {"id": "b", "tokens_per_min": 0.0}, {"id": "c", "tokens_per_min": "x"}]}"#,
+        )
+        .expect("a float rate parses");
+        let rates: Vec<u64> = live.agents.iter().map(|a| a.tokens_per_min).collect();
+        assert_eq!(rates, vec![964143, 0, 0]);
     }
 }
