@@ -479,6 +479,11 @@ fn abort_setup(feed_src: &FeedHandle, what: &str, err: &io::Error) -> ! {
     std::process::exit(1)
 }
 
+/// The page and theme to open with. A saved state file wins; with none, the Board opens.
+fn startup_state(saved: Option<(AppPage, ThemeId)>) -> (AppPage, ThemeId) {
+    saved.unwrap_or((AppPage::Board, ThemeId::Regatta))
+}
+
 fn run() {
     if let Err(message) = preflight(io::stdin().is_terminal(), io::stdout().is_terminal()) {
         eprintln!("{message}");
@@ -486,8 +491,7 @@ fn run() {
     }
     eprintln!("{}", version_line());
 
-    let (page, theme_id) =
-        config::load_state(&config::state_path()).unwrap_or((AppPage::Regatta, ThemeId::Regatta));
+    let (page, theme_id) = startup_state(config::load_state(&config::state_path()));
     // Seed only: every feed snapshot replaces this offset.
     let mut app = App::new(page, theme_id).with_utc_offset(*chrono::Local::now().offset());
 
@@ -785,6 +789,17 @@ mod tests {
     use super::*;
 
     const NEEDS_TERMINAL: &str = "towpath needs a terminal";
+
+    #[test]
+    fn startup_without_a_state_file_opens_the_board() {
+        assert_eq!(startup_state(None), (AppPage::Board, ThemeId::Regatta));
+    }
+
+    #[test]
+    fn startup_with_a_saved_state_keeps_it() {
+        let saved = (AppPage::Regatta, ThemeId::HarborLight);
+        assert_eq!(startup_state(Some(saved)), saved);
+    }
 
     /// Runs `script` as the feed through the real message path and returns the app once it
     /// holds a feed error, or when one feed interval has passed without one.
