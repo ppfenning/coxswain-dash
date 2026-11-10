@@ -1,0 +1,9 @@
+{
+  "live": {
+    "agents": [
+      {"id": "agent-1", "kind": "build", "model": "claude-sonnet-5-5", "host": "host-b", "serves": "board-view-load", "tokens_per_min": 964143, "cost_usd": 4.82, "elapsed_s": 1260, "context_fill": 0.64},
+      {"id": "agent-2", "kind": "build", "model": "claude-sonnet-5-5", "host": "host-b", "serves": "stray-fix-patch", "tokens_per_min": 412000, "cost_usd": 1.75, "elapsed_s": 540, "context_fill": 0.38},
+      {"id": "agent-3", "kind": "review", "model": "claude-sonnet-5-5", "host": "host-a", "serves": "board-view-load", "tokens_per_min": 0, "cost_usd": 0.0, "elapsed_s": 15, "context_fill": 0.0}
+    ]
+  }
+}
