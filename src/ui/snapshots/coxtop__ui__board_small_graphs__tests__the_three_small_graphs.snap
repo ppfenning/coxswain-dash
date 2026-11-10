@@ -1,0 +1,11 @@
+---
+source: src/ui/board_small_graphs.rs
+assertion_line: 180
+expression: terminal.backend().to_string()
+---
+"┌ calls/min 10 ────────┐┌ cache hit 100% ──────┐┌ lands/quar per h 4/2 ┐"
+"│▂▃▆▅█                 ││▄▆▇█                  ││▁▄█▅                  │"
+"│                      ││                      ││ ▁ ▃                  │"
+"│                      ││                      ││                      │"
+"│                      ││                      ││                      │"
+"└──────────────────────┘└──────────────────────┘└──────────────────────┘"

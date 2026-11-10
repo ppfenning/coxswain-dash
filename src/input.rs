@@ -1369,6 +1369,27 @@ mod tests {
     }
 
     #[test]
+    fn enter_on_a_board_agent_opens_the_detail() {
+        let json = include_str!("../tests/fixtures/dash_feed_board_v1.json");
+        let mut app = App::new(AppPage::Board, ThemeId::Regatta);
+        app.apply_snapshot(crate::feed::parse_snapshot(json).expect("board fixture parses"));
+        handle_key(&mut app, KeyCode::Right);
+        assert_eq!(app.focus(), Focus::BoardAgents);
+        handle_key(&mut app, KeyCode::Enter);
+        assert_eq!(
+            app.detail().map(|(k, id, _)| (*k, id.as_str())),
+            Some((crate::app::DetailKind::Run, "board-1"))
+        );
+        handle_key(&mut app, KeyCode::Esc);
+        handle_key(&mut app, KeyCode::Down);
+        handle_key(&mut app, KeyCode::Enter);
+        assert_eq!(
+            app.detail().map(|(k, id, _)| (*k, id.as_str())),
+            Some((crate::app::DetailKind::Run, "stray-1"))
+        );
+    }
+
+    #[test]
     fn space_on_another_frame_does_not_toggle() {
         let mut app = App::default();
         app.apply_snapshot(snapshot_with_two_runs());

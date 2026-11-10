@@ -1,0 +1,13 @@
+---
+source: src/ui/board_throughput.rs
+assertion_line: 265
+expression: terminal.backend().to_string()
+---
+"┌throughput tok/min────────────────────────────┐"
+"│■ in 520  ■ out 200  ■ cache 3.9k             │"
+"│                                          ▁ █▆│"
+"│                                        ▁▆█ ██│"
+"│                                      ▃▆███▇██│"
+"│atlas                                     ▁▂█▆│"
+"│borealis                                    ▁█│"
+"└──────────────────────────────────────────────┘"

@@ -1,0 +1,12 @@
+---
+source: src/ui/board_agents.rs
+assertion_line: 236
+expression: "draw(&app, 100, 7).backend().to_string()"
+---
+"┌agents────────────────────────────────────────────────────────────────────────────────────────────┐"
+"│kind   model              host       serves                         cost elapsed  tok/min context │"
+"│build  claude-sonnet-5-5  host-b     board-view-load               $2.50   1h40m     1.5M ███████░│"
+"│build  claude-sonnet-5-5  host-b     stray-fix                     $1.05     42m     4.2k ████░░░░│"
+"│build  claude-sonnet-5-5  host-b     board-view-keys               $0.21      8m      850 ██░░░░░░│"
+"│                                                                                                  │"
+"└──────────────────────────────────────────────────────────────────────────────────────────────────┘"
