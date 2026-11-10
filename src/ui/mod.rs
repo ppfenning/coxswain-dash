@@ -94,9 +94,11 @@ fn render_status(
     theme: &Theme,
     health: Option<(DateTime<FixedOffset>, chrono::Duration)>,
 ) {
+    let in_header = board_header_holds_status(app, f.area());
     let page_row = last_row(split_page(f.area(), app).0);
     let health = health.and_then(|(now, interval)| feed_health(app, now, interval));
-    if let Some(status) = app.status() {
+    // The Board header draws the status and the mode; health and the release hint stay here.
+    if let Some(status) = app.status().filter(|_| !in_header) {
         draw_status(f, last_row(f.area()), theme, status);
     } else if let Some((text, failed)) = health {
         render_health_line(f, page_row, &text, failed, theme);
@@ -104,10 +106,21 @@ fn render_status(
         draw_status(f, page_row, theme, &(StatusLevel::Ok, text.to_string()));
     } else if let Some(text) = app
         .snapshot()
+        .filter(|_| !in_header)
         .and_then(|s| orchestration_text(&s.chair.host, s.chair.orchestration()))
     {
         render_orchestration(f, page_row, &text, theme);
     }
+}
+
+/// True while the Board header is on screen, mirroring `render_base` and `render_page`.
+fn board_header_holds_status(app: &App, area: Rect) -> bool {
+    app.page() == AppPage::Board
+        && split_page(area, app).0.width > 0
+        && app.settings().is_none()
+        && app.inbox_detail_entry().is_none()
+        && app.detail().is_none()
+        && (app.snapshot().is_some() || app.feed_error().is_none())
 }
 
 /// The chair host and its mode label, with a marker when the toggle is available. `None` when
@@ -1930,5 +1943,76 @@ mod tests {
             "{health}"
         );
         insta::assert_snapshot!(rows(&buffer)[37..40].join("\n"));
+    }
+
+    fn app_on(page: AppPage) -> App {
+        let snapshot =
+            crate::feed::parse_snapshot(FEED_FIXTURE.trim()).expect("fixture should parse");
+        let mut app = App::new(page, ThemeId::Regatta);
+        app.apply_snapshot(snapshot);
+        app.apply_exec_result(stop_result(Some(0), "stopped\n"), Origin::Action);
+        app
+    }
+
+    #[test]
+    fn the_board_page_leaves_the_status_row_out_and_a_regatta_page_keeps_it() {
+        let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
+        let board = rows(&draw(&app_on(AppPage::Board), &theme));
+        let regatta = rows(&draw(&app_on(AppPage::Regatta), &theme));
+        assert!(!board[39].contains("stopped"), "{}", board[39]);
+        assert!(board[0].contains("stopped"), "{}", board[0]);
+        assert!(regatta[39].contains("stopped"), "{}", regatta[39]);
+    }
+
+    fn footer_of(app: &App) -> String {
+        let theme = crate::theme::resolve_for(ThemeId::Regatta, Some("truecolor"));
+        rows(&draw(app, &theme))[39].clone()
+    }
+
+    #[test]
+    fn the_board_page_keeps_the_feed_health_line_on_the_footer_row() {
+        let mut app = app_on(AppPage::Board);
+        app.apply_feed_error("boom".to_owned());
+        let (buffer, _) = draw_health(&app, 10);
+        assert!(footer(&buffer).starts_with("feed error: boom"));
+    }
+
+    #[test]
+    fn the_board_page_keeps_a_focused_chair_panels_release_hint() {
+        let app = panel_app(AppPage::Board, ThemeId::Regatta, true, false);
+        assert!(app.chair_focused());
+        let hint = chair_panel::release_hint(true).expect("a focused panel shows its hint");
+        assert!(footer_of(&app).contains(hint), "{}", footer_of(&app));
+    }
+
+    #[test]
+    fn a_board_replaced_by_a_feed_failure_or_a_detail_view_keeps_the_status_row() {
+        let mut failed = App::new(AppPage::Board, ThemeId::Regatta);
+        failed.apply_feed_error("boom".to_owned());
+        failed.apply_exec_result(stop_result(Some(0), "stopped\n"), Origin::Action);
+        assert!(footer_of(&failed).contains("stopped"));
+
+        let mut detail = app_on(AppPage::Board);
+        detail.open_spend();
+        assert!(detail.detail().is_some());
+        assert!(footer_of(&detail).contains("stopped"));
+
+        let mut settings = app_on(AppPage::Board);
+        settings.open_settings();
+        assert!(settings.settings().is_some());
+        assert!(footer_of(&settings).contains("stopped"));
+    }
+
+    #[test]
+    fn a_board_under_a_full_width_chair_panel_keeps_the_status_row() {
+        let mut app = panel_app(AppPage::Board, ThemeId::Regatta, true, false);
+        app.apply_exec_result(stop_result(Some(0), "stopped\n"), Origin::Action);
+        for _ in 0..3 {
+            if split_page(Rect::new(0, 0, 120, 40), &app).0.width > 0 {
+                app.chair_panel_mut().cycle_width();
+            }
+        }
+        assert_eq!(split_page(Rect::new(0, 0, 120, 40), &app).0.width, 0);
+        assert!(footer_of(&app).contains("stopped"), "{}", footer_of(&app));
     }
 }
