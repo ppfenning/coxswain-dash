@@ -46,7 +46,7 @@ pub struct FeedSnapshot {
     pub(crate) budget: Option<Budget>,
     #[serde(default)]
     pub board: Board,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient_live")]
     pub live: Live,
     /// What producing this snapshot cost. An older coxswain emits no `cost` key, so it is `None`.
     #[serde(default)]
@@ -409,6 +409,58 @@ fn lenient_budget<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Budget>, D::
     Ok(serde_json::from_value(value).ok())
 }
 
+/// A `live` block that fails to parse is the empty block, so it never drops the whole feed line.
+fn lenient_live<'de, D: Deserializer<'de>>(d: D) -> Result<Live, D::Error> {
+    let value = serde_json::Value::deserialize(d)?;
+    Ok(serde_json::from_value(value).unwrap_or_default())
+}
+
+/// Drops only an agent row that fails to parse, keeping the others in feed order. A value that is
+/// not an array is no agents.
+fn lenient_agents<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<LiveAgent>, D::Error> {
+    Ok(match serde_json::Value::deserialize(d)? {
+        serde_json::Value::Array(rows) => rows
+            .into_iter()
+            .filter_map(|row| serde_json::from_value(row).ok())
+            .collect(),
+        _ => Vec::new(),
+    })
+}
+
+/// A float as whole units, rounded to nearest. Negative and non-finite values are 0.
+fn round_whole(f: f64) -> u64 {
+    if f.is_finite() && f > 0.0 {
+        f.round() as u64
+    } else {
+        0
+    }
+}
+
+/// An integer, a float (rounded), or a numeric string; anything else, including null, is 0.
+fn lenient_uint<'de, D: Deserializer<'de>>(d: D) -> Result<u64, D::Error> {
+    Ok(match serde_json::Value::deserialize(d)? {
+        serde_json::Value::Number(n) => n
+            .as_u64()
+            .unwrap_or_else(|| round_whole(n.as_f64().unwrap_or(0.0))),
+        serde_json::Value::String(s) => {
+            let s = s.trim();
+            s.parse::<u64>()
+                .unwrap_or_else(|_| round_whole(s.parse::<f64>().unwrap_or(0.0)))
+        }
+        _ => 0,
+    })
+}
+
+/// A number or a numeric string; anything else, including null and a non-finite value, is 0.0.
+fn lenient_f64<'de, D: Deserializer<'de>>(d: D) -> Result<f64, D::Error> {
+    let parsed = match serde_json::Value::deserialize(d)? {
+        serde_json::Value::Number(n) => n.as_f64(),
+        serde_json::Value::String(s) => s.trim().parse::<f64>().ok(),
+        _ => None,
+    };
+    Ok(parsed.filter(|f| f.is_finite()).unwrap_or(0.0))
+}
+
 /// The month budget and its pace. `period` is "month" when a budget is set, else "none" with
 /// `budget_usd` and `fraction` at 0.
 #[derive(Debug, Deserialize)]
@@ -457,22 +509,6 @@ impl Budget {
 }
 
 /// Reads `measured` as a count of measured tasks. An older feed sent a bool: true is 1, false is 0.
-/// A non-negative rate as whole units: an integer as is, a float rounded, anything else 0.
-fn whole_rate<'de, D: Deserializer<'de>>(d: D) -> Result<u64, D::Error> {
-    let value = serde_json::Value::deserialize(d)?;
-    Ok(match value {
-        serde_json::Value::Number(n) => n
-            .as_u64()
-            .or_else(|| {
-                n.as_f64()
-                    .filter(|f| f.is_finite() && *f >= 0.0)
-                    .map(|f| f.round() as u64)
-            })
-            .unwrap_or(0),
-        _ => 0,
-    })
-}
-
 fn measured_count<'de, D: Deserializer<'de>>(d: D) -> Result<Option<u64>, D::Error> {
     #[derive(Deserialize)]
     #[serde(untagged)]
@@ -613,6 +649,7 @@ pub struct Live {
     pub throughput: Throughput,
     pub burn: Burn,
     /// In the order the producer sent: `tokens_per_min` descending.
+    #[serde(deserialize_with = "lenient_agents")]
     pub agents: Vec<LiveAgent>,
     pub calls_per_min: Vec<LivePoint>,
     pub cache_hit_pct: Vec<LivePoint>,
@@ -638,15 +675,20 @@ pub struct HostSeries {
 #[serde(default)]
 pub struct ThroughputPoint {
     pub at: String,
+    #[serde(deserialize_with = "lenient_uint")]
     pub input: u64,
+    #[serde(deserialize_with = "lenient_uint")]
     pub output: u64,
+    #[serde(deserialize_with = "lenient_uint")]
     pub cache_read: u64,
 }
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct Burn {
+    #[serde(deserialize_with = "lenient_f64")]
     pub usd_per_min_5m: f64,
+    #[serde(deserialize_with = "lenient_f64")]
     pub usd_per_min_15m: f64,
     pub meters: Meters,
 }
@@ -661,8 +703,11 @@ pub struct Meters {
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct Meter {
+    #[serde(deserialize_with = "lenient_f64")]
     pub used_fraction: f64,
+    #[serde(deserialize_with = "lenient_f64")]
     pub projected_fraction: f64,
+    #[serde(deserialize_with = "lenient_f64")]
     pub ceiling_fraction: f64,
     pub resets_at: String,
     pub over_ceiling: bool,
@@ -678,10 +723,13 @@ pub struct LiveAgent {
     pub serves: String,
     /// The producer sends a rate rounded to one decimal (`964143.2`, `0.0`); it is kept as whole
     /// tokens per minute. A value that is not a number reads 0 rather than failing the snapshot.
-    #[serde(deserialize_with = "whole_rate")]
+    #[serde(deserialize_with = "lenient_uint")]
     pub tokens_per_min: u64,
+    #[serde(deserialize_with = "lenient_f64")]
     pub cost_usd: f64,
+    #[serde(deserialize_with = "lenient_uint")]
     pub elapsed_s: u64,
+    #[serde(deserialize_with = "lenient_f64")]
     pub context_fill: f64,
 }
 
@@ -689,6 +737,7 @@ pub struct LiveAgent {
 #[serde(default)]
 pub struct LivePoint {
     pub at: String,
+    #[serde(deserialize_with = "lenient_f64")]
     pub value: f64,
 }
 
@@ -2645,5 +2694,122 @@ mod tests {
         .expect("a float rate parses");
         let rates: Vec<u64> = live.agents.iter().map(|a| a.tokens_per_min).collect();
         assert_eq!(rates, vec![964143, 0, 0]);
+    }
+
+    fn rates(live: &Live) -> Vec<u64> {
+        live.agents.iter().map(|a| a.tokens_per_min).collect()
+    }
+
+    #[test]
+    fn the_live_agents_v1_contract_parses_with_its_integer_rates() {
+        let contract = r#"{"live": {"agents": [
+            {"id": "agent-1", "kind": "build", "model": "claude-sonnet-5-5", "host": "host-b", "serves": "board-view-load", "tokens_per_min": 964143, "cost_usd": 4.82, "elapsed_s": 1260, "context_fill": 0.64},
+            {"id": "agent-2", "kind": "build", "model": "claude-sonnet-5-5", "host": "host-b", "serves": "stray-fix-patch", "tokens_per_min": 52000, "cost_usd": 1.75, "elapsed_s": 540, "context_fill": 0.38},
+            {"id": "agent-3", "kind": "review", "model": "claude-sonnet-5-5", "host": "host-a", "serves": "board-view-load", "tokens_per_min": 0, "cost_usd": 0.0, "elapsed_s": 15, "context_fill": 0.0}
+        ]}}"#;
+        let live: Live = serde_json::from_value(
+            serde_json::from_str::<serde_json::Value>(contract).expect("literal is json")["live"]
+                .clone(),
+        )
+        .expect("the contract parses");
+        assert_eq!(rates(&live), vec![964143, 52000, 0]);
+        assert_eq!(live.agents[0].elapsed_s, 1260);
+        assert_eq!(live.agents[0].cost_usd, 4.82);
+        assert_eq!(live.agents[2].serves, "board-view-load");
+    }
+
+    #[test]
+    fn fractional_rates_read_back_rounded() {
+        let live: Live = serde_json::from_str(
+            r#"{"agents": [{"id": "a", "tokens_per_min": 964143.2}, {"id": "b", "tokens_per_min": 0.0}]}"#,
+        )
+        .expect("fractional rates parse");
+        assert_eq!(rates(&live), vec![964143, 0]);
+    }
+
+    #[test]
+    fn a_numeric_string_and_a_negative_float_read_as_rounded_and_zero() {
+        let live: Live = serde_json::from_str(
+            r#"{"agents": [{"id": "a", "tokens_per_min": "1234.6"}, {"id": "b", "tokens_per_min": -5.5}, {"id": "c", "tokens_per_min": " 77 "}]}"#,
+        )
+        .expect("string and negative rates parse");
+        assert_eq!(rates(&live), vec![1235, 0, 77]);
+    }
+
+    #[test]
+    fn a_mistyped_number_reads_as_its_default() {
+        let live: Live = serde_json::from_str(
+            r#"{"agents": [{"id": "a", "tokens_per_min": null, "elapsed_s": true, "cost_usd": "2.5", "context_fill": {}}],
+                "burn": {"usd_per_min_5m": 3, "usd_per_min_15m": null, "meters": {"weekly": {"used_fraction": [1]}}},
+                "throughput": {"system": [{"input": 1.4, "output": "9", "cache_read": null}]},
+                "calls_per_min": [{"at": "t", "value": "4"}]}"#,
+        )
+        .expect("mistyped numbers never fail the live block");
+        let agent = &live.agents[0];
+        assert_eq!((agent.tokens_per_min, agent.elapsed_s), (0, 0));
+        assert_eq!((agent.cost_usd, agent.context_fill), (2.5, 0.0));
+        assert_eq!(
+            (live.burn.usd_per_min_5m, live.burn.usd_per_min_15m),
+            (3.0, 0.0)
+        );
+        assert_eq!(live.burn.meters.weekly.used_fraction, 0.0);
+        let point = &live.throughput.system[0];
+        assert_eq!((point.input, point.output, point.cache_read), (1, 9, 0));
+        assert_eq!(live.calls_per_min[0].value, 4.0);
+    }
+
+    fn board_snapshot_with_live(live: serde_json::Value) -> FeedSnapshot {
+        let mut feed: serde_json::Value =
+            serde_json::from_str(BOARD_FIXTURE).expect("board fixture is json");
+        feed["inbox"] = serde_json::json!([
+            {"kind": "pr", "target": "t1", "reason": "review"}
+        ]);
+        feed["live"] = live;
+        parse_snapshot(&feed.to_string()).expect("a mistyped live block never fails the line")
+    }
+
+    fn assert_rest_of_the_feed_kept(snapshot: &FeedSnapshot) {
+        assert_eq!(snapshot.spend.weekly_fraction, 0.35);
+        assert_eq!(snapshot.board.epics[0].id, "board-epic");
+        assert_eq!(snapshot.inbox.len(), 1);
+        assert_eq!(snapshot.inbox[0].target, "t1");
+    }
+
+    #[test]
+    fn a_string_for_burn_degrades_live_and_keeps_the_rest_of_the_feed() {
+        let snapshot = board_snapshot_with_live(serde_json::json!({
+            "burn": "fast",
+            "agents": [{"id": "a", "tokens_per_min": 5}]
+        }));
+        assert_rest_of_the_feed_kept(&snapshot);
+        assert!(snapshot.live.agents.is_empty());
+        assert_eq!(snapshot.live.burn.usd_per_min_5m, 0.0);
+    }
+
+    #[test]
+    fn an_object_for_agents_is_no_agents_and_keeps_the_rest_of_the_feed() {
+        let snapshot = board_snapshot_with_live(serde_json::json!({
+            "agents": {"id": "a"},
+            "calls_per_min": [{"at": "t", "value": 2}]
+        }));
+        assert_rest_of_the_feed_kept(&snapshot);
+        assert!(snapshot.live.agents.is_empty());
+        assert_eq!(snapshot.live.calls_per_min[0].value, 2.0);
+    }
+
+    #[test]
+    fn one_bad_agent_row_is_dropped_and_the_good_rows_stay_in_order() {
+        let snapshot = board_snapshot_with_live(serde_json::json!({
+            "agents": [
+                {"id": "first", "tokens_per_min": 900},
+                {"id": 5, "tokens_per_min": 800},
+                "not a row",
+                {"id": "last", "tokens_per_min": 100.4}
+            ]
+        }));
+        assert_rest_of_the_feed_kept(&snapshot);
+        let ids: Vec<&str> = snapshot.live.agents.iter().map(|a| a.id.as_str()).collect();
+        assert_eq!(ids, ["first", "last"]);
+        assert_eq!(rates(&snapshot.live), vec![900, 100]);
     }
 }
