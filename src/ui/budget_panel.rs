@@ -256,6 +256,8 @@ mod tests {
             cost,
             landed: None,
             per_landed: None,
+            completions: None,
+            cost_per_completion: None,
             first_try_rate: None,
             measured: None,
         }

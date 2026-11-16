@@ -72,7 +72,7 @@ fn sizes(detail: &SpendDetail, window: Named) -> [(Card, u16, u16); 4] {
         None => (CHROME + 1, CHROME + 1),
         Some((_, w)) => {
             let nodes = w.by_node.len().clamp(1, MAX_NODES) as u16;
-            let cpl = u16::from(w.cost_per_landed_task.is_some());
+            let cpl = u16::from(w.per_completion().is_some());
             (CHROME + 2, CHROME + 2 + nodes + cpl)
         }
     };
@@ -452,7 +452,7 @@ fn where_lines(
     };
     let legend = legend_lines(w, width, rows.saturating_sub(1), colors, p);
     let spare = rows.saturating_sub(1 + legend.len());
-    let cpl = w.cost_per_landed_task.filter(|_| spare > 0);
+    let cpl = w.per_completion().filter(|_| spare > 0);
     let node_rows = spare - usize::from(cpl.is_some());
     let nodes = if w.by_node.is_empty() && node_rows > 0 {
         vec![Line::styled("no node breakdown", dim_style(p))]
@@ -465,7 +465,7 @@ fn where_lines(
     let cpl_line = cpl.map(|usd| {
         let left = width.saturating_sub(COST_WIDTH + 1);
         Line::from(vec![
-            Span::styled(format!("{:<left$}", "cost per land"), dim_style(p)),
+            Span::styled(format!("{:<left$}", "cost per completion"), dim_style(p)),
             Span::styled(
                 format!(" {:>COST_WIDTH$}", format!("${usd:.2}")),
                 fg(p.text),
@@ -889,7 +889,7 @@ mod tests {
         );
         let text = screen(&terminal);
         assert!(text.contains("no node breakdown"), "{text}");
-        assert!(!text.contains("cost per land"), "{text}");
+        assert!(!text.contains("cost per completion"), "{text}");
     }
 
     #[test]
@@ -901,7 +901,7 @@ mod tests {
         };
         assert!(at("plan · opus") < at("build · sonnet"));
         assert!(at("build · sonnet") < at("review · sonnet"));
-        assert!(at("review · sonnet") < at("cost per land"));
+        assert!(at("review · sonnet") < at("cost per completion"));
     }
 
     #[test]

@@ -1,0 +1,94 @@
+{
+  "board": {
+    "epics": [
+      {
+        "id": "dash-board",
+        "title": "Board tree on the dash",
+        "status": "building",
+        "cost_usd": 3.25,
+        "counts": {"ready": 1, "building": 1, "approved": 0, "merged": 1, "landed": 3, "quarantined": 0, "dropped": 1, "blocked": 1},
+        "initiatives": [
+          {
+            "id": "board-feed",
+            "short_id": "I501",
+            "status": "building",
+            "cost_usd": 1.75,
+            "counts": {"ready": 1, "building": 1, "approved": 0, "merged": 1, "landed": 1, "quarantined": 0, "dropped": 0, "blocked": 1},
+            "phases": [
+              {
+                "id": "p1-schema",
+                "status": "merged",
+                "cost_usd": 0.75,
+                "counts": {"ready": 0, "building": 0, "approved": 0, "merged": 1, "landed": 1, "quarantined": 0, "dropped": 0, "blocked": 0},
+                "tasks": [
+                  {"id": "board-schema", "status": "landed", "run": "", "host": "", "cost_usd": 0.5},
+                  {"id": "board-rollup", "status": "merged", "run": "", "host": "", "cost_usd": 0.25}
+                ]
+              },
+              {
+                "id": "p2-render",
+                "status": "building",
+                "cost_usd": 1.0,
+                "counts": {"ready": 1, "building": 1, "approved": 0, "merged": 0, "landed": 0, "quarantined": 0, "dropped": 0, "blocked": 1},
+                "tasks": [
+                  {"id": "board-render", "status": "building", "run": "board-feed-1", "host": "host-b", "cost_usd": 1.0},
+                  {"id": "board-keys", "status": "ready", "run": "", "host": "", "cost_usd": 0.0},
+                  {"id": "board-docs", "status": "blocked", "run": "", "host": "", "cost_usd": 0.0}
+                ]
+              }
+            ]
+          }
+        ],
+        "settled": {"landed": 1, "dropped": 1, "cost_usd": 1.5}
+      },
+      {
+        "id": "ops-cleanup",
+        "title": "Retire the old ops scripts",
+        "status": "landed",
+        "cost_usd": 2.25,
+        "counts": {"ready": 0, "building": 0, "approved": 0, "merged": 0, "landed": 3, "quarantined": 0, "dropped": 1, "blocked": 0},
+        "initiatives": [],
+        "settled": {"landed": 1, "dropped": 1, "cost_usd": 2.25}
+      },
+      {
+        "id": "",
+        "title": "no epic",
+        "status": "quarantined",
+        "cost_usd": 2.75,
+        "counts": {"ready": 0, "building": 0, "approved": 1, "merged": 0, "landed": 1, "quarantined": 1, "dropped": 1, "blocked": 0},
+        "initiatives": [
+          {
+            "id": "cost-ledger",
+            "short_id": "I498",
+            "status": "quarantined",
+            "cost_usd": 2.75,
+            "counts": {"ready": 0, "building": 0, "approved": 1, "merged": 0, "landed": 1, "quarantined": 1, "dropped": 1, "blocked": 0},
+            "phases": [
+              {
+                "id": "p1-core",
+                "status": "quarantined",
+                "cost_usd": 2.0,
+                "counts": {"ready": 0, "building": 0, "approved": 1, "merged": 0, "landed": 0, "quarantined": 1, "dropped": 0, "blocked": 0},
+                "tasks": [
+                  {"id": "ledger-sum", "status": "approved", "run": "", "host": "", "cost_usd": 0.75},
+                  {"id": "ledger-attempts", "status": "quarantined", "run": "", "host": "", "cost_usd": 1.25}
+                ]
+              },
+              {
+                "id": "p2-wire",
+                "status": "landed",
+                "cost_usd": 0.75,
+                "counts": {"ready": 0, "building": 0, "approved": 0, "merged": 0, "landed": 1, "quarantined": 0, "dropped": 1, "blocked": 0},
+                "tasks": [
+                  {"id": "ledger-wire", "status": "dropped", "run": "", "host": "", "cost_usd": 0.25},
+                  {"id": "ledger-test", "status": "landed", "run": "", "host": "", "cost_usd": 0.5}
+                ]
+              }
+            ]
+          }
+        ],
+        "settled": {"landed": 0, "dropped": 0, "cost_usd": 0.0}
+      }
+    ]
+  }
+}

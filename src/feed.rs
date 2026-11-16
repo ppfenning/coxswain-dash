@@ -136,8 +136,21 @@ pub struct SpendWindow {
     /// Spend per role, tier and model, in the order the feed sends it. Absent from an older cox.
     #[serde(default)]
     pub by_node: Vec<NodeSpend>,
+    /// Deprecated alias of `cost_per_completion`, kept by the producer for one release.
     #[serde(default)]
     pub cost_per_landed_task: Option<f64>,
+    /// Tasks done or merged into their phase or PR branch in the window. Absent from an older cox.
+    #[serde(default)]
+    pub completions: Option<u64>,
+    #[serde(default)]
+    pub cost_per_completion: Option<f64>,
+}
+
+impl SpendWindow {
+    /// Seat spend per completion: `cost_per_completion` when the feed carries it, else the older alias.
+    pub fn per_completion(&self) -> Option<f64> {
+        self.cost_per_completion.or(self.cost_per_landed_task)
+    }
 }
 
 /// One row of a window's spend by node.
@@ -531,14 +544,32 @@ pub struct SpendToday {
     pub cost: Option<f64>,
     #[serde(default)]
     pub landed: Option<u64>,
+    /// Deprecated alias of `cost_per_completion`, kept by the producer for one release.
     #[serde(default)]
     pub per_landed: Option<f64>,
+    /// Tasks done or merged into their phase or PR branch today. Absent from an older cox.
+    #[serde(default)]
+    pub completions: Option<u64>,
+    #[serde(default)]
+    pub cost_per_completion: Option<f64>,
     /// A fraction in `0.0..=1.0`.
     #[serde(default)]
     pub first_try_rate: Option<f64>,
     /// Count of measured tasks; "measured" means a count above zero.
     #[serde(default, deserialize_with = "measured_count")]
     pub measured: Option<u64>,
+}
+
+impl SpendToday {
+    /// Spend per completion: `cost_per_completion` when the feed carries it, else the older `per_landed`.
+    pub fn per_completion(&self) -> Option<f64> {
+        self.cost_per_completion.or(self.per_landed)
+    }
+
+    /// Today's completions: `completions` when the feed carries it, else the older `landed` count.
+    pub fn completed(&self) -> Option<u64> {
+        self.completions.or(self.landed)
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -608,7 +639,21 @@ pub struct Epic {
     pub status: String,
     pub cost_usd: f64,
     pub counts: StatusCounts,
+    /// The open initiatives only. A landed or dropped one is counted in `settled` (and in `counts`
+    /// and `cost_usd`) and opened through the initiative detail snapshot.
     pub initiatives: Vec<BoardInitiative>,
+    /// Zeros from an older producer that listed every initiative.
+    #[serde(default)]
+    pub settled: Settled,
+}
+
+/// The settled (landed or dropped) initiatives of an epic, as counts and their summed cost.
+#[derive(Debug, Default, Clone, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct Settled {
+    pub landed: u32,
+    pub dropped: u32,
+    pub cost_usd: f64,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -2811,5 +2856,169 @@ mod tests {
         let ids: Vec<&str> = snapshot.live.agents.iter().map(|a| a.id.as_str()).collect();
         assert_eq!(ids, ["first", "last"]);
         assert_eq!(rates(&snapshot.live), vec![900, 100]);
+    }
+
+    const SLIM_BOARD_FIXTURE: &str = include_str!("../tests/fixtures/dash_feed_board_slim_v1.json");
+
+    #[derive(Deserialize)]
+    struct BoardOnly {
+        board: Board,
+    }
+
+    #[test]
+    fn the_slim_board_fixture_parses_with_settled_counts_on_every_epic() {
+        let board = serde_json::from_str::<BoardOnly>(SLIM_BOARD_FIXTURE)
+            .expect("slim board fixture parses")
+            .board;
+        let settled: Vec<(&str, u32, u32, f64)> = board
+            .epics
+            .iter()
+            .map(|e| {
+                (
+                    e.id.as_str(),
+                    e.settled.landed,
+                    e.settled.dropped,
+                    e.settled.cost_usd,
+                )
+            })
+            .collect();
+        assert_eq!(
+            settled,
+            [
+                ("dash-board", 1, 1, 1.5),
+                ("ops-cleanup", 1, 1, 2.25),
+                ("", 0, 0, 0.0)
+            ]
+        );
+        // An epic whose initiatives all settled lists none, and still carries its own counts and cost.
+        let ops = &board.epics[1];
+        assert!(ops.initiatives.is_empty());
+        assert_eq!(
+            (ops.counts.landed, ops.counts.dropped, ops.cost_usd),
+            (3, 1, 2.25)
+        );
+    }
+
+    #[test]
+    fn an_epic_without_settled_parses_with_zero_settled() {
+        let board = parse_snapshot(BOARD_FIXTURE)
+            .expect("board fixture parses")
+            .board;
+        assert!(board.epics.iter().all(|e| e.settled == Settled::default()));
+        let older = r#"{"id":"e","title":"E","status":"ready","cost_usd":0.0,"counts":{},"initiatives":[]}"#;
+        let epic: Epic =
+            serde_json::from_str(older).expect("an epic from an older producer parses");
+        assert_eq!(epic.settled, Settled::default());
+    }
+
+    const INTAKE_CONTRACT: &str = include_str!("../tests/fixtures/dash_feed_intake_v1.json");
+
+    #[test]
+    fn the_producers_intake_fixture_parses() {
+        let snapshot =
+            parse_snapshot(&with_intake(INTAKE_CONTRACT)).expect("intake fixture parses");
+        let intake = &snapshot.intake;
+        assert_eq!(intake.len(), 4);
+        assert_eq!(
+            (
+                intake[0].stage.as_str(),
+                intake[0].priority,
+                intake[0].deferred
+            ),
+            ("ready", 5, false)
+        );
+        assert_eq!(
+            (
+                intake[1].epic.as_deref(),
+                intake[1].target_release.as_deref()
+            ),
+            (None, None)
+        );
+        assert!(intake[2].deferred);
+        assert_eq!(intake[3].stage, "draft");
+    }
+
+    #[test]
+    fn the_activity_fixture_windows_carry_completions_beside_the_alias() {
+        let activity: Activity = serde_json::from_str(ACTIVITY_FIXTURE).expect("fixture parses");
+        let split = activity.spend_split.expect("split present");
+        assert_eq!(split.five_hour.completions, Some(3));
+        assert_eq!(split.five_hour.cost_per_completion, Some(0.6667));
+        assert_eq!(split.five_hour.cost_per_landed_task, Some(0.6667));
+        assert_eq!(split.weekly.per_completion(), Some(32.3));
+    }
+
+    fn window_with(tail: &str) -> SpendWindow {
+        serde_json::from_str(&format!("{{{WINDOW_HEAD}{tail}}}")).expect("window parses")
+    }
+
+    #[test]
+    fn a_window_prefers_cost_per_completion_and_falls_back_to_the_alias() {
+        assert_eq!(
+            window_with(r#","cost_per_completion":2.0"#).per_completion(),
+            Some(2.0)
+        );
+        assert_eq!(
+            window_with(r#","cost_per_landed_task":1.5"#).per_completion(),
+            Some(1.5)
+        );
+        let both = window_with(r#","cost_per_landed_task":1.5,"cost_per_completion":2.0"#);
+        assert_eq!(both.per_completion(), Some(2.0));
+        assert_eq!(window_with("").per_completion(), None);
+    }
+
+    #[test]
+    fn today_prefers_cost_per_completion_and_completions_over_the_aliases() {
+        let both = with_today(
+            r#","today":{"date":"2026-09-29","cost":6.0,"landed":2,"per_landed":3.0,"completions":3,"cost_per_completion":2.0,"first_try_rate":0.5,"measured":2}"#,
+        );
+        let today = both.spend.today.expect("today parses");
+        assert_eq!(
+            (today.per_completion(), today.completed()),
+            (Some(2.0), Some(3))
+        );
+        let alias = with_today(
+            r#","today":{"date":"2026-09-29","cost":6.0,"landed":2,"per_landed":3.0,"first_try_rate":0.5,"measured":2}"#,
+        );
+        let today = alias.spend.today.expect("today parses");
+        assert_eq!(
+            (today.per_completion(), today.completed()),
+            (Some(3.0), Some(2))
+        );
+        let null = with_today(
+            r#","today":{"date":"2026-09-29","cost":6.0,"landed":0,"per_landed":null,"completions":0,"cost_per_completion":null,"measured":0}"#,
+        );
+        assert_eq!(
+            null.spend.today.expect("today parses").per_completion(),
+            None
+        );
+    }
+
+    /// coxswain's own `dash_feed_v1.json`, copied whole. Towpath's `dash_feed_v1.json` is an older subset that other
+    /// tests pin values against; this copy keeps the parser honest against everything the producer sends now.
+    const PRODUCER_FIXTURE: &str = include_str!("../tests/fixtures/dash_feed_producer_v1.json");
+
+    #[test]
+    fn the_producers_full_feed_fixture_parses_with_its_newest_keys() {
+        let snapshot =
+            parse_snapshot(PRODUCER_FIXTURE).expect("the producer's full fixture parses");
+        let today = snapshot.spend.today.as_ref().expect("today present");
+        assert_eq!(
+            (today.completed(), today.per_completion()),
+            (Some(3), Some(2.0))
+        );
+        let split = snapshot.spend_split.as_ref().expect("split present");
+        assert_eq!(split.weekly.per_completion(), Some(32.3));
+        assert_eq!(split.five_hour.completions, Some(3));
+        assert!(!snapshot.board.epics.is_empty());
+        assert!(
+            snapshot
+                .board
+                .epics
+                .iter()
+                .all(|e| e.settled == Settled::default())
+        );
+        assert!(snapshot.intake.is_empty());
+        assert!(!snapshot.runs.is_empty());
     }
 }

@@ -305,6 +305,8 @@ mod tests {
             resets_at: resets_at.to_string(),
             by_node: Vec::new(),
             cost_per_landed_task: None,
+            completions: None,
+            cost_per_completion: None,
         }
     }
 

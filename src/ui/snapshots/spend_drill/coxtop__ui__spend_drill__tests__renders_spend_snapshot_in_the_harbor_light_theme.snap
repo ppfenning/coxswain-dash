@@ -1,6 +1,5 @@
 ---
 source: src/ui/spend_drill.rs
-assertion_line: 588
 expression: screen(& terminal)
 ---
 "╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮"
@@ -38,7 +37,7 @@ expression: screen(& terminal)
 "│ plan · opus                                                                                        9 calls     $8.40 │"
 "│ build · sonnet                                                                                    41 calls     $6.10 │"
 "│ review · sonnet                                                                                   17 calls     $2.20 │"
-"│ cost per land                                                                                                  $2.50 │"
+"│ cost per completion                                                                                            $2.50 │"
 "╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯"
 "                                                                                                                        "
 "                                                                                                                        "

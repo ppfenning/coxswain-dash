@@ -5,8 +5,9 @@ built with [ratatui](https://ratatui.rs). It reads `cox dash --feed` and runs ev
 confirm that shows the command. Part of [Coxswain](https://github.com/ppfenning/coxswain).
 
 Spend lives in the Slipstream page. The right rail's SPEND section shows the 5h and weekly bars, and, from a cox that
-sends `spend.today`, today's cost with the landed count and the cost per landed task with the first-try rate (`--` for
-a figure the feed leaves null). Below MACHINES the rail carries the spend panel in place of the inbox: the window's
+sends `spend.today`, today's cost with its completions and the cost per completion with the first-try rate (`--` for
+a figure the feed leaves null). A completion is a task done or merged into its phase or PR branch; from a cox that
+sends only the older `landed` and `per_landed` keys, those stand in. Below MACHINES the rail carries the spend panel in place of the inbox: the window's
 three-way split, the per-role table and one bar row per day, from `cox dash --detail spend`. From 120 columns the rail
 is 64 wide and the table shows Role, Model, Calls and Cost; below that it is 40 wide, shows Role and Cost, and stacks
 the split's legend one entry per line. On a short terminal the panel drops DAILY rows, then BY ROLE rows, before the
