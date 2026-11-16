@@ -545,8 +545,8 @@ fn usd_or_dash(value: Option<f64>) -> String {
 
 /// The rail's two today lines, read from `spend.today` only. A null field prints `--`.
 fn today_lines(today: &SpendToday, p: &SlipstreamPalette) -> Vec<Line<'static>> {
-    let landed = today
-        .landed
+    let completed = today
+        .completed()
         .map_or_else(|| "--".to_string(), |n| n.to_string());
     let first_try = today
         .first_try_rate
@@ -554,13 +554,16 @@ fn today_lines(today: &SpendToday, p: &SlipstreamPalette) -> Vec<Line<'static>> 
     vec![
         Line::from(vec![
             Span::styled("today ", dim_style(p)),
-            Span::raw(format!("{} for {landed} landed", usd_or_dash(today.cost))),
+            Span::raw(format!(
+                "{} for {completed} completions",
+                usd_or_dash(today.cost)
+            )),
         ]),
         Line::from(vec![
-            Span::styled("per landed ", dim_style(p)),
+            Span::styled("per completion ", dim_style(p)),
             Span::raw(format!(
                 "{}  first-try {first_try}",
-                usd_or_dash(today.per_landed)
+                usd_or_dash(today.per_completion())
             )),
         ]),
     ]
@@ -987,17 +990,32 @@ mod tests {
     fn the_rail_reads_both_lines_from_today_and_never_from_the_window() {
         let app = app_from(&with_spend(Some(TODAY)), ThemeId::Regatta);
         let text = screen(&draw(&app, 160, 46));
-        assert!(text.contains("today $4.50 for 3 landed"), "{text}");
-        assert!(text.contains("per landed $1.23  first-try 67%"), "{text}");
+        assert!(text.contains("today $4.50 for 3 completions"), "{text}");
+        assert!(
+            text.contains("per completion $1.23  first-try 67%"),
+            "{text}"
+        );
         assert!(!text.contains("9.99") && !text.contains("77.77"), "{text}");
+    }
+
+    #[test]
+    fn the_rail_prefers_cost_per_completion_and_completions_over_the_aliases() {
+        let both = r#""today": {"date": "2026-09-29", "cost": 6.0, "landed": 2, "per_landed": 3.0, "completions": 3, "cost_per_completion": 2.0, "first_try_rate": 0.5, "measured": 2}"#;
+        let app = app_from(&with_spend(Some(both)), ThemeId::Regatta);
+        let text = screen(&draw(&app, 160, 46));
+        assert!(text.contains("today $6.00 for 3 completions"), "{text}");
+        assert!(
+            text.contains("per completion $2.00  first-try 50%"),
+            "{text}"
+        );
     }
 
     #[test]
     fn a_null_today_field_prints_a_dash() {
         let app = app_from(&with_spend(Some(TODAY_NULLS)), ThemeId::Regatta);
         let text = screen(&draw(&app, 160, 46));
-        assert!(text.contains("today -- for -- landed"), "{text}");
-        assert!(text.contains("per landed --  first-try --"), "{text}");
+        assert!(text.contains("today -- for -- completions"), "{text}");
+        assert!(text.contains("per completion --  first-try --"), "{text}");
     }
 
     #[test]
@@ -1005,7 +1023,7 @@ mod tests {
         let app = app_from(&with_spend(None), ThemeId::Regatta);
         let text = screen(&draw(&app, 160, 46));
         assert!(
-            !text.contains("per landed") && !text.contains("first-try"),
+            !text.contains("per completion") && !text.contains("first-try"),
             "{text}"
         );
     }
@@ -1556,8 +1574,8 @@ mod tests {
                     rows[1].starts_with("wk ") && rows[1].ends_with(" 35%"),
                     "{rows:?}"
                 );
-                assert_eq!(rows[2], "today $4.50 for 3 landed");
-                assert_eq!(rows[3], "per landed $1.23  first-try 67%");
+                assert_eq!(rows[2], "today $4.50 for 3 completions");
+                assert_eq!(rows[3], "per completion $1.23  first-try 67%");
                 assert_eq!(usize::from(height_for(feed, width)), rows.len() + 1);
             }
         }

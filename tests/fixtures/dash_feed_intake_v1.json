@@ -1,0 +1,44 @@
+{
+  "intake": [
+    {
+      "id": "intake-tasks-pane-filter",
+      "title": "Filter the tasks pane by repo",
+      "stage": "ready",
+      "repo": "coxswain-dash",
+      "epic": "dash-waves",
+      "priority": 5,
+      "target_release": "2026.11.5",
+      "deferred": false
+    },
+    {
+      "id": "intake-ledger-compaction",
+      "title": "Compact the run ledger on a schedule",
+      "stage": "ready",
+      "repo": "coxswain-tools",
+      "epic": null,
+      "priority": 3,
+      "target_release": null,
+      "deferred": false
+    },
+    {
+      "id": "intake-router-budget-bands",
+      "title": "Add budget bands to the router",
+      "stage": "ready",
+      "repo": "coxswain-tools",
+      "epic": "cartridge-bounds",
+      "priority": 1,
+      "target_release": "2026.12.0",
+      "deferred": true
+    },
+    {
+      "id": "intake-slipstream-legend",
+      "title": "Sketch a legend for the Slipstream page",
+      "stage": "draft",
+      "repo": "coxswain-dash",
+      "epic": null,
+      "priority": 0,
+      "target_release": null,
+      "deferred": false
+    }
+  ]
+}

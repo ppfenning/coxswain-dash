@@ -44,7 +44,8 @@
               }
             ]
           }
-        ]
+        ],
+        "settled": {"landed": 0, "dropped": 0, "cost_usd": 0.0}
       },
       {
         "id": "",
@@ -72,7 +73,8 @@
               }
             ]
           }
-        ]
+        ],
+        "settled": {"landed": 0, "dropped": 0, "cost_usd": 0.0}
       }
     ]
   },
