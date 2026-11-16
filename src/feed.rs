@@ -2993,4 +2993,32 @@ mod tests {
             None
         );
     }
+
+    /// coxswain's own `dash_feed_v1.json`, copied whole. Towpath's `dash_feed_v1.json` is an older subset that other
+    /// tests pin values against; this copy keeps the parser honest against everything the producer sends now.
+    const PRODUCER_FIXTURE: &str = include_str!("../tests/fixtures/dash_feed_producer_v1.json");
+
+    #[test]
+    fn the_producers_full_feed_fixture_parses_with_its_newest_keys() {
+        let snapshot =
+            parse_snapshot(PRODUCER_FIXTURE).expect("the producer's full fixture parses");
+        let today = snapshot.spend.today.as_ref().expect("today present");
+        assert_eq!(
+            (today.completed(), today.per_completion()),
+            (Some(3), Some(2.0))
+        );
+        let split = snapshot.spend_split.as_ref().expect("split present");
+        assert_eq!(split.weekly.per_completion(), Some(32.3));
+        assert_eq!(split.five_hour.completions, Some(3));
+        assert!(!snapshot.board.epics.is_empty());
+        assert!(
+            snapshot
+                .board
+                .epics
+                .iter()
+                .all(|e| e.settled == Settled::default())
+        );
+        assert!(snapshot.intake.is_empty());
+        assert!(!snapshot.runs.is_empty());
+    }
 }
