@@ -14,6 +14,8 @@
 //! - `Blocked` draws as `Ready` in the waiting hue. That hue is already the dim text colour, so
 //!   the two differ by meaning and placement, not by RGB.
 //! - `Stale` is the warning yellow, `Dropped` and `Idle` are dim.
+//! - `Held` is a task held for a person: the feed still says `blocked`, plus a `needs_you`
+//!   reason. It wears `◆` in the warning hue, so it reads as needing a look, not as waiting.
 
 use ratatui::style::Color;
 
@@ -24,6 +26,7 @@ use crate::theme::Theme;
 pub enum Status {
     Ready,
     Blocked,
+    Held,
     Running,
     Approved,
     Landed,
@@ -48,6 +51,7 @@ pub fn style(theme: &Theme, status: Status) -> (char, Color) {
         Status::Running | Status::Working => ('▒', theme.status_running),
         Status::Ready => ('░', theme.status_waiting),
         Status::Blocked => ('░', theme.dim),
+        Status::Held => ('◆', theme.meter_mid),
         Status::Quarantined => ('✕', theme.quarantined),
         Status::Failed | Status::Down => ('✕', theme.status_failed),
         Status::Fenced | Status::Crashed => ('!', theme.status_failed),
@@ -84,6 +88,16 @@ pub fn from_word(word: &str) -> Status {
         "down" => Status::Down,
         "idle" => Status::Idle,
         _ => Status::Ready,
+    }
+}
+
+/// A task's status from its state word and its `needs_you` reason: a non-blank reason is `Held`,
+/// whatever the word says.
+pub fn task(word: &str, needs_you: &str) -> Status {
+    if needs_you.trim().is_empty() {
+        from_word(word)
+    } else {
+        Status::Held
     }
 }
 
@@ -147,9 +161,10 @@ mod tests {
     use super::*;
     use crate::app::ThemeId;
 
-    const ALL: [Status; 16] = [
+    const ALL: [Status; 17] = [
         Status::Ready,
         Status::Blocked,
+        Status::Held,
         Status::Running,
         Status::Approved,
         Status::Landed,
@@ -173,6 +188,7 @@ mod tests {
             Status::Running | Status::Working => ('▒', t.status_running),
             Status::Ready => ('░', t.status_waiting),
             Status::Blocked => ('░', t.dim),
+            Status::Held => ('◆', t.meter_mid),
             Status::Quarantined => ('✕', t.quarantined),
             Status::Failed | Status::Down => ('✕', t.status_failed),
             Status::Fenced | Status::Crashed => ('!', t.status_failed),
@@ -235,6 +251,28 @@ mod tests {
         assert_eq!(liveness("gone"), Status::Crashed);
         assert_eq!(host("up"), Status::Up);
         assert_eq!(host("sideways"), Status::Down);
+    }
+
+    #[test]
+    fn a_task_with_a_needs_you_reason_is_held_and_without_one_is_blocked() {
+        assert_eq!(task("blocked", "needs you: no progress"), Status::Held);
+        assert_eq!(task("ready", "needs you: x"), Status::Held);
+        assert_eq!(task("blocked", ""), Status::Blocked);
+        assert_eq!(task("blocked", "  "), Status::Blocked);
+        assert_eq!(task("building", ""), Status::Running);
+    }
+
+    #[test]
+    fn held_looks_unlike_blocked_and_ready_in_both_themes() {
+        for id in [ThemeId::Regatta, ThemeId::HarborLight] {
+            let t = crate::theme::resolve_for(id, Some("truecolor"));
+            let held = style(&t, Status::Held);
+            for other in [Status::Blocked, Status::Ready] {
+                let (glyph, colour) = style(&t, other);
+                assert_ne!(held.0, glyph, "{other:?} glyph in {id:?}");
+                assert_ne!(held.1, colour, "{other:?} colour in {id:?}");
+            }
+        }
     }
 
     #[test]

@@ -2,5 +2,5 @@
 # tests/fixtures/coxswain/ is vendored from this commit and CI fails if it differs. Never edit it or this file
 # by hand: `python3 scripts/coxswain_contract.py sync <ref>` re-vendors both together.
 repo = "ppfenning/coxswain"
-ref = "5bcefd82d07fc319e01468af4a65ab519b7dac6f"
+ref = "89e44365ee441ea80bb5a0d027832f0735e42fb6"
 contract = 1

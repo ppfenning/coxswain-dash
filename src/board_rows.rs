@@ -6,7 +6,8 @@ use std::collections::{HashMap, HashSet};
 
 use crate::feed::{BoardInitiative, BoardPhase, BoardTask, Epic, FeedSnapshot, StatusCounts};
 
-/// The eight task statuses and how many tasks sit in each.
+/// The eight task statuses and how many tasks sit in each, plus `held`: the tasks held for a
+/// person, taken out of the status they were sent under (the feed sends a held task as blocked).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Counts {
     pub ready: u32,
@@ -17,6 +18,7 @@ pub struct Counts {
     pub quarantined: u32,
     pub dropped: u32,
     pub blocked: u32,
+    pub held: u32,
 }
 
 impl From<&StatusCounts> for Counts {
@@ -30,8 +32,27 @@ impl From<&StatusCounts> for Counts {
             quarantined: c.quarantined,
             dropped: c.dropped,
             blocked: c.blocked,
+            held: 0,
         }
     }
+}
+
+impl Counts {
+    /// The feed's counts with `tasks`' held ones moved out of blocked and into `held`.
+    fn with_held<'a>(c: &StatusCounts, tasks: impl Iterator<Item = &'a BoardTask>) -> Self {
+        let held: Vec<&BoardTask> = tasks.filter(|t| is_held(t)).collect();
+        let blocked = held.iter().filter(|t| t.status == "blocked").count() as u32;
+        Counts {
+            blocked: c.blocked.saturating_sub(blocked),
+            held: held.len() as u32,
+            ..Counts::from(c)
+        }
+    }
+}
+
+/// Whether the feed holds `t` for a person: it carries a non-blank `needs_you` reason.
+pub fn is_held(t: &BoardTask) -> bool {
+    !t.needs_you.trim().is_empty()
 }
 
 /// What every parent row carries. An initiative's title is its `short_id` and a phase's is its id,
@@ -64,6 +85,8 @@ pub enum Row {
         cost_usd: f64,
         /// From the machine lane whose tasks list names this task.
         elapsed_s: Option<u64>,
+        /// The feed's hold reason; empty when the task is not held.
+        needs_you: String,
     },
     /// The folded landed and merged tasks of one phase. `id` is the phase id.
     Landed {
@@ -82,6 +105,7 @@ pub enum StatusKind {
     Done,
     Dead,
     Waiting,
+    Held,
 }
 
 /// Maps a task or parent status word to a kind. A word the build does not know (a parent's
@@ -92,7 +116,17 @@ pub fn status_kind(word: &str) -> StatusKind {
         "approved" => StatusKind::Approved,
         "landed" | "merged" => StatusKind::Done,
         "quarantined" | "dropped" => StatusKind::Dead,
+        "held" => StatusKind::Held,
         _ => StatusKind::Waiting,
+    }
+}
+
+/// A task's kind: `Held` when it carries a hold reason, else the kind of its status word.
+pub fn task_kind(status: &str, needs_you: &str) -> StatusKind {
+    if needs_you.trim().is_empty() {
+        status_kind(status)
+    } else {
+        StatusKind::Held
     }
 }
 
@@ -156,7 +190,7 @@ fn node(
     title: &str,
     status: &str,
     cost: f64,
-    c: &StatusCounts,
+    counts: Counts,
 ) -> Node {
     Node {
         id: id.to_string(),
@@ -164,13 +198,19 @@ fn node(
         title: title.to_string(),
         status: status.to_string(),
         cost_usd: cost,
-        counts: Counts::from(c),
+        counts,
         collapsed: ctx.collapsed.contains(id),
     }
 }
 
 fn epic_rows(ctx: &Ctx, e: &Epic) -> Vec<Row> {
-    let n = node(ctx, 0, &e.id, &e.title, &e.status, e.cost_usd, &e.counts);
+    let tasks = e
+        .initiatives
+        .iter()
+        .flat_map(|i| &i.phases)
+        .flat_map(|p| &p.tasks);
+    let counts = Counts::with_held(&e.counts, tasks);
+    let n = node(ctx, 0, &e.id, &e.title, &e.status, e.cost_usd, counts);
     let children = if n.collapsed {
         Vec::new()
     } else {
@@ -183,7 +223,8 @@ fn epic_rows(ctx: &Ctx, e: &Epic) -> Vec<Row> {
 }
 
 fn initiative_rows(ctx: &Ctx, i: &BoardInitiative) -> Vec<Row> {
-    let n = node(ctx, 1, &i.id, &i.short_id, &i.status, i.cost_usd, &i.counts);
+    let counts = Counts::with_held(&i.counts, i.phases.iter().flat_map(|p| &p.tasks));
+    let n = node(ctx, 1, &i.id, &i.short_id, &i.status, i.cost_usd, counts);
     let today = i.phases.iter().map(|p| phase_today(ctx, p)).sum();
     let children = if n.collapsed {
         Vec::new()
@@ -203,7 +244,8 @@ fn phase_today(ctx: &Ctx, p: &BoardPhase) -> u32 {
 }
 
 fn phase_rows(ctx: &Ctx, p: &BoardPhase) -> Vec<Row> {
-    let n = node(ctx, 2, &p.id, &p.id, &p.status, p.cost_usd, &p.counts);
+    let counts = Counts::with_held(&p.counts, p.tasks.iter());
+    let n = node(ctx, 2, &p.id, &p.id, &p.status, p.cost_usd, counts);
     if n.collapsed {
         return vec![Row::Phase(n)];
     }
@@ -243,6 +285,7 @@ fn task_row(ctx: &Ctx, t: &BoardTask, depth: usize) -> Row {
         host: t.host.clone(),
         cost_usd: t.cost_usd,
         elapsed_s: ctx.elapsed.get(t.id.as_str()).copied(),
+        needs_you: t.needs_you.trim().to_string(),
     }
 }
 
@@ -339,6 +382,7 @@ mod tests {
             host: host.into(),
             cost_usd: cost,
             elapsed_s,
+            needs_you: String::new(),
         }
     }
 
@@ -491,5 +535,47 @@ mod tests {
         ];
         let got: Vec<_> = want.iter().map(|(w, _)| (*w, status_kind(w))).collect();
         assert_eq!(got, want);
+    }
+
+    const HELD_FIXTURE: &str = include_str!("../tests/fixtures/coxswain/dash_feed_held_v1.json");
+
+    #[test]
+    fn a_task_with_a_needs_you_reason_is_held_and_without_one_is_blocked() {
+        assert_eq!(task_kind("blocked", "needs you: x"), StatusKind::Held);
+        assert_eq!(task_kind("blocked", ""), StatusKind::Waiting);
+        assert_eq!(task_kind("blocked", " "), StatusKind::Waiting);
+        assert_eq!(task_kind("building", ""), StatusKind::Building);
+    }
+
+    #[test]
+    fn a_held_task_carries_its_reason_and_moves_from_blocked_to_held_in_every_parent() {
+        let snap = parse_snapshot(HELD_FIXTURE).expect("held fixture parses");
+        let rows = flatten(&snap, &no_ids(), &no_ids());
+        let reason = |want: &str| {
+            rows.iter().find_map(|r| match r {
+                Row::Task { id, needs_you, .. } if id == want => Some(needs_you.clone()),
+                _ => None,
+            })
+        };
+        assert_eq!(reason("stray-fix-docs").as_deref(), Some(""));
+        assert!(reason("stray-fix-review").is_some_and(|r| r.starts_with("needs you:")));
+        let stray: Vec<Counts> = rows
+            .iter()
+            .filter_map(|r| match r {
+                Row::Epic(n) | Row::Phase(n) | Row::Initiative { node: n, .. }
+                    if n.id.is_empty() || n.id.starts_with("stray") || n.id == "p1-fix" =>
+                {
+                    Some(n.counts)
+                }
+                _ => None,
+            })
+            .collect();
+        let want = Counts {
+            building: 1,
+            blocked: 1,
+            held: 1,
+            ..Counts::default()
+        };
+        assert_eq!(stray, [want, want, want], "epic, initiative, phase");
     }
 }
