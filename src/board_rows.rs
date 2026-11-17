@@ -252,7 +252,7 @@ mod tests {
     use crate::feed::parse_snapshot;
     use serde_json::json;
 
-    const BOARD_FIXTURE: &str = include_str!("../tests/fixtures/dash_feed_board_v1.json");
+    const BOARD_FIXTURE: &str = include_str!("../tests/fixtures/towpath/dash_feed_board_v1.json");
 
     fn no_ids() -> HashSet<String> {
         HashSet::new()

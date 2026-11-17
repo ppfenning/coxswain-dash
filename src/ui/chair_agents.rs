@@ -178,7 +178,7 @@ mod tests {
     use crate::app::ThemeId;
     use ratatui::{Terminal, backend::TestBackend};
 
-    const FIXTURE: &str = include_str!("../../tests/fixtures/dash_activity_v1.json");
+    const FIXTURE: &str = include_str!("../../tests/fixtures/coxswain/dash_activity_v1.json");
 
     #[derive(serde::Deserialize)]
     struct Activity {

@@ -1,0 +1,6 @@
+# The coxswain commit whose dash fixtures towpath's tests read, and the contract version they carry.
+# tests/fixtures/coxswain/ is vendored from this commit and CI fails if it differs. Never edit it or this file
+# by hand: `python3 scripts/coxswain_contract.py sync <ref>` re-vendors both together.
+repo = "ppfenning/coxswain"
+ref = "315a4812a9e04355bf4ebdd7a86cd8d7b9b24ad9"
+contract = 1

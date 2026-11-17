@@ -350,7 +350,7 @@ mod tests {
     use super::*;
     use crate::feed::parse_snapshot;
 
-    const FIXTURE: &str = include_str!("../tests/fixtures/dash_feed_v1.json");
+    const FIXTURE: &str = include_str!("../tests/fixtures/towpath/dash_feed_v1.json");
     const INITIATIVE: &str = "dash-feed-streams-a-versioned-json-snapshot-of";
 
     fn snapshot() -> FeedSnapshot {

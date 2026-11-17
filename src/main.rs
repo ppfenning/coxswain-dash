@@ -13,6 +13,7 @@ mod board_rows;
 mod chair_panel;
 mod config;
 mod confirm;
+mod contract;
 mod decision_card;
 mod detail;
 mod exec;
@@ -997,7 +998,7 @@ mod tests {
 
     #[test]
     fn a_confirmed_action_runs_once_with_its_argv_and_sets_the_status() {
-        let json = include_str!("../tests/fixtures/dash_feed_v1.json");
+        let json = include_str!("../tests/fixtures/towpath/dash_feed_v1.json");
         let mut app = App::new(AppPage::Regatta, ThemeId::Regatta);
         app.apply_snapshot(feed::parse_snapshot(json).expect("fixture should parse"));
         assert!(app.begin_action('k'));

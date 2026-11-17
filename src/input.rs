@@ -1349,7 +1349,7 @@ mod tests {
 
     #[test]
     fn space_on_the_board_tree_collapses_the_selected_initiative_and_enter_opens_a_task_run() {
-        let json = include_str!("../tests/fixtures/dash_feed_board_v1.json");
+        let json = include_str!("../tests/fixtures/towpath/dash_feed_board_v1.json");
         let mut app = App::new(AppPage::Board, ThemeId::Regatta);
         app.apply_snapshot(crate::feed::parse_snapshot(json).expect("board fixture parses"));
         let full = app.board_rows().len();
@@ -1370,7 +1370,7 @@ mod tests {
 
     #[test]
     fn enter_on_a_board_agent_opens_the_detail() {
-        let json = include_str!("../tests/fixtures/dash_feed_board_v1.json");
+        let json = include_str!("../tests/fixtures/towpath/dash_feed_board_v1.json");
         let mut app = App::new(AppPage::Board, ThemeId::Regatta);
         app.apply_snapshot(crate::feed::parse_snapshot(json).expect("board fixture parses"));
         handle_key(&mut app, KeyCode::Right);

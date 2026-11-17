@@ -323,12 +323,14 @@ pub fn run_detail(cmd: std::process::Command) -> DetailOutcome {
 mod tests {
     use super::*;
 
-    const RUN_FIXTURE: &str = include_str!("../tests/fixtures/dash_detail_run_v1.json");
+    const RUN_FIXTURE: &str = include_str!("../tests/fixtures/coxswain/dash_detail_run_v1.json");
     const INITIATIVE_FIXTURE: &str =
-        include_str!("../tests/fixtures/dash_detail_initiative_v1.json");
-    const MACHINE_FIXTURE: &str = include_str!("../tests/fixtures/dash_detail_machine_v1.json");
-    const SPEND_FIXTURE: &str = include_str!("../tests/fixtures/dash_detail_spend_v1.json");
-    const HEALTH_FIXTURE: &str = include_str!("../tests/fixtures/dash_detail_health_v1.json");
+        include_str!("../tests/fixtures/coxswain/dash_detail_initiative_v1.json");
+    const MACHINE_FIXTURE: &str =
+        include_str!("../tests/fixtures/coxswain/dash_detail_machine_v1.json");
+    const SPEND_FIXTURE: &str = include_str!("../tests/fixtures/towpath/dash_detail_spend_v1.json");
+    const HEALTH_FIXTURE: &str =
+        include_str!("../tests/fixtures/towpath/dash_detail_health_v1.json");
 
     #[test]
     fn spawn_command_with_a_nonexistent_program_returns_err() {

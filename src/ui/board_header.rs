@@ -117,7 +117,7 @@ mod tests {
     use crate::exec::ExecResult;
     use ratatui::{Terminal, backend::TestBackend};
 
-    const FEED_FIXTURE: &str = include_str!("../../tests/fixtures/dash_feed_v1.json");
+    const FEED_FIXTURE: &str = include_str!("../../tests/fixtures/towpath/dash_feed_v1.json");
 
     fn app_with_chair(chair: serde_json::Value) -> App {
         let mut value: serde_json::Value =

@@ -1933,7 +1933,7 @@ mod tests {
     }
 
     fn board_app() -> App {
-        let json = include_str!("../tests/fixtures/dash_feed_board_v1.json");
+        let json = include_str!("../tests/fixtures/towpath/dash_feed_board_v1.json");
         let mut app = App::new(AppPage::Board, ThemeId::Regatta);
         app.apply_snapshot(crate::feed::parse_snapshot(json).expect("board fixture parses"));
         app
@@ -2022,7 +2022,7 @@ mod tests {
         app.select_at(1);
         app.toggle_board_node();
         let folded = app.board_rows().len();
-        let json = include_str!("../tests/fixtures/dash_feed_board_v1.json");
+        let json = include_str!("../tests/fixtures/towpath/dash_feed_board_v1.json");
         app.apply_snapshot(crate::feed::parse_snapshot(json).expect("board fixture parses"));
         assert_eq!(app.board_rows().len(), folded);
     }
@@ -2046,7 +2046,7 @@ mod tests {
     /// The board fixture with its live agents replaced by `(serves, host)` pairs, the first pair
     /// fastest, and the agents list focused.
     fn agents_app(pairs: &[(&str, &str)]) -> App {
-        let json = include_str!("../tests/fixtures/dash_feed_board_v1.json");
+        let json = include_str!("../tests/fixtures/towpath/dash_feed_board_v1.json");
         let mut snap = crate::feed::parse_snapshot(json).expect("board fixture parses");
         snap.live.agents = pairs
             .iter()
@@ -2136,7 +2136,7 @@ mod tests {
     fn a_feed_refresh_that_drops_agents_leaves_the_selection_in_range() {
         let mut app = agents_app(&[("a", "h"), ("b", "h"), ("c", "h")]);
         app.select_at(2);
-        let json = include_str!("../tests/fixtures/dash_feed_board_v1.json");
+        let json = include_str!("../tests/fixtures/towpath/dash_feed_board_v1.json");
         app.apply_snapshot(crate::feed::parse_snapshot(json).expect("board fixture parses"));
         assert_eq!(app.selected(), 1);
     }
@@ -2635,8 +2635,9 @@ mod tests {
         assert!(slot.is_none());
     }
 
-    const SPEND_FIXTURE: &str = include_str!("../tests/fixtures/dash_detail_spend_v1.json");
-    const HEALTH_FIXTURE: &str = include_str!("../tests/fixtures/dash_detail_health_v1.json");
+    const SPEND_FIXTURE: &str = include_str!("../tests/fixtures/towpath/dash_detail_spend_v1.json");
+    const HEALTH_FIXTURE: &str =
+        include_str!("../tests/fixtures/towpath/dash_detail_health_v1.json");
 
     #[test]
     fn each_view_opens_with_its_kind_and_word_and_no_feed() {

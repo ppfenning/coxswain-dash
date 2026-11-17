@@ -714,7 +714,7 @@ mod tests {
     use crate::theme::slipstream_palette;
     use ratatui::{Terminal, backend::TestBackend, buffer::Buffer};
 
-    const FIXTURE: &str = include_str!("../../tests/fixtures/dash_feed_v1.json");
+    const FIXTURE: &str = include_str!("../../tests/fixtures/towpath/dash_feed_v1.json");
 
     /// An app on `json` as given, budget block included.
     fn app_with_budget(json: &str, theme: ThemeId) -> App {

@@ -1,0 +1,85 @@
+{
+  "schema": 1,
+  "at": "2026-11-06T00:00:00Z",
+  "schedule": {
+    "lanes": [
+      {
+        "host": "host-a",
+        "lane": "wave-run-1",
+        "next": [
+          {"initiative": "plan-an-initiative-as-waves-of-phases", "phase": "p1-schema", "start": "2026-11-06T08:00:00Z", "finish": "2026-11-06T10:00:00Z", "critical": true},
+          {"initiative": "plan-an-initiative-as-waves-of-phases", "phase": "p2-feed", "start": "2026-11-06T10:00:00Z", "finish": "2026-11-06T13:00:00Z", "critical": true}
+        ]
+      },
+      {
+        "host": "host-b",
+        "lane": "wave-run-2",
+        "next": [
+          {"initiative": "scheduler-plans-the-whole-queue-as-one-graph", "phase": "p1-core", "start": "2026-11-06T08:00:00Z", "finish": "2026-11-06T11:30:00Z", "critical": false}
+        ]
+      },
+      {
+        "host": "host-b",
+        "lane": "wave-run-3",
+        "next": [
+          {"initiative": "refresh-the-install-docs", "phase": "p1-docs", "start": "2026-11-06T08:30:00Z", "finish": "2026-11-06T09:30:00Z", "critical": false}
+        ]
+      }
+    ],
+    "initiatives": [
+      {"initiative": "plan-an-initiative-as-waves-of-phases", "priority": 1, "projected_finish": "2026-11-06T13:00:00Z", "on_critical_path": true},
+      {"initiative": "scheduler-plans-the-whole-queue-as-one-graph", "priority": 2, "projected_finish": "2026-11-06T11:30:00Z", "on_critical_path": false},
+      {"initiative": "refresh-the-install-docs", "priority": 3, "projected_finish": "2026-11-06T09:30:00Z", "on_critical_path": false}
+    ],
+    "release": {"target": "2026-11-06T12:00:00Z", "projected_finish": "2026-11-06T13:00:00Z", "misses_target": true},
+    "critical_path": [
+      {"initiative": "plan-an-initiative-as-waves-of-phases", "phase": "p1-schema"},
+      {"initiative": "plan-an-initiative-as-waves-of-phases", "phase": "p2-feed"}
+    ],
+    "advice": [
+      {"kind": "miss", "text": "Release projected 1h after target; the critical path runs through plan-an-initiative-as-waves-of-phases p2-feed.", "at": "2026-11-06T00:00:00Z"}
+    ]
+  },
+  "action": {
+    "kind": "schedule_updated",
+    "schedule": {
+      "lanes": [
+        {
+          "host": "host-a",
+          "lane": "wave-run-1",
+          "next": [
+            {"initiative": "plan-an-initiative-as-waves-of-phases", "phase": "p1-schema", "start": "2026-11-06T08:00:00Z", "finish": "2026-11-06T10:00:00Z", "critical": true},
+            {"initiative": "plan-an-initiative-as-waves-of-phases", "phase": "p2-feed", "start": "2026-11-06T10:00:00Z", "finish": "2026-11-06T13:00:00Z", "critical": true}
+          ]
+        },
+        {
+          "host": "host-b",
+          "lane": "wave-run-2",
+          "next": [
+            {"initiative": "scheduler-plans-the-whole-queue-as-one-graph", "phase": "p1-core", "start": "2026-11-06T08:00:00Z", "finish": "2026-11-06T11:30:00Z", "critical": false}
+          ]
+        },
+        {
+          "host": "host-b",
+          "lane": "wave-run-3",
+          "next": [
+            {"initiative": "refresh-the-install-docs", "phase": "p1-docs", "start": "2026-11-06T08:30:00Z", "finish": "2026-11-06T09:30:00Z", "critical": false}
+          ]
+        }
+      ],
+      "initiatives": [
+        {"initiative": "plan-an-initiative-as-waves-of-phases", "priority": 1, "projected_finish": "2026-11-06T13:00:00Z", "on_critical_path": true},
+        {"initiative": "scheduler-plans-the-whole-queue-as-one-graph", "priority": 2, "projected_finish": "2026-11-06T11:30:00Z", "on_critical_path": false},
+        {"initiative": "refresh-the-install-docs", "priority": 3, "projected_finish": "2026-11-06T09:30:00Z", "on_critical_path": false}
+      ],
+      "release": {"target": "2026-11-06T12:00:00Z", "projected_finish": "2026-11-06T13:00:00Z", "misses_target": true},
+      "critical_path": [
+        {"initiative": "plan-an-initiative-as-waves-of-phases", "phase": "p1-schema"},
+        {"initiative": "plan-an-initiative-as-waves-of-phases", "phase": "p2-feed"}
+      ],
+      "advice": [
+        {"kind": "miss", "text": "Release projected 1h after target; the critical path runs through plan-an-initiative-as-waves-of-phases p2-feed.", "at": "2026-11-06T00:00:00Z"}
+      ]
+    }
+  }
+}

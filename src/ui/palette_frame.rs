@@ -119,7 +119,7 @@ mod tests {
     use crossterm::event::KeyCode;
     use ratatui::{Terminal, backend::TestBackend, buffer::Buffer};
 
-    const FEED_FIXTURE: &str = include_str!("../../tests/fixtures/dash_feed_v1.json");
+    const FEED_FIXTURE: &str = include_str!("../../tests/fixtures/towpath/dash_feed_v1.json");
 
     fn lines(items: &[&str]) -> Vec<String> {
         items.iter().map(|s| (*s).to_owned()).collect()

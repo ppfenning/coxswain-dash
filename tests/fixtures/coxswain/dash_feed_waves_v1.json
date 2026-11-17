@@ -1,0 +1,29 @@
+{
+  "schema": 1,
+  "at": "2026-11-04T00:00:00Z",
+  "queue": [
+    {
+      "initiative": "plan-an-initiative-as-waves-of-phases",
+      "priority": 1,
+      "phases_landed": 1,
+      "phases_total": 5,
+      "current_phase": "p1-schema",
+      "short_id": "I500",
+      "project": "example-repo",
+      "waves": [
+        {"n": 1, "phases": ["p1-schema", "p1-store"]},
+        {"n": 2, "phases": ["p2-feed", "p2-store"]},
+        {"n": 3, "phases": ["p3-join"]}
+      ],
+      "widest_wave": 2,
+      "phases": [
+        {"id": "p1-schema", "wave": 1, "lane": "wave-run-1", "status": "running", "reason": null, "tasks": [{"id": "schema-draft", "state": "building"}, {"id": "schema-docs", "state": "ready"}]},
+        {"id": "p1-store", "wave": 1, "lane": null, "status": "complete", "reason": null, "tasks": [{"id": "store-table", "state": "landed"}, {"id": "store-index", "state": "merged"}]},
+        {"id": "p2-feed", "wave": 2, "lane": null, "status": "waiting", "reason": "waiting on p1-schema", "tasks": [{"id": "feed-emit", "state": "ready"}]},
+        {"id": "p2-store", "wave": 2, "lane": null, "status": "blocked", "reason": "task store-migrate is quarantined: review rejected twice", "tasks": [{"id": "store-migrate", "state": "quarantined"}, {"id": "store-backfill", "state": "ready"}]},
+        {"id": "p3-join", "wave": 3, "lane": null, "status": "blocked", "reason": "parent p2-store is blocked", "tasks": [{"id": "join-report", "state": "ready"}]}
+      ]
+    }
+  ],
+  "queue_total": 1
+}

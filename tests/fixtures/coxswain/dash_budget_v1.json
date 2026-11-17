@@ -1,0 +1,24 @@
+{
+  "month": {
+    "period": "month",
+    "spent_usd": 190.0,
+    "budget_usd": 400.0,
+    "fraction": 0.475,
+    "daily_avg_usd": 20.0,
+    "projected_usd": 600.0,
+    "days_left": 20,
+    "daily_avg_7d_usd": 21.5,
+    "daily_avg_14d_usd": 19.25
+  },
+  "none": {
+    "period": "none",
+    "spent_usd": 190.0,
+    "budget_usd": 0.0,
+    "fraction": 0.0,
+    "daily_avg_usd": 20.0,
+    "projected_usd": 600.0,
+    "days_left": 20,
+    "daily_avg_7d_usd": 21.5,
+    "daily_avg_14d_usd": 19.25
+  }
+}

@@ -1,0 +1,39 @@
+{
+  "epics": [
+    {
+      "id": "cartridge-bounds",
+      "title": "Bound cartridge cost per run",
+      "target_branch": null,
+      "landed": 2,
+      "total": 2,
+      "complete": true,
+      "initiatives": [
+        {"id": "bounds-ledger", "landed": true, "phases_landed": 3, "phases_total": 3},
+        {"id": "bounds-router", "landed": true, "phases_landed": 2, "phases_total": 2}
+      ]
+    },
+    {
+      "id": "dash-waves",
+      "title": "Show waves of phases on the dash",
+      "target_branch": "main",
+      "landed": 0,
+      "total": 1,
+      "complete": false,
+      "initiatives": [
+        {"id": "waves-render", "landed": false, "phases_landed": 1, "phases_total": 4}
+      ]
+    },
+    {
+      "id": "initiative-landing",
+      "title": "Group initiatives and land them on a shared branch",
+      "target_branch": "develop",
+      "landed": 1,
+      "total": 2,
+      "complete": false,
+      "initiatives": [
+        {"id": "landing-cores", "landed": true, "phases_landed": 2, "phases_total": 2},
+        {"id": "landing-feed", "landed": false, "phases_landed": 1, "phases_total": 3}
+      ]
+    }
+  ]
+}
