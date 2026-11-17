@@ -442,7 +442,7 @@ mod tests {
         assert!(text.ends_with("$1.75"), "{text:?}");
     }
 
-    const HELD_FIXTURE: &str = include_str!("../../tests/fixtures/dash_feed_held_v1.json");
+    const HELD_FIXTURE: &str = include_str!("../../tests/fixtures/coxswain/dash_feed_held_v1.json");
 
     fn held() -> FeedSnapshot {
         parse_snapshot(HELD_FIXTURE).expect("held fixture parses")

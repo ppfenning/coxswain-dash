@@ -537,7 +537,7 @@ mod tests {
         assert_eq!(got, want);
     }
 
-    const HELD_FIXTURE: &str = include_str!("../tests/fixtures/dash_feed_held_v1.json");
+    const HELD_FIXTURE: &str = include_str!("../tests/fixtures/coxswain/dash_feed_held_v1.json");
 
     #[test]
     fn a_task_with_a_needs_you_reason_is_held_and_without_one_is_blocked() {

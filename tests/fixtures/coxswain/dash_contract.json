@@ -12,6 +12,7 @@
     "dash_feed_board_v1.json",
     "dash_feed_cost_v1.json",
     "dash_feed_epics_v1.json",
+    "dash_feed_held_v1.json",
     "dash_feed_intake_v1.json",
     "dash_feed_schedule_v1.json",
     "dash_feed_task_checks_v1.json",

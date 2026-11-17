@@ -1273,7 +1273,12 @@ mod tests {
     #[test]
     fn a_held_task_parses_its_needs_you_reason_on_the_board_and_the_queue() {
         let snap = parse_snapshot(HELD_FIXTURE).expect("held fixture parses");
-        let no_epic = snap.board.epics.iter().find(|e| e.id.is_empty()).expect("no epic");
+        let no_epic = snap
+            .board
+            .epics
+            .iter()
+            .find(|e| e.id.is_empty())
+            .expect("no epic");
         let tasks = &no_epic.initiatives[0].phases[0].tasks;
         let reason = |id: &str| {
             let t = tasks.iter().find(|t| t.id == id).expect("task listed");

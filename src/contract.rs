@@ -239,6 +239,10 @@ mod tests {
             include_str!("../tests/fixtures/coxswain/dash_feed_epics_v1.json"),
         ),
         (
+            "dash_feed_held_v1.json",
+            include_str!("../tests/fixtures/coxswain/dash_feed_held_v1.json"),
+        ),
+        (
             "dash_feed_intake_v1.json",
             include_str!("../tests/fixtures/coxswain/dash_feed_intake_v1.json"),
         ),
