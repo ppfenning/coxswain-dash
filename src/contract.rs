@@ -371,8 +371,32 @@ mod tests {
             .iter()
             .filter(|(name, _)| name.starts_with("dash_detail_"))
             .for_each(|(name, text)| {
-                crate::detail::parse_detail(text).unwrap_or_else(|e| panic!("{name}: {e}"));
+                crate::detail::read_detail(text).unwrap_or_else(|e| panic!("{name}: {e}"));
             });
+    }
+
+    #[test]
+    fn the_fixture_folder_holds_only_the_readme_and_the_two_fixture_sets() {
+        // Read at test time, not compiled in: a stray file or folder beside the two sets would
+        // be a fixture no test reads and `verify` does not hold to the pin.
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+        let entries: std::collections::BTreeSet<String> = std::fs::read_dir(&root)
+            .unwrap_or_else(|e| panic!("{}: {e}", root.display()))
+            .map(|entry| {
+                entry
+                    .expect("a readable entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        assert_eq!(
+            entries,
+            ["README.md", "coxswain", "towpath"]
+                .map(String::from)
+                .into_iter()
+                .collect()
+        );
     }
 
     #[test]
