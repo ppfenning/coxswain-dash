@@ -685,6 +685,9 @@ pub struct BoardTask {
     pub run: String,
     pub host: String,
     pub cost_usd: f64,
+    /// Why the task is held for a person, as `needs you: ...`. Empty when it is not held; a held
+    /// task still says `blocked` in `status`, so an older build draws it blocked.
+    pub needs_you: String,
 }
 
 /// The live section: rolling series and the agents running now. A missing key is zero or empty.
@@ -932,6 +935,9 @@ pub struct QueuePhase {
 #[derive(Debug, Deserialize)]
 pub struct QueueTask {
     pub state: String,
+    /// Why the task is held for a person. Empty, or absent on an older producer, when it is not.
+    #[serde(default)]
+    pub needs_you: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1262,6 +1268,44 @@ mod tests {
 
     const FIXTURE: &str = include_str!("../tests/fixtures/towpath/dash_feed_v1.json");
     const BOARD_FIXTURE: &str = include_str!("../tests/fixtures/towpath/dash_feed_board_v1.json");
+    const HELD_FIXTURE: &str = include_str!("../tests/fixtures/coxswain/dash_feed_held_v1.json");
+
+    #[test]
+    fn a_held_task_parses_its_needs_you_reason_on_the_board_and_the_queue() {
+        let snap = parse_snapshot(HELD_FIXTURE).expect("held fixture parses");
+        let no_epic = snap.board.epics.iter().find(|e| e.id.is_empty()).expect("no epic");
+        let tasks = &no_epic.initiatives[0].phases[0].tasks;
+        let reason = |id: &str| {
+            let t = tasks.iter().find(|t| t.id == id).expect("task listed");
+            (t.status.as_str(), t.needs_you.as_str())
+        };
+        assert_eq!(reason("stray-fix-docs"), ("blocked", ""));
+        let (status, held) = reason("stray-fix-review");
+        assert_eq!(status, "blocked");
+        assert!(held.starts_with("needs you: no progress"), "{held}");
+        let queued = &snap.queue[0].phases.as_ref().expect("phases")[0].tasks;
+        let states: Vec<(&str, bool)> = queued
+            .iter()
+            .map(|t| (t.state.as_str(), !t.needs_you.is_empty()))
+            .collect();
+        assert_eq!(
+            states,
+            [("building", false), ("blocked", false), ("blocked", true)]
+        );
+    }
+
+    #[test]
+    fn a_feed_without_needs_you_parses_every_task_as_not_held() {
+        let snap = parse_snapshot(BOARD_FIXTURE).expect("board fixture parses");
+        let all = snap
+            .board
+            .epics
+            .iter()
+            .flat_map(|e| &e.initiatives)
+            .flat_map(|i| &i.phases)
+            .flat_map(|p| &p.tasks);
+        assert!(all.into_iter().all(|t| t.needs_you.is_empty()));
+    }
 
     #[test]
     fn the_board_fixture_live_key_parses_series_burn_and_agents() {

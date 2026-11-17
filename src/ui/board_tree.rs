@@ -10,7 +10,7 @@ use ratatui::{
 
 use super::status::{self, Status};
 use crate::app::{App, Focus};
-use crate::board_rows::{Counts, Node, Row, StatusKind, status_kind};
+use crate::board_rows::{Counts, Node, Row, StatusKind, status_kind, task_kind};
 use crate::theme::Theme;
 
 const INDENT: usize = 2;
@@ -29,6 +29,7 @@ fn kind_status(kind: StatusKind) -> Status {
         StatusKind::Done => Status::Up,
         StatusKind::Dead => Status::Failed,
         StatusKind::Waiting => Status::Ready,
+        StatusKind::Held => Status::Held,
     }
 }
 
@@ -36,11 +37,12 @@ fn word_style(word: &str, theme: &Theme) -> (char, Color) {
     status::style(theme, kind_status(status_kind(word)))
 }
 
-/// The non-zero counts as `(word, n)`, building and quarantined first.
+/// The non-zero counts as `(word, n)`, building, then the ones a person must look at.
 fn count_parts(c: &Counts) -> Vec<(&'static str, u32)> {
     [
         ("building", c.building),
         ("quarantined", c.quarantined),
+        ("held", c.held),
         ("approved", c.approved),
         ("ready", c.ready),
         ("blocked", c.blocked),
@@ -112,16 +114,21 @@ fn parent_segs(node: &Node, today: Option<u32>, theme: &Theme) -> Vec<Seg> {
     .collect()
 }
 
+/// A task row's text. A held task draws in the held look with its reason after the id; `clip`
+/// cuts the reason to the row.
 fn task_segs(
     id: &str,
     depth: usize,
     status: &str,
     host: &str,
     elapsed_s: Option<u64>,
+    needs_you: &str,
     theme: &Theme,
 ) -> Vec<Seg> {
-    let (glyph, color) = word_style(status, theme);
-    let live = if status == "building" {
+    let (glyph, color) = status::style(theme, kind_status(task_kind(status, needs_you)));
+    let live = if !needs_you.is_empty() {
+        Some((format!("  {needs_you}"), theme.dim))
+    } else if status == "building" {
         let host = (!host.is_empty()).then(|| host.to_string());
         let elapsed = elapsed_s.map(elapsed_text);
         let text = [host, elapsed].into_iter().flatten().collect::<Vec<_>>();
@@ -167,8 +174,9 @@ fn row_segs(row: &Row, theme: &Theme) -> (Vec<Seg>, Option<f64>) {
             host,
             cost_usd,
             elapsed_s,
+            needs_you,
         } => (
-            task_segs(id, *depth, status, host, *elapsed_s, theme),
+            task_segs(id, *depth, status, host, *elapsed_s, needs_you, theme),
             Some(*cost_usd),
         ),
         Row::Landed {
@@ -432,6 +440,53 @@ mod tests {
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(text.chars().count(), 30);
         assert!(text.ends_with("$1.75"), "{text:?}");
+    }
+
+    const HELD_FIXTURE: &str = include_str!("../../tests/fixtures/dash_feed_held_v1.json");
+
+    fn held() -> FeedSnapshot {
+        parse_snapshot(HELD_FIXTURE).expect("held fixture parses")
+    }
+
+    #[test]
+    fn a_held_task_wears_the_held_look_and_its_reason_and_a_blocked_one_does_not() {
+        let theme = regatta();
+        let terminal = draw(&app_with(held()), WIDTH, 18);
+        let look = status::color(&theme, Status::Held);
+        assert_eq!(fg_of(&terminal, "stray-fix-review"), look);
+        assert_eq!(fg_of(&terminal, "◆"), look);
+        assert_ne!(fg_of(&terminal, "stray-fix-docs"), look);
+        let rows = rows_for(&held());
+        let review = rows
+            .iter()
+            .find(|r| matches!(r, Row::Task { id, .. } if id == "stray-fix-review"))
+            .expect("held row");
+        assert!(
+            text_of(review).starts_with("        ◆ stray-fix-review  needs you: no progress"),
+            "{}",
+            text_of(review)
+        );
+    }
+
+    #[test]
+    fn a_parent_counts_a_held_task_as_held_after_quarantined() {
+        let counts = Counts {
+            building: 1,
+            quarantined: 1,
+            held: 2,
+            blocked: 1,
+            ..Counts::default()
+        };
+        assert_eq!(
+            counts_text(&counts),
+            "1 building 1 quarantined 2 held 1 blocked"
+        );
+    }
+
+    #[test]
+    fn a_held_task_beside_a_blocked_one() {
+        let app = app_with(held());
+        insta::assert_snapshot!(draw(&app, WIDTH, 18).backend().to_string());
     }
 
     #[test]

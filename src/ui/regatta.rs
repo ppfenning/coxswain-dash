@@ -2088,9 +2088,10 @@ fn urgency(status: Status) -> u8 {
     }
 }
 
-/// The status a task state word draws as, or `None` for a dropped task, which the bar leaves out.
-fn task_status(word: &str) -> Option<Status> {
-    Some(status::from_word(word)).filter(|s| *s != Status::Dropped)
+/// The status a task draws as, or `None` for a dropped task, which the bar leaves out. A task the
+/// feed holds for a person is `Held`, which `urgency` ranks with the states that need a person.
+fn task_status(word: &str, needs_you: &str) -> Option<Status> {
+    Some(status::task(word, needs_you)).filter(|s| *s != Status::Dropped)
 }
 
 /// Each phase's drawn task statuses in feed order. A phase left with no tasks is left out. Ready
@@ -2102,7 +2103,7 @@ fn phase_statuses(phases: &[crate::feed::QueuePhase], building: Option<usize>) -
         .map(|(i, p)| {
             p.tasks
                 .iter()
-                .filter_map(|t| task_status(&t.state))
+                .filter_map(|t| task_status(&t.state, &t.needs_you))
                 .map(|s| match s {
                     Status::Ready if building == Some(i) => Status::Running,
                     other => other,
@@ -5031,8 +5032,21 @@ mod tests {
             ("quarantined", Status::Quarantined),
         ]
         .into_iter()
-        .for_each(|(word, expected)| assert_eq!(task_status(word), Some(expected), "{word}"));
-        assert_eq!(task_status("dropped"), None);
+        .for_each(|(word, expected)| assert_eq!(task_status(word, ""), Some(expected), "{word}"));
+        assert_eq!(task_status("dropped", ""), None);
+    }
+
+    #[test]
+    fn a_queue_task_with_a_needs_you_reason_is_held_and_ranks_with_quarantined() {
+        let reason = "needs you: no progress: runs demo-54, demo-55 ended the same way";
+        assert_eq!(task_status("blocked", reason), Some(Status::Held));
+        assert_eq!(task_status("blocked", ""), Some(Status::Blocked));
+        assert_eq!(urgency(Status::Held), urgency(Status::Quarantined));
+        assert!(urgency(Status::Held) < urgency(Status::Blocked));
+        assert_eq!(
+            least_advanced(&[Status::Blocked, Status::Held, Status::Landed]),
+            Some(Status::Held)
+        );
     }
 
     fn state_word(c: char) -> &'static str {
