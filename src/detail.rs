@@ -1,6 +1,6 @@
 //! The versioned dash detail snapshot: a pure schema for `cox dash --detail <kind> <id>`
 //! output, plus the thin edge that spawns the detail process. The wire-detail-dispatch task
-//! reads the child's stdout and calls `parse_detail` on each line; neither of those happens
+//! reads the child's stdout and calls `read_detail` on each line; neither of those happens
 //! here.
 
 // Most fields exist only to mirror the wire schema; the page tasks that render them land
@@ -202,9 +202,23 @@ fn null_as_empty<'de, D: serde::Deserializer<'de>>(de: D) -> Result<String, D::E
     Ok(Option::<String>::deserialize(de)?.unwrap_or_default())
 }
 
-/// Deserializes one detail line into a [`DetailSnapshot`]. Does nothing but deserialize.
+/// Deserializes one detail line into a [`DetailSnapshot`]. Does nothing but deserialize; the
+/// edge reads lines through [`read_detail`], which checks the contract version first.
 pub fn parse_detail(line: &str) -> Result<DetailSnapshot, serde_json::Error> {
     serde_json::from_str(line)
+}
+
+/// One detail line, refused before it is parsed when its `schema` is not the contract this
+/// towpath reads (a missing `schema` included), with the one-line message saying which side to
+/// upgrade. Mirrors [`crate::feed::read_snapshot`].
+pub fn read_detail(line: &str) -> Result<DetailSnapshot, String> {
+    let value: serde_json::Value = serde_json::from_str(line).map_err(|err| err.to_string())?;
+    crate::contract::check(
+        crate::contract::version_of(&value),
+        crate::contract::CONTRACT_VERSION,
+    )
+    .map_err(|mismatch| mismatch.to_string())?;
+    serde_json::from_value(value).map_err(|err| err.to_string())
 }
 
 /// The result of one detail child: its stdout body, or one line saying why it failed.
@@ -323,12 +337,14 @@ pub fn run_detail(cmd: std::process::Command) -> DetailOutcome {
 mod tests {
     use super::*;
 
-    const RUN_FIXTURE: &str = include_str!("../tests/fixtures/dash_detail_run_v1.json");
+    const RUN_FIXTURE: &str = include_str!("../tests/fixtures/coxswain/dash_detail_run_v1.json");
     const INITIATIVE_FIXTURE: &str =
-        include_str!("../tests/fixtures/dash_detail_initiative_v1.json");
-    const MACHINE_FIXTURE: &str = include_str!("../tests/fixtures/dash_detail_machine_v1.json");
-    const SPEND_FIXTURE: &str = include_str!("../tests/fixtures/dash_detail_spend_v1.json");
-    const HEALTH_FIXTURE: &str = include_str!("../tests/fixtures/dash_detail_health_v1.json");
+        include_str!("../tests/fixtures/coxswain/dash_detail_initiative_v1.json");
+    const MACHINE_FIXTURE: &str =
+        include_str!("../tests/fixtures/coxswain/dash_detail_machine_v1.json");
+    const SPEND_FIXTURE: &str = include_str!("../tests/fixtures/towpath/dash_detail_spend_v1.json");
+    const HEALTH_FIXTURE: &str =
+        include_str!("../tests/fixtures/towpath/dash_detail_health_v1.json");
 
     #[test]
     fn spawn_command_with_a_nonexistent_program_returns_err() {
@@ -406,6 +422,48 @@ mod tests {
             }
             other => panic!("expected DetailSnapshot::Run, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn read_detail_reads_a_line_at_this_contract() {
+        assert!(matches!(
+            read_detail(RUN_FIXTURE.trim()).expect("fixture should be read"),
+            DetailSnapshot::Run(_)
+        ));
+    }
+
+    #[test]
+    fn read_detail_refuses_a_newer_contract_before_parsing_it() {
+        let line = RUN_FIXTURE
+            .trim()
+            .replacen("\"schema\": 1", "\"schema\": 2", 1);
+        assert_eq!(
+            read_detail(&line).unwrap_err(),
+            "the feed is contract 2, newer than the contract 1 this towpath reads: upgrade towpath"
+        );
+    }
+
+    #[test]
+    fn read_detail_refuses_a_line_without_a_contract_version() {
+        let mut value: serde_json::Value =
+            serde_json::from_str(SPEND_FIXTURE).expect("fixture is JSON");
+        value
+            .as_object_mut()
+            .expect("fixture is an object")
+            .remove("schema");
+        let line = value.to_string();
+        // Every detail struct requires `schema`, so the bare parse fails too, but as a serde
+        // missing-field error; the read names the contract, as `read_snapshot` does.
+        assert!(parse_detail(&line).is_err());
+        assert_eq!(
+            read_detail(&line).unwrap_err(),
+            "the feed carries no contract version (`schema`); this towpath reads contract 1"
+        );
+    }
+
+    #[test]
+    fn read_detail_rejects_malformed_json() {
+        assert!(read_detail("{ not json").is_err());
     }
 
     #[test]

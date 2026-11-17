@@ -971,6 +971,19 @@ pub fn parse_snapshot(line: &str) -> Result<FeedSnapshot, serde_json::Error> {
     serde_json::from_str(line)
 }
 
+/// One feed line as a [`FeedSnapshot`], refused before it is parsed when its contract version is
+/// not the one this towpath reads. The error is the line the app shows: a contract mismatch says
+/// which side to upgrade, anything else is the parse error.
+pub fn read_snapshot(line: &str) -> Result<FeedSnapshot, String> {
+    let value: serde_json::Value = serde_json::from_str(line).map_err(|err| err.to_string())?;
+    crate::contract::check(
+        crate::contract::version_of(&value),
+        crate::contract::CONTRACT_VERSION,
+    )
+    .map_err(|mismatch| mismatch.to_string())?;
+    serde_json::from_value(value).map_err(|err| err.to_string())
+}
+
 /// An inbox entry is stale when the producer says so, or, absent that flag, when its target or run has ended.
 /// An explicit `stale: false` always wins. Ended means the run appears in the snapshot's history.
 pub fn is_stale(entry: &InboxEntry, snapshot: &FeedSnapshot) -> bool {
@@ -1188,9 +1201,9 @@ fn read_feed_into(mut child: std::process::Child, mut sink: impl FnMut(FeedMessa
         lossy_lines(stdout)
             .filter(|line| !line.trim().is_empty())
             .for_each(|line| {
-                sink(match parse_snapshot(&line) {
+                sink(match read_snapshot(&line) {
                     Ok(snapshot) => FeedMessage::Snapshot(Box::new(snapshot)),
-                    Err(err) => FeedMessage::ParseError(err.to_string()),
+                    Err(err) => FeedMessage::ParseError(err),
                 })
             });
     }
@@ -1247,8 +1260,8 @@ mod tests {
 
     use super::*;
 
-    const FIXTURE: &str = include_str!("../tests/fixtures/dash_feed_v1.json");
-    const BOARD_FIXTURE: &str = include_str!("../tests/fixtures/dash_feed_board_v1.json");
+    const FIXTURE: &str = include_str!("../tests/fixtures/towpath/dash_feed_v1.json");
+    const BOARD_FIXTURE: &str = include_str!("../tests/fixtures/towpath/dash_feed_board_v1.json");
 
     #[test]
     fn the_board_fixture_live_key_parses_series_burn_and_agents() {
@@ -1597,7 +1610,7 @@ mod tests {
         );
     }
 
-    const ACTIVITY_FIXTURE: &str = include_str!("../tests/fixtures/dash_activity_v1.json");
+    const ACTIVITY_FIXTURE: &str = include_str!("../tests/fixtures/coxswain/dash_activity_v1.json");
 
     /// The activity fixture carries only the two new keys, so it parses through this subset.
     #[derive(Deserialize)]
@@ -1637,7 +1650,7 @@ mod tests {
         assert_eq!(split.weekly.resets_at, "2026-10-18T08:00:00Z");
     }
 
-    const SESSIONS_FIXTURE: &str = include_str!("../tests/fixtures/dash_sessions_v1.json");
+    const SESSIONS_FIXTURE: &str = include_str!("../tests/fixtures/towpath/dash_sessions_v1.json");
 
     #[test]
     fn the_sessions_fixture_parses_both_windows_and_the_sources() {
@@ -1777,7 +1790,7 @@ mod tests {
         assert!(snapshot.spend_split.is_none());
     }
 
-    const WATCH_FIXTURE: &str = include_str!("../tests/fixtures/dash_feed_watch_v1.json");
+    const WATCH_FIXTURE: &str = include_str!("../tests/fixtures/towpath/dash_feed_watch_v1.json");
 
     #[test]
     fn parse_snapshot_reads_typed_watch_rows() {
@@ -1795,7 +1808,7 @@ mod tests {
         assert!(snapshot.watch.is_empty());
     }
 
-    const COST_FIXTURE: &str = include_str!("../tests/fixtures/dash_feed_cost_v1.json");
+    const COST_FIXTURE: &str = include_str!("../tests/fixtures/coxswain/dash_feed_cost_v1.json");
 
     /// The cost fixture carries only `schema`, `at` and `cost`, so it is read through this view.
     #[derive(Deserialize)]
@@ -2383,6 +2396,38 @@ mod tests {
     }
 
     #[test]
+    fn read_snapshot_refuses_a_newer_contract_before_parsing_it() {
+        let line = FIXTURE.trim().replacen("\"schema\": 1", "\"schema\": 2", 1);
+        assert_eq!(
+            read_snapshot(&line).unwrap_err(),
+            "the feed is contract 2, newer than the contract 1 this towpath reads: upgrade towpath"
+        );
+    }
+
+    #[test]
+    fn read_snapshot_refuses_a_line_without_a_contract_version() {
+        let error = read_snapshot(r#"{"at":"2026-10-11T19:00:00Z"}"#).unwrap_err();
+        assert!(
+            error.starts_with("the feed carries no contract version"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn read_snapshot_reads_the_fixture_at_this_contract() {
+        assert_eq!(read_snapshot(FIXTURE).expect("fixture reads").schema, 1);
+    }
+
+    #[test]
+    fn read_feed_sends_a_contract_mismatch_as_its_parse_error() {
+        let messages = run_stub(r#"printf '%s\n' '{"schema":2}'"#, "");
+        assert!(
+            matches!(&messages[0], FeedMessage::ParseError(text) if text.ends_with("upgrade towpath")),
+            "{messages:?}"
+        );
+    }
+
+    #[test]
     fn read_feed_sends_a_parse_error_per_bad_line() {
         let messages = run_stub("printf '%s\\n' '{ not json' 'also bad'", "");
         assert_eq!(messages.len(), 3);
@@ -2535,7 +2580,7 @@ mod tests {
         assert_eq!(history_row_with(r#","tasks":[]"#).tasks, Some(vec![]));
     }
 
-    const TASKS_FIXTURE: &str = include_str!("../tests/fixtures/dash_feed_tasks_v1.json");
+    const TASKS_FIXTURE: &str = include_str!("../tests/fixtures/towpath/dash_feed_tasks_v1.json");
 
     #[test]
     fn run_tasks_parse_from_the_tasks_fixture() {
@@ -2858,7 +2903,8 @@ mod tests {
         assert_eq!(rates(&snapshot.live), vec![900, 100]);
     }
 
-    const SLIM_BOARD_FIXTURE: &str = include_str!("../tests/fixtures/dash_feed_board_slim_v1.json");
+    const SLIM_BOARD_FIXTURE: &str =
+        include_str!("../tests/fixtures/coxswain/dash_feed_board_slim_v1.json");
 
     #[derive(Deserialize)]
     struct BoardOnly {
@@ -2911,7 +2957,8 @@ mod tests {
         assert_eq!(epic.settled, Settled::default());
     }
 
-    const INTAKE_CONTRACT: &str = include_str!("../tests/fixtures/dash_feed_intake_v1.json");
+    const INTAKE_CONTRACT: &str =
+        include_str!("../tests/fixtures/coxswain/dash_feed_intake_v1.json");
 
     #[test]
     fn the_producers_intake_fixture_parses() {
@@ -2996,7 +3043,7 @@ mod tests {
 
     /// coxswain's own `dash_feed_v1.json`, copied whole. Towpath's `dash_feed_v1.json` is an older subset that other
     /// tests pin values against; this copy keeps the parser honest against everything the producer sends now.
-    const PRODUCER_FIXTURE: &str = include_str!("../tests/fixtures/dash_feed_producer_v1.json");
+    const PRODUCER_FIXTURE: &str = include_str!("../tests/fixtures/coxswain/dash_feed_v1.json");
 
     #[test]
     fn the_producers_full_feed_fixture_parses_with_its_newest_keys() {

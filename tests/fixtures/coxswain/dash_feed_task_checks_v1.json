@@ -1,0 +1,8 @@
+{
+  "checks": {"tests_selected": 12, "tests_total": 739, "cpu_seconds": 41.5},
+  "examples": [
+    {"checks": {"tests_selected": 12, "tests_total": 739, "cpu_seconds": 41.5}},
+    {"checks": {"tests_selected": 48, "tests_total": 48, "cpu_seconds": 63.2}}
+  ],
+  "note": "The checks key is optional on a task entry. It is absent when the run record has no figures, so existing consumers that ignore unknown keys keep parsing."
+}

@@ -1015,8 +1015,9 @@ mod tests {
     use crate::detail;
     use ratatui::{Terminal, backend::TestBackend};
 
-    const FEED_FIXTURE: &str = include_str!("../../tests/fixtures/dash_feed_v1.json");
-    const RUN_DETAIL_FIXTURE: &str = include_str!("../../tests/fixtures/dash_detail_run_v1.json");
+    const FEED_FIXTURE: &str = include_str!("../../tests/fixtures/towpath/dash_feed_v1.json");
+    const RUN_DETAIL_FIXTURE: &str =
+        include_str!("../../tests/fixtures/coxswain/dash_detail_run_v1.json");
 
     /// An app on the Regatta page with the fixture's one run selected and its detail opened
     /// (so `app.detail()` is `Some((DetailKind::Run, "dash-feed-1", _))`).
@@ -1056,9 +1057,12 @@ mod tests {
         insta::assert_snapshot!(terminal.backend().to_string());
     }
 
-    const WATCH_FEED_FIXTURE: &str = include_str!("../../tests/fixtures/dash_feed_watch_v1.json");
-    const SPEND_FIXTURE: &str = include_str!("../../tests/fixtures/dash_detail_spend_v1.json");
-    const HEALTH_FIXTURE: &str = include_str!("../../tests/fixtures/dash_detail_health_v1.json");
+    const WATCH_FEED_FIXTURE: &str =
+        include_str!("../../tests/fixtures/towpath/dash_feed_watch_v1.json");
+    const SPEND_FIXTURE: &str =
+        include_str!("../../tests/fixtures/towpath/dash_detail_spend_v1.json");
+    const HEALTH_FIXTURE: &str =
+        include_str!("../../tests/fixtures/towpath/dash_detail_health_v1.json");
 
     #[test]
     fn the_watch_view_draws_the_feeds_first_watch_id() {

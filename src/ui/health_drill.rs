@@ -160,7 +160,7 @@ mod tests {
     use crate::app::ThemeId;
     use ratatui::{Terminal, backend::TestBackend};
 
-    const FIXTURE: &str = include_str!("../../tests/fixtures/dash_detail_health_v1.json");
+    const FIXTURE: &str = include_str!("../../tests/fixtures/towpath/dash_detail_health_v1.json");
 
     fn utc() -> FixedOffset {
         FixedOffset::east_opt(0).unwrap()

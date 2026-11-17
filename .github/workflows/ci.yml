@@ -4,6 +4,10 @@ on:
   push:
     branches: [main]
   pull_request:
+  # the canary below: towpath's tests against coxswain's main, daily and on demand
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
 jobs:
   test:
     runs-on: ${{ vars.COXSWAIN_RUNNER || 'ubuntu-latest' }}
@@ -14,9 +18,30 @@ jobs:
         run: python3 .github/check_clean.py .
         env:
           COXSWAIN_CLEAN_DENY: ${{ secrets.COXSWAIN_CLEAN_DENY }}
+      - name: the coxswain contract script's pure core
+        run: python3 -m unittest discover -s scripts -p 'test_*.py'
+      # tests/fixtures/coxswain/ must be exactly coxswain's fixtures at the pinned commit; a pin bump
+      # (scripts/coxswain_contract.py sync) is the only way new fixtures reach the tests below
+      - name: the vendored coxswain fixtures are the pinned commit's
+        timeout-minutes: 5
+        run: python3 scripts/coxswain_contract.py verify
       - uses: dtolnay/rust-toolchain@stable
         with: { components: "rustfmt, clippy" }
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
+
+  # Re-vendors coxswain's fixtures at coxswain's main and runs the tests on them, so a coxswain
+  # fixture change that towpath has not taken fails here before anyone bumps the pin.
+  contract-canary:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ${{ vars.COXSWAIN_RUNNER || 'ubuntu-latest' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: take coxswain main's fixtures
+        timeout-minutes: 5
+        run: python3 scripts/coxswain_contract.py sync main && git diff --stat
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
       - run: cargo test

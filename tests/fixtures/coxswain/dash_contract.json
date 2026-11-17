@@ -1,0 +1,23 @@
+{
+  "contract": 1,
+  "fixtures": [
+    "dash_activity_v1.json",
+    "dash_budget_v1.json",
+    "dash_detail_health_v1.json",
+    "dash_detail_initiative_v1.json",
+    "dash_detail_machine_v1.json",
+    "dash_detail_run_v1.json",
+    "dash_detail_spend_v1.json",
+    "dash_feed_board_slim_v1.json",
+    "dash_feed_board_v1.json",
+    "dash_feed_cost_v1.json",
+    "dash_feed_epics_v1.json",
+    "dash_feed_intake_v1.json",
+    "dash_feed_schedule_v1.json",
+    "dash_feed_task_checks_v1.json",
+    "dash_feed_tasks_v1.json",
+    "dash_feed_v1.json",
+    "dash_feed_waves_v1.json",
+    "dash_sessions_v1.json"
+  ]
+}

@@ -184,7 +184,8 @@ mod tests {
     use crate::theme;
     use ratatui::{Terminal, backend::TestBackend};
 
-    const BOARD_FIXTURE: &str = include_str!("../../tests/fixtures/dash_feed_board_v1.json");
+    const BOARD_FIXTURE: &str =
+        include_str!("../../tests/fixtures/towpath/dash_feed_board_v1.json");
 
     fn regatta() -> Theme {
         theme::resolve_for(ThemeId::Regatta, Some("truecolor"))

@@ -13,6 +13,7 @@ mod board_rows;
 mod chair_panel;
 mod config;
 mod confirm;
+mod contract;
 mod decision_card;
 mod detail;
 mod exec;
@@ -249,7 +250,7 @@ fn editor_path(pid: u32, seq: usize) -> PathBuf {
 /// The detail child's body parsed as an initiative. Reads the last non-empty line.
 fn initiative_of(body: &str) -> Result<detail::InitiativeDetail, String> {
     let line = body.lines().rev().find(|l| !l.trim().is_empty());
-    match line.map(detail::parse_detail) {
+    match line.map(detail::read_detail) {
         Some(Ok(detail::DetailSnapshot::Initiative(initiative))) => Ok(initiative),
         Some(Ok(_)) => Err("detail was not an initiative".to_string()),
         Some(Err(err)) => Err(format!("detail did not parse: {err}")),
@@ -603,8 +604,7 @@ fn run() {
                 match rx.try_recv() {
                     // A line that does not parse leaves the panel on its last drill, or loading.
                     Ok(line) => {
-                        if let Ok(detail::DetailSnapshot::Spend(spend)) =
-                            detail::parse_detail(&line)
+                        if let Ok(detail::DetailSnapshot::Spend(spend)) = detail::read_detail(&line)
                         {
                             app.apply_rail_spend(spend);
                             changed = true;
@@ -633,7 +633,7 @@ fn run() {
             while let Ok(line) = rx.try_recv() {
                 // A line that does not parse replaces the loading paragraph with why,
                 // instead of leaving the drill on loading forever.
-                match detail::parse_detail(&line) {
+                match detail::read_detail(&line) {
                     Ok(snapshot) => app.apply_detail_snapshot(snapshot),
                     Err(err) => app.apply_detail_error(format!("detail did not parse: {err}")),
                 }
@@ -997,7 +997,7 @@ mod tests {
 
     #[test]
     fn a_confirmed_action_runs_once_with_its_argv_and_sets_the_status() {
-        let json = include_str!("../tests/fixtures/dash_feed_v1.json");
+        let json = include_str!("../tests/fixtures/towpath/dash_feed_v1.json");
         let mut app = App::new(AppPage::Regatta, ThemeId::Regatta);
         app.apply_snapshot(feed::parse_snapshot(json).expect("fixture should parse"));
         assert!(app.begin_action('k'));

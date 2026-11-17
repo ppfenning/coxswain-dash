@@ -167,7 +167,8 @@ mod tests {
     use crate::detail::{DetailSnapshot, parse_detail};
     use ratatui::{Terminal, backend::TestBackend};
 
-    const FIXTURE: &str = include_str!("../../tests/fixtures/dash_detail_initiative_v1.json");
+    const FIXTURE: &str =
+        include_str!("../../tests/fixtures/coxswain/dash_detail_initiative_v1.json");
 
     fn fixture_detail() -> InitiativeDetail {
         let snapshot = parse_detail(FIXTURE).expect("fixture should parse");

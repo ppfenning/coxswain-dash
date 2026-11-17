@@ -2868,7 +2868,7 @@ mod tests {
     use crate::app::{AppPage, Focus, ThemeId};
     use ratatui::{Terminal, backend::TestBackend};
 
-    const FIXTURE: &str = include_str!("../../tests/fixtures/dash_feed_v1.json");
+    const FIXTURE: &str = include_str!("../../tests/fixtures/towpath/dash_feed_v1.json");
 
     fn app_with_fixture() -> App {
         let snapshot = crate::feed::parse_snapshot(FIXTURE.trim()).expect("fixture should parse");
@@ -7556,9 +7556,10 @@ mod tests {
     fn activity_app(bare: bool) -> App {
         let mut snapshot = crate::feed::parse_snapshot(FIXTURE.trim()).expect("fixture parses");
         if !bare {
-            let activity: Activity =
-                serde_json::from_str(include_str!("../../tests/fixtures/dash_activity_v1.json"))
-                    .expect("activity fixture parses");
+            let activity: Activity = serde_json::from_str(include_str!(
+                "../../tests/fixtures/coxswain/dash_activity_v1.json"
+            ))
+            .expect("activity fixture parses");
             snapshot.chair_agents = activity.chair_agents;
             snapshot.spend_split = activity.spend_split;
         }
@@ -7594,7 +7595,8 @@ mod tests {
         assert_eq!(split_activity(full, &app), (full, None, None));
     }
 
-    const SESSIONS_FIXTURE: &str = include_str!("../../tests/fixtures/dash_sessions_v1.json");
+    const SESSIONS_FIXTURE: &str =
+        include_str!("../../tests/fixtures/towpath/dash_sessions_v1.json");
 
     /// The existing feed fixture with the sessions fixture's keys laid over it; without
     /// `sessions`, the operator sessions and spend sources are dropped so the split stands alone.
